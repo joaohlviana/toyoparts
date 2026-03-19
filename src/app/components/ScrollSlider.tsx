@@ -54,8 +54,13 @@ export function ScrollSlider({
   const scroll = useCallback((dir: 'left' | 'right') => {
     const el = scrollRef.current;
     if (!el) return;
-    // Scroll ~80% of visible width for a page-like feel
-    const delta = el.clientWidth * 0.82;
+
+    const firstItem = el.firstElementChild as HTMLElement | null;
+    const gapValue = window.getComputedStyle(el).gap;
+    const gap = Number.parseFloat(gapValue || '0') || 0;
+    const itemWidth = firstItem?.getBoundingClientRect().width ?? el.clientWidth * 0.82;
+    const delta = itemWidth + gap;
+
     el.scrollBy({
       left: dir === 'left' ? -delta : delta,
       behavior: 'smooth',

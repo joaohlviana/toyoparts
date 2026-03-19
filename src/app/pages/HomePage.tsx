@@ -19,7 +19,15 @@ import { SEOHead } from '../components/seo/SEOHead';
 import { ProductCard, ProductCardSkeleton } from '../components/ProductCard';
 import { ScrollSlider } from '../components/ScrollSlider';
 import { NewsletterBanner } from '../components/newsletter/NewsletterBanner';
-import { CAR_MODELS_SEO, SITE_NAME, SITE_DESCRIPTION, generateOrganizationJsonLd, slugify } from '../seo-config';
+import {
+  CAR_MODELS_SEO,
+  SITE_DESCRIPTION,
+  SITE_KEYWORDS,
+  SITE_NAME,
+  generateOrganizationJsonLd,
+  generateWebSiteJsonLd,
+  slugify,
+} from '../seo-config';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
 import { useIsMobile } from '../hooks/useMediaQuery';
 
@@ -442,11 +450,12 @@ export function HomePage() {
   return (
     <>
       <SEOHead
-        title={`${SITE_NAME} — Peças e Acessórios Genuínos Toyota`}
+        title={SITE_NAME}
         description={SITE_DESCRIPTION}
         canonical="/"
         robots="index,follow"
-        jsonLd={generateOrganizationJsonLd()}
+        keywords={SITE_KEYWORDS}
+        jsonLd={[generateOrganizationJsonLd(), generateWebSiteJsonLd()]}
       />
 
       {/* ── Search Backdrop (Spotlight) ── */}
@@ -462,6 +471,9 @@ export function HomePage() {
       </AnimatePresence>
 
       <div className="flex flex-col bg-background min-h-screen">
+        <h1 className="sr-only">
+          Toyoparts - pecas e acessorios genuinos Toyota para Hilux, Corolla, SW4, Yaris, Etios, RAV4, Prius e Corolla Cross
+        </h1>
 
         {/* ────────────────────────────────────────────────────────────────── */}
         {/*  1. HERO — Apple-style cinematic                                 */}

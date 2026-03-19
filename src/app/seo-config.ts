@@ -3,7 +3,16 @@
 
 export const SITE_NAME = 'Toyoparts';
 export const SITE_URL = 'https://www.toyoparts.com.br';
-export const SITE_DESCRIPTION = 'Pecas e acessorios genuinos Toyota. Hilux, Corolla, SW4, Yaris, Etios, RAV4, Prius e Corolla Cross.';
+export const SITE_DESCRIPTION = 'Compre pecas e acessorios genuinos Toyota para Hilux, Corolla, SW4, Yaris, Etios, RAV4, Prius e Corolla Cross com envio para todo o Brasil.';
+export const SITE_DEFAULT_TITLE = 'Toyoparts | Pecas e Acessorios Genuinos Toyota';
+export const DEFAULT_OG_IMAGE = '/og-home.svg';
+export const SITE_KEYWORDS = 'pecas toyota, acessorios toyota, toyoparts, pecas genuinas toyota, hilux, corolla, sw4, yaris, etios, rav4, prius, corolla cross';
+
+export function buildAbsoluteUrl(pathOrUrl: string): string {
+  if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
+  const normalizedPath = pathOrUrl.startsWith('/') ? pathOrUrl : `/${pathOrUrl}`;
+  return `${SITE_URL}${normalizedPath}`;
+}
 
 // --- Slugify ---
 
@@ -285,11 +294,26 @@ export function generateOrganizationJsonLd() {
     name: SITE_NAME,
     url: SITE_URL,
     description: SITE_DESCRIPTION,
-    logo: `${SITE_URL}/pub/media/logo/toyoparts-logo.png`,
+    logo: buildAbsoluteUrl(DEFAULT_OG_IMAGE),
     contactPoint: {
       '@type': 'ContactPoint',
       contactType: 'customer service',
       availableLanguage: 'Portuguese',
+    },
+  };
+}
+
+export function generateWebSiteJsonLd() {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'WebSite',
+    name: SITE_NAME,
+    url: SITE_URL,
+    description: SITE_DESCRIPTION,
+    potentialAction: {
+      '@type': 'SearchAction',
+      target: `${SITE_URL}/busca?q={search_term_string}`,
+      'query-input': 'required name=search_term_string',
     },
   };
 }

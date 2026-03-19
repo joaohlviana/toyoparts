@@ -1,0 +1,33 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="630" viewBox="0 0 1200 630" role="img" aria-labelledby="title desc">
+  <title id="title">Toyoparts</title>
+  <desc id="desc">Pecas e acessorios genuinos Toyota</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" x2="1" y1="0" y2="1">
+      <stop offset="0%" stop-color="#111111" />
+      <stop offset="100%" stop-color="#2b0b10" />
+    </linearGradient>
+    <linearGradient id="accent" x1="0" x2="1" y1="0" y2="0">
+      <stop offset="0%" stop-color="#eb0a1e" />
+      <stop offset="100%" stop-color="#ff4b4b" />
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="630" fill="url(#bg)" />
+  <circle cx="1040" cy="120" r="200" fill="#eb0a1e" fill-opacity="0.12" />
+  <circle cx="140" cy="570" r="220" fill="#eb0a1e" fill-opacity="0.1" />
+  <rect x="72" y="72" width="188" height="188" rx="42" fill="#eb0a1e" />
+  <ellipse cx="166" cy="138" rx="52" ry="32" fill="none" stroke="#fff" stroke-width="10" />
+  <ellipse cx="139" cy="138" rx="18" ry="48" fill="none" stroke="#fff" stroke-width="10" />
+  <ellipse cx="193" cy="138" rx="18" ry="48" fill="none" stroke="#fff" stroke-width="10" />
+  <rect x="101" y="204" width="130" height="16" rx="8" fill="#fff" />
+  <text x="312" y="152" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="74" font-weight="700">Toyoparts</text>
+  <text x="78" y="360" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="64" font-weight="700">
+    Pecas e acessorios genuinos Toyota
+  </text>
+  <text x="78" y="430" fill="#d1d5db" font-family="Arial, Helvetica, sans-serif" font-size="30">
+    Hilux, Corolla, SW4, Yaris, Etios, RAV4, Prius e Corolla Cross
+  </text>
+  <rect x="78" y="485" width="418" height="58" rx="29" fill="url(#accent)" />
+  <text x="115" y="523" fill="#ffffff" font-family="Arial, Helvetica, sans-serif" font-size="28" font-weight="700">
+    Envio para todo o Brasil
+  </text>
+</svg>

@@ -22,6 +22,7 @@ import { NewsletterBanner } from '../components/newsletter/NewsletterBanner';
 import {
   CAR_MODELS_SEO,
   SITE_DESCRIPTION,
+  SITE_DEFAULT_TITLE,
   SITE_KEYWORDS,
   SITE_NAME,
   generateOrganizationJsonLd,
@@ -450,7 +451,7 @@ export function HomePage() {
   return (
     <>
       <SEOHead
-        title={SITE_NAME}
+        title={SITE_DEFAULT_TITLE}
         description={SITE_DESCRIPTION}
         canonical="/"
         robots="index,follow"

@@ -273,10 +273,11 @@ function HeroCarousel({ children, autoplaySpeed = 7000 }: { children: React.Reac
   const [current, setCurrent] = useState(0);
   const [paused, setPaused] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-  // Touch/swipe support
-  const [touchStart, setTouchStart] = useState(0);
-  const [touchEnd, setTouchEnd] = useState(0);
+  const touchStartXRef = useRef<number | null>(null);
+  const touchStartYRef = useRef<number | null>(null);
+  const touchDeltaXRef = useRef(0);
+  const touchMovedRef = useRef(false);
+  const suppressClickRef = useRef(false);
 
   const advance = useCallback(() => setCurrent(c => (c + 1) % count), [count]);
   const goBack = useCallback(() => setCurrent(c => (c - 1 + count) % count), [count]);
@@ -288,25 +289,50 @@ function HeroCarousel({ children, autoplaySpeed = 7000 }: { children: React.Reac
   }, [current, paused, advance, autoplaySpeed, count]);
 
   const handleTouchStart = (e: React.TouchEvent) => {
-    setTouchStart(e.targetTouches[0].clientX);
+    const touch = e.targetTouches[0];
+    touchStartXRef.current = touch.clientX;
+    touchStartYRef.current = touch.clientY;
+    touchDeltaXRef.current = 0;
+    touchMovedRef.current = false;
+    setPaused(true);
   };
 
   const handleTouchMove = (e: React.TouchEvent) => {
-    setTouchEnd(e.targetTouches[0].clientX);
+    if (touchStartXRef.current === null || touchStartYRef.current === null) return;
+
+    const touch = e.targetTouches[0];
+    const deltaX = touch.clientX - touchStartXRef.current;
+    const deltaY = touch.clientY - touchStartYRef.current;
+
+    touchDeltaXRef.current = deltaX;
+
+    if (Math.abs(deltaX) > 12) {
+      touchMovedRef.current = true;
+    }
+
+    if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 10) {
+      e.preventDefault();
+    }
   };
 
   const handleTouchEnd = () => {
-    if (!touchStart || !touchEnd) return;
-    const distance = touchStart - touchEnd;
-    const isLeftSwipe = distance > 50;
-    const isRightSwipe = distance < -50;
+    const deltaX = touchDeltaXRef.current;
+    const isLeftSwipe = deltaX < -50;
+    const isRightSwipe = deltaX > 50;
 
-    if (isLeftSwipe) advance();
-    if (isRightSwipe) goBack();
+    if (isLeftSwipe) goBack();
+    if (isRightSwipe) advance();
 
-    // Reset
-    setTouchStart(0);
-    setTouchEnd(0);
+    suppressClickRef.current = touchMovedRef.current && Math.abs(deltaX) > 10;
+
+    touchStartXRef.current = null;
+    touchStartYRef.current = null;
+    touchDeltaXRef.current = 0;
+    touchMovedRef.current = false;
+    setPaused(false);
+    window.setTimeout(() => {
+      suppressClickRef.current = false;
+    }, 50);
   };
 
   if (count === 0) return null;
@@ -315,11 +341,19 @@ function HeroCarousel({ children, autoplaySpeed = 7000 }: { children: React.Reac
   return (
     <div
       className="relative w-full overflow-hidden group/carousel"
+      style={{ touchAction: 'pan-y' }}
       onMouseEnter={() => setPaused(true)}
       onMouseLeave={() => setPaused(false)}
       onTouchStart={handleTouchStart}
       onTouchMove={handleTouchMove}
       onTouchEnd={handleTouchEnd}
+      onTouchCancel={handleTouchEnd}
+      onClickCapture={(e) => {
+        if (suppressClickRef.current) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+      }}
     >
       <div
         className="flex transition-transform duration-700 ease-in-out will-change-transform"

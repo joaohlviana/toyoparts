@@ -1,0 +1,408 @@
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --font-size: 16px;
+  --background: #ffffff;
+  --foreground: #101828;
+  --card: #ffffff;
+  --card-foreground: #101828;
+  --popover: #ffffff;
+  --popover-foreground: #101828;
+  --primary: #EB0A1E;
+  --primary-foreground: #ffffff;
+  --secondary: #F9FAFB;
+  --secondary-foreground: #101828;
+  --muted: #F2F4F7;
+  --muted-foreground: #667085;
+  --accent: #FEF3F2;
+  --accent-foreground: #B42318;
+  --destructive: #D92D20;
+  --destructive-foreground: #ffffff;
+  --border: #EAECF0;
+  --input: #D0D5DD;
+  --input-background: #ffffff;
+  --switch-background: #D0D5DD;
+  --font-weight-normal: 400;
+  --font-weight-medium: 500;
+  --font-weight-semibold: 600;
+  --ring: #EB0A1E;
+  --success: #12B76A;
+  --success-foreground: #ffffff;
+  --warning: #F79009;
+  --warning-foreground: #ffffff;
+  --chart-1: #EB0A1E;
+  --chart-2: #2E90FA;
+  --chart-3: #15B79E;
+  --chart-4: #F79009;
+  --chart-5: #EE46BC;
+  --radius: 0.625rem;
+  --sidebar: #F9FAFB;
+  --sidebar-foreground: #101828;
+  --sidebar-primary: #EB0A1E;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #FEF3F2;
+  --sidebar-accent-foreground: #B42318;
+  --sidebar-border: #EAECF0;
+  --sidebar-ring: #EB0A1E;
+}
+
+.dark {
+  --background: #0C111D;
+  --foreground: #F9FAFB;
+  --card: #1D2939;
+  --card-foreground: #F9FAFB;
+  --popover: #1D2939;
+  --popover-foreground: #F9FAFB;
+  --primary: #F97066;
+  --primary-foreground: #ffffff;
+  --secondary: #1D2939;
+  --secondary-foreground: #F9FAFB;
+  --muted: #344054;
+  --muted-foreground: #98A2B3;
+  --accent: #55160C;
+  --accent-foreground: #FDA29B;
+  --destructive: #F04438;
+  --destructive-foreground: #ffffff;
+  --border: #344054;
+  --input: #344054;
+  --input-background: #1D2939;
+  --ring: #F97066;
+  --font-weight-medium: 500;
+  --font-weight-normal: 400;
+  --chart-1: #F97066;
+  --chart-2: #36BFFA;
+  --chart-3: #2DD4BF;
+  --chart-4: #FDB022;
+  --chart-5: #F670C7;
+  --sidebar: #1D2939;
+  --sidebar-foreground: #F9FAFB;
+  --sidebar-primary: #F97066;
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: #55160C;
+  --sidebar-accent-foreground: #FDA29B;
+  --sidebar-border: #344054;
+  --sidebar-ring: #F97066;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-input-background: var(--input-background);
+  --color-switch-background: var(--switch-background);
+  --color-ring: var(--ring);
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+
+  body {
+    @apply bg-background text-foreground;
+  }
+
+  html {
+    font-size: var(--font-size);
+  }
+
+  h1 {
+    font-size: 1.875rem;
+    font-weight: 700;
+    line-height: 1.2;
+    letter-spacing: -0.025em;
+  }
+
+  h2 {
+    font-size: 1.5rem;
+    font-weight: 700;
+    line-height: 1.25;
+    letter-spacing: -0.025em;
+  }
+
+  h3 {
+    font-size: 1.125rem;
+    font-weight: 600;
+    line-height: 1.35;
+    letter-spacing: -0.01em;
+  }
+
+  h4 {
+    font-size: 1rem;
+    font-weight: 600;
+    line-height: 1.4;
+  }
+
+  p {
+    line-height: 1.6;
+  }
+
+  label {
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1.5;
+  }
+
+  button {
+    font-size: 0.875rem;
+    font-weight: 500;
+    line-height: 1.5;
+  }
+
+  input {
+    font-size: 0.875rem;
+    font-weight: 400;
+    line-height: 1.5;
+  }
+}
+
+/* ─── Slick Carousel Customizations ─────────────────────────────────────────── */
+
+/* Apple-style pill indicators */
+.hero-slider .slick-dots {
+  z-index: 20;
+  display: flex !important;
+  justify-content: center;
+  gap: 6px;
+  padding: 0;
+  margin: 0;
+  list-style: none;
+}
+.hero-slider .slick-dots li {
+  width: auto;
+  height: auto;
+  margin: 0;
+  padding: 0;
+}
+.hero-slider .slick-dots li button {
+  width: 24px;
+  height: 3px;
+  padding: 0;
+  border: 0;
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.25);
+  transition: all 0.3s ease;
+}
+.hero-slider .slick-dots li button:before {
+  display: none !important;
+}
+.hero-slider .slick-dots li.slick-active button {
+  width: 32px;
+  background: rgba(255, 255, 255, 0.9);
+}
+
+/* Prevent slick track overflow */
+.slick-slider {
+  position: relative;
+}
+.slick-list {
+  overflow: hidden;
+}
+.slick-track {
+  display: flex;
+}
+
+/* Product slider arrows */
+.product-slider .slick-arrow {
+  z-index: 10;
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  background: var(--card);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+  transition: all 0.2s ease;
+  display: flex !important;
+  align-items: center;
+  justify-content: center;
+}
+.product-slider .slick-arrow:hover {
+  box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+  background: var(--card);
+}
+.product-slider .slick-arrow::before {
+  font-size: 14px;
+  color: var(--foreground);
+  opacity: 0.6;
+}
+.product-slider .slick-arrow:hover::before {
+  opacity: 1;
+}
+.product-slider .slick-prev {
+  left: -8px;
+}
+.product-slider .slick-next {
+  right: -8px;
+}
+.product-slider .slick-arrow.slick-disabled {
+  opacity: 0;
+  pointer-events: none;
+}
+.product-slider .slick-slide > div {
+  display: flex;
+}
+
+/* Custom Scrollbar Utility */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: transparent;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.1);
+  border-radius: 10px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.2);
+}
+
+/* No scrollbar utility */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Line clamp */
+.line-clamp-2 {
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.line-clamp-1 {
+  display: -webkit-box;
+  -webkit-line-clamp: 1;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* ─── AI Search Bar Magic Animations ────────────────────────────────────────── */
+
+/* CSS Houdini: register custom property for gradient angle interpolation */
+@property --ai-gradient-angle {
+  syntax: '<angle>';
+  initial-value: 0deg;
+  inherits: false;
+}
+
+@property --ai-glow-opacity {
+  syntax: '<number>';
+  initial-value: 0;
+  inherits: false;
+}
+
+/* Continuously rotating border gradient */
+@keyframes ai-border-rotate {
+  to {
+    --ai-gradient-angle: 360deg;
+  }
+}
+
+/* Initial activation glow burst */
+@keyframes ai-glow-burst {
+  0% {
+    box-shadow:
+      0 0 0 0 rgba(99, 102, 241, 0.5),
+      0 0 0 0 rgba(168, 85, 247, 0.4),
+      0 0 0 0 rgba(236, 72, 153, 0.3);
+  }
+  30% {
+    box-shadow:
+      0 0 24px 4px rgba(99, 102, 241, 0.35),
+      0 0 48px 8px rgba(168, 85, 247, 0.2),
+      0 0 72px 12px rgba(236, 72, 153, 0.1);
+  }
+  100% {
+    box-shadow:
+      0 0 16px -2px rgba(99, 102, 241, 0.18),
+      0 0 8px -1px rgba(168, 85, 247, 0.1),
+      0 0 4px 0px rgba(236, 72, 153, 0.06);
+  }
+}
+
+/* Subtle continuous glow breathing */
+@keyframes ai-glow-breathe {
+  0%, 100% {
+    box-shadow:
+      0 0 16px -2px rgba(99, 102, 241, 0.18),
+      0 0 8px -1px rgba(168, 85, 247, 0.1),
+      0 0 4px 0px rgba(236, 72, 153, 0.06);
+  }
+  50% {
+    box-shadow:
+      0 0 22px -2px rgba(99, 102, 241, 0.25),
+      0 0 12px -1px rgba(168, 85, 247, 0.15),
+      0 0 6px 0px rgba(236, 72, 153, 0.1);
+  }
+}
+
+/* Combined class for AI-active input */
+.ai-search-active {
+  border: 2px solid transparent !important;
+  background-image:
+    linear-gradient(white, white),
+    conic-gradient(
+      from var(--ai-gradient-angle),
+      #6366f1,
+      #818cf8,
+      #a855f7,
+      #d946ef,
+      #ec4899,
+      #a855f7,
+      #818cf8,
+      #6366f1
+    ) !important;
+  background-origin: border-box !important;
+  background-clip: padding-box, border-box !important;
+  animation:
+    ai-border-rotate 3s linear infinite,
+    ai-glow-burst 0.8s ease-out forwards,
+    ai-glow-breathe 3s ease-in-out 0.8s infinite;
+}
+
+/* Deactivated state — smooth exit */
+.ai-search-inactive {
+  border: 2px solid transparent !important;
+  transition: box-shadow 0.5s ease-out, background-color 0.5s ease-out;
+}

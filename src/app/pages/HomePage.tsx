@@ -270,11 +270,11 @@ function SectionHead({ overline, title, subtitle, action, actionHref }: {
 function HeroCarousel({ children, autoplaySpeed = 7000 }: { children: React.ReactNode[]; autoplaySpeed?: number }) {
   const slides = React.Children.toArray(children);
   const count = slides.length;
-  const [current, setCurrent] = useState(0);
   const [paused, setPaused] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const trackRef = useRef<HTMLDivElement>(null);
   const currentRef = useRef(0);
+  const scrollSyncFrameRef = useRef<number | null>(null);
   const touchStartXRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
   const touchDeltaXRef = useRef(0);
@@ -293,7 +293,6 @@ function HeroCarousel({ children, autoplaySpeed = 7000 }: { children: React.Reac
       behavior,
     });
     currentRef.current = normalizedIndex;
-    setCurrent(normalizedIndex);
   }, [count]);
 
   const advance = useCallback(() => {
@@ -305,27 +304,35 @@ function HeroCarousel({ children, autoplaySpeed = 7000 }: { children: React.Reac
   }, [scrollToSlide]);
 
   useEffect(() => {
-    currentRef.current = current;
-  }, [current]);
-
-  useEffect(() => {
     if (paused || count <= 1) return;
-    timerRef.current = setTimeout(advance, autoplaySpeed);
-    return () => { if (timerRef.current) clearTimeout(timerRef.current); };
-  }, [current, paused, advance, autoplaySpeed, count]);
+    const scheduleNext = () => {
+      timerRef.current = setTimeout(() => {
+        advance();
+        scheduleNext();
+      }, autoplaySpeed);
+    };
+
+    scheduleNext();
+
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, [paused, advance, autoplaySpeed, count]);
 
   useEffect(() => {
     const track = trackRef.current;
     if (!track) return;
 
     const syncCurrentFromScroll = () => {
-      const slideWidth = track.clientWidth || 1;
-      const nextIndex = Math.round(track.scrollLeft / slideWidth);
-      const clampedIndex = Math.max(0, Math.min(count - 1, nextIndex));
-      if (clampedIndex !== currentRef.current) {
+      if (scrollSyncFrameRef.current !== null) return;
+
+      scrollSyncFrameRef.current = window.requestAnimationFrame(() => {
+        const slideWidth = track.clientWidth || 1;
+        const nextIndex = Math.round(track.scrollLeft / slideWidth);
+        const clampedIndex = Math.max(0, Math.min(count - 1, nextIndex));
         currentRef.current = clampedIndex;
-        setCurrent(clampedIndex);
-      }
+        scrollSyncFrameRef.current = null;
+      });
     };
 
     const onResize = () => {
@@ -339,6 +346,10 @@ function HeroCarousel({ children, autoplaySpeed = 7000 }: { children: React.Reac
     window.setTimeout(() => scrollToSlide(currentRef.current, 'auto'), 0);
 
     return () => {
+      if (scrollSyncFrameRef.current !== null) {
+        window.cancelAnimationFrame(scrollSyncFrameRef.current);
+        scrollSyncFrameRef.current = null;
+      }
       resizeObserver.disconnect();
       track.removeEventListener('scroll', syncCurrentFromScroll);
       window.removeEventListener('resize', onResize);
@@ -460,6 +471,7 @@ export function HomePage() {
 
   // Dynamic banners from admin
   const [heroBanners, setHeroBanners] = useState<any[]>([]);
+  const [heroBannersLoading, setHeroBannersLoading] = useState(true);
 
   useEffect(() => {
     (async () => {
@@ -504,25 +516,29 @@ export function HomePage() {
     // Fetch hero banners (with retry for cold-start / transient 502s)
     (async () => {
       const maxRetries = 2;
-      for (let attempt = 0; attempt <= maxRetries; attempt++) {
-        try {
-          if (attempt > 0) await new Promise(r => setTimeout(r, 800 * attempt));
-          const res = await fetch(`${API}/banners`, { headers: HEADERS });
-          if (res.ok) {
-            const data = await res.json();
-            const active = (data.banners || [])
-              .filter((b: any) => b.active)
-              .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
-            setHeroBanners(active);
-            break; // success
+      try {
+        for (let attempt = 0; attempt <= maxRetries; attempt++) {
+          try {
+            if (attempt > 0) await new Promise(r => setTimeout(r, 800 * attempt));
+            const res = await fetch(`${API}/banners`, { headers: HEADERS });
+            if (res.ok) {
+              const data = await res.json();
+              const active = (data.banners || [])
+                .filter((b: any) => b.active)
+                .sort((a: any, b: any) => (a.order ?? 0) - (b.order ?? 0));
+              setHeroBanners(active);
+              break; // success
+            }
+            // Non-ok but not worth retrying (e.g. 400/404)
+            if (res.status < 500) break;
+            console.warn(`[Banners] HTTP ${res.status}, attempt ${attempt + 1}/${maxRetries + 1}`);
+          } catch (e) {
+            console.error(`[Banners] fetch error (attempt ${attempt + 1}):`, e);
+            if (attempt === maxRetries) break;
           }
-          // Non-ok but not worth retrying (e.g. 400/404)
-          if (res.status < 500) break;
-          console.warn(`[Banners] HTTP ${res.status}, attempt ${attempt + 1}/${maxRetries + 1}`);
-        } catch (e) {
-          console.error(`[Banners] fetch error (attempt ${attempt + 1}):`, e);
-          if (attempt === maxRetries) break;
         }
+      } finally {
+        setHeroBannersLoading(false);
       }
     })();
   }, []);
@@ -570,9 +586,12 @@ export function HomePage() {
         {/*  1. HERO — Apple-style cinematic                                 */}
         {/* ────────────────────────────────────────────────────────────────── */}
         <section className="w-full overflow-hidden">
-          <HeroCarousel autoplaySpeed={7000}>
-            {[
-              ...(heroBanners.length > 0 ? heroBanners : []).map((b: any) => {
+          {heroBannersLoading ? (
+            <div className="relative h-[max(340px,52svh)] sm:h-[400px] md:h-[440px] lg:h-[480px] bg-[#0a0a0a]" />
+          ) : (
+            <HeroCarousel autoplaySpeed={7000}>
+              {[
+                ...heroBanners.map((b: any) => {
                 if (b.type === 'promotional') {
                   return (
                     <div key={b.id} className="outline-none">
@@ -659,7 +678,8 @@ export function HomePage() {
                 </div>,
               ] : [])
             ]}
-          </HeroCarousel>
+            </HeroCarousel>
+          )}
         </section>
 
 

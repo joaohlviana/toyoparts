@@ -184,7 +184,6 @@ export function AdminShell({ children, activeSection, onNavigate, onBackToStore 
             >
               <Menu className="w-5 h-5" />
             </button>
-            <span className="text-sm font-semibold text-foreground">Toyoparts Admin</span>
           </div>
         </header>
 

@@ -614,22 +614,6 @@ export function MegaMenu({
   return (
     <>
       <header className="w-full z-50">
-        {/* ─── Announcement Bar ─── */}
-        <div className="bg-[#1d1d1f] text-center">
-          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-[28px] flex items-center justify-center gap-1.5">
-            <Truck className="w-3 h-3 text-white/50" strokeWidth={1.5} />
-            <span className="text-[11px] text-[#f5f5f7]/70 font-normal tracking-[0.01em]">
-              Frete gr&aacute;tis em pedidos acima de R$ 299
-            </span>
-            <button
-              onClick={() => onNavigate('search')}
-              className="text-[11px] text-[#2997ff] font-normal ml-0.5 cursor-pointer hover:underline bg-transparent border-none outline-none"
-            >
-              Saiba mais
-            </button>
-          </div>
-        </div>
-
         {/* ─── Main Navigation Bar ─── */}
         <nav
           className={`transition-all duration-300 ${
@@ -751,13 +735,6 @@ export function MegaMenu({
 
             {/* Desktop Actions */}
             <div className="flex items-center gap-0.5 flex-shrink-0">
-              <button
-                onClick={() => onNavigate('admin')}
-                className="w-9 h-9 flex items-center justify-center text-[#1d1d1f]/30 hover:text-[#1d1d1f]/60 rounded-full hover:bg-black/[0.03] transition-all"
-                aria-label="Admin"
-              >
-                <Settings className="w-[14px] h-[14px]" strokeWidth={1.5} />
-              </button>
               <Link
                 to="/acesso"
                 className="w-9 h-9 flex items-center justify-center text-[#1d1d1f]/70 hover:text-[#1d1d1f] rounded-full hover:bg-black/[0.03] transition-all"
@@ -1312,17 +1289,6 @@ export function MegaMenu({
                     <span className="text-[11px] text-[#25D366] font-medium">Fale por WhatsApp</span>
                   </div>
                 </a>
-              </div>
-
-              {/* Admin link */}
-              <div className="mt-6 pt-4 border-t border-black/[0.06]">
-                <button
-                  onClick={() => { onNavigate('admin'); setMobileAccountOpen(false); }}
-                  className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left hover:bg-black/[0.03] transition-colors"
-                >
-                  <Settings className="w-[18px] h-[18px] text-[#86868b]/50" strokeWidth={1.5} />
-                  <span className="text-[14px] text-[#86868b]">Admin</span>
-                </button>
               </div>
             </div>
           </div>

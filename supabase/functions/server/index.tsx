@@ -20,6 +20,7 @@ import { checkout } from './checkout.tsx';
 import { searchOps } from './search-ops.tsx';
 import { search } from './search.tsx';
 import { categories } from './categories.tsx';
+import { models } from './models.tsx';
 import { catalogo } from './catalogo.tsx'; // Import catalogo router
 import { newsletter } from './newsletter.tsx';
 import { resend } from './resend.tsx';
@@ -67,6 +68,7 @@ app.route('/make-server-1d6e33e0/checkout', checkout);
 app.route('/make-server-1d6e33e0/search-ops', searchOps);
 app.route('/make-server-1d6e33e0/search', search);
 app.route('/make-server-1d6e33e0/categories', categories);
+app.route('/make-server-1d6e33e0/models', models);
 app.route('/make-server-1d6e33e0/admin/catalogo', catalogo); // Mount catalogo router
 app.route('/make-server-1d6e33e0/newsletter', newsletter);
 app.route('/make-server-1d6e33e0/resend', resend);

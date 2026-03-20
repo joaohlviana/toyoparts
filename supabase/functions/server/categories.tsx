@@ -1,10 +1,18 @@
 import { Hono } from 'npm:hono';
+import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
 import * as kv from './kv_store.tsx';
 import { fetchMagento } from './magento.tsx';
 
 const app = new Hono();
 
 const CATEGORY_TREE_CACHE_KEY = 'meta:category_tree';
+const CATEGORY_IMAGES_BUCKET = 'make-1d6e33e0-category-images';
+const CATEGORY_IMAGES_MAP_KEY = 'meta:category_images_map';
+
+const supabase = createClient(
+  Deno.env.get("SUPABASE_URL")!,
+  Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
+);
 
 // ─── Category image source URLs ──────────────────────────────────────────────
 const CATEGORY_IMAGE_SOURCES: Record<string, string> = {
@@ -58,6 +66,58 @@ const CATEGORY_IMAGE_SOURCES: Record<string, string> = {
   'prius:pecas': 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/prius-menu-pecas.jpg?v=1770635254',
 };
 
+let categoryBucketReady = false;
+
+async function ensureCategoryBucket() {
+  if (categoryBucketReady) return;
+
+  const { data: buckets, error: listError } = await supabase.storage.listBuckets();
+  if (listError) throw new Error(listError.message);
+
+  const exists = buckets?.some(bucket => bucket.name === CATEGORY_IMAGES_BUCKET);
+  if (!exists) {
+    const { error } = await supabase.storage.createBucket(CATEGORY_IMAGES_BUCKET, {
+      public: true,
+      fileSizeLimit: 10485760,
+    });
+    if (error) throw new Error(error.message);
+  } else {
+    await supabase.storage.updateBucket(CATEGORY_IMAGES_BUCKET, { public: true }).catch(() => {});
+  }
+
+  categoryBucketReady = true;
+}
+
+async function getCategoryImageOverrides(): Promise<Record<string, string>> {
+  const overrides = await kv.get(CATEGORY_IMAGES_MAP_KEY);
+  return overrides && typeof overrides === 'object' ? overrides : {};
+}
+
+async function saveCategoryImageOverrides(map: Record<string, string>) {
+  await kv.set(CATEGORY_IMAGES_MAP_KEY, map);
+}
+
+function sanitizeKeySegment(value: string): string {
+  return value
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9:_-]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
+function buildCategoryPublicUrl(path: string): string {
+  const baseUrl = Deno.env.get("SUPABASE_URL")!;
+  return `${baseUrl}/storage/v1/object/public/${CATEGORY_IMAGES_BUCKET}/${path}`;
+}
+
+function extractStoragePath(url: string): string | null {
+  const marker = `/storage/v1/object/public/${CATEGORY_IMAGES_BUCKET}/`;
+  const idx = url.indexOf(marker);
+  if (idx === -1) return null;
+  return url.slice(idx + marker.length);
+}
+
 // GET /tree - Fetches category tree from KV or Magento
 app.get('/tree', async (c) => {
   try {
@@ -85,8 +145,106 @@ app.get('/tree', async (c) => {
 });
 
 // GET /images - Returns the static image map
-app.get('/images', (c) => {
-  return c.json({ images: CATEGORY_IMAGE_SOURCES });
+app.get('/images', async (c) => {
+  const overrides = await getCategoryImageOverrides().catch(() => ({}));
+  return c.json({ images: { ...CATEGORY_IMAGE_SOURCES, ...overrides } });
+});
+
+// POST /images/upload - Upload or replace a category image
+app.post('/images/upload', async (c) => {
+  try {
+    await ensureCategoryBucket();
+
+    const formData = await c.req.formData();
+    const key = String(formData.get('key') || '').trim();
+    const file = (formData.get('file') || formData.get('image')) as File | null;
+
+    if (!key) return c.json({ error: 'key obrigatoria' }, 400);
+    if (!file) return c.json({ error: 'arquivo obrigatorio' }, 400);
+    if (!file.type.startsWith('image/')) return c.json({ error: 'arquivo deve ser imagem' }, 400);
+
+    const safeKey = sanitizeKeySegment(key);
+    const extension = (file.name.split('.').pop() || 'jpg').toLowerCase().replace(/[^a-z0-9]/g, '') || 'jpg';
+    const storagePath = `${safeKey}.${extension}`;
+
+    const { error } = await supabase.storage
+      .from(CATEGORY_IMAGES_BUCKET)
+      .upload(storagePath, file, { upsert: true, contentType: file.type || 'image/jpeg' });
+
+    if (error) return c.json({ error: error.message }, 500);
+
+    const publicUrl = buildCategoryPublicUrl(storagePath);
+    const overrides = await getCategoryImageOverrides();
+    overrides[key] = publicUrl;
+    await saveCategoryImageOverrides(overrides);
+
+    return c.json({ ok: true, key, publicUrl, signedUrl: publicUrl });
+  } catch (error: any) {
+    console.error('[categories/images/upload]', error);
+    return c.json({ error: error.message || 'upload failed' }, 500);
+  }
+});
+
+// DELETE /images/:key - Remove a category image override
+app.delete('/images/:key', async (c) => {
+  try {
+    const key = decodeURIComponent(c.req.param('key') || '');
+    const overrides = await getCategoryImageOverrides();
+    const existingUrl = overrides[key];
+
+    if (existingUrl) {
+      const storagePath = extractStoragePath(existingUrl);
+      if (storagePath) {
+        await supabase.storage.from(CATEGORY_IMAGES_BUCKET).remove([storagePath]).catch(() => {});
+      }
+      delete overrides[key];
+      await saveCategoryImageOverrides(overrides);
+    }
+
+    return c.json({ ok: true, key });
+  } catch (error: any) {
+    console.error('[categories/images/:key delete]', error);
+    return c.json({ error: error.message || 'delete failed' }, 500);
+  }
+});
+
+// POST /images/remap - Associate an existing image to a new category key
+app.post('/images/remap', async (c) => {
+  try {
+    const body = await c.req.json();
+    const oldKey = String(body.oldKey || '').trim();
+    const newKey = String(body.newKey || '').trim();
+
+    if (!oldKey || !newKey) return c.json({ error: 'oldKey e newKey sao obrigatorios' }, 400);
+
+    const overrides = await getCategoryImageOverrides();
+    const currentUrl = overrides[oldKey] || CATEGORY_IMAGE_SOURCES[oldKey];
+    if (!currentUrl) return c.json({ error: 'imagem original nao encontrada' }, 404);
+
+    overrides[newKey] = currentUrl;
+    delete overrides[oldKey];
+    await saveCategoryImageOverrides(overrides);
+
+    return c.json({ ok: true, oldKey, newKey, signedUrl: currentUrl, publicUrl: currentUrl });
+  } catch (error: any) {
+    console.error('[categories/images/remap]', error);
+    return c.json({ error: error.message || 'remap failed' }, 500);
+  }
+});
+
+// POST /images/sync - Return current sync summary for admin UI
+app.post('/images/sync', async (c) => {
+  try {
+    const overrides = await getCategoryImageOverrides();
+    const merged = { ...CATEGORY_IMAGE_SOURCES, ...overrides };
+    return c.json({
+      ok: Object.keys(merged).length,
+      total: Object.keys(merged).length,
+      overrides: Object.keys(overrides).length,
+    });
+  } catch (error: any) {
+    return c.json({ error: error.message || 'sync failed' }, 500);
+  }
 });
 
 export const categories = app;

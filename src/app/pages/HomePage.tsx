@@ -273,20 +273,77 @@ function HeroCarousel({ children, autoplaySpeed = 7000 }: { children: React.Reac
   const [current, setCurrent] = useState(0);
   const [paused, setPaused] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const trackRef = useRef<HTMLDivElement>(null);
+  const currentRef = useRef(0);
   const touchStartXRef = useRef<number | null>(null);
   const touchStartYRef = useRef<number | null>(null);
   const touchDeltaXRef = useRef(0);
   const touchMovedRef = useRef(false);
   const suppressClickRef = useRef(false);
 
-  const advance = useCallback(() => setCurrent(c => (c + 1) % count), [count]);
-  const goBack = useCallback(() => setCurrent(c => (c - 1 + count) % count), [count]);
+  const scrollToSlide = useCallback((index: number, behavior: ScrollBehavior = 'smooth') => {
+    const track = trackRef.current;
+    if (!track || count <= 0) return;
+
+    const normalizedIndex = ((index % count) + count) % count;
+    const slideWidth = track.clientWidth;
+
+    track.scrollTo({
+      left: normalizedIndex * slideWidth,
+      behavior,
+    });
+    currentRef.current = normalizedIndex;
+    setCurrent(normalizedIndex);
+  }, [count]);
+
+  const advance = useCallback(() => {
+    scrollToSlide(currentRef.current + 1);
+  }, [scrollToSlide]);
+
+  const goBack = useCallback(() => {
+    scrollToSlide(currentRef.current - 1);
+  }, [scrollToSlide]);
+
+  useEffect(() => {
+    currentRef.current = current;
+  }, [current]);
 
   useEffect(() => {
     if (paused || count <= 1) return;
     timerRef.current = setTimeout(advance, autoplaySpeed);
     return () => { if (timerRef.current) clearTimeout(timerRef.current); };
   }, [current, paused, advance, autoplaySpeed, count]);
+
+  useEffect(() => {
+    const track = trackRef.current;
+    if (!track) return;
+
+    const syncCurrentFromScroll = () => {
+      const slideWidth = track.clientWidth || 1;
+      const nextIndex = Math.round(track.scrollLeft / slideWidth);
+      const clampedIndex = Math.max(0, Math.min(count - 1, nextIndex));
+      if (clampedIndex !== currentRef.current) {
+        currentRef.current = clampedIndex;
+        setCurrent(clampedIndex);
+      }
+    };
+
+    const onResize = () => {
+      scrollToSlide(currentRef.current, 'auto');
+    };
+
+    const resizeObserver = new ResizeObserver(onResize);
+    resizeObserver.observe(track);
+    track.addEventListener('scroll', syncCurrentFromScroll, { passive: true });
+    window.addEventListener('resize', onResize);
+    window.setTimeout(() => scrollToSlide(currentRef.current, 'auto'), 0);
+
+    return () => {
+      resizeObserver.disconnect();
+      track.removeEventListener('scroll', syncCurrentFromScroll);
+      window.removeEventListener('resize', onResize);
+    };
+  }, [count, scrollToSlide]);
 
   const handleTouchStart = (e: React.TouchEvent) => {
     const touch = e.targetTouches[0];
@@ -310,9 +367,6 @@ function HeroCarousel({ children, autoplaySpeed = 7000 }: { children: React.Reac
       touchMovedRef.current = true;
     }
 
-    if (Math.abs(deltaX) > Math.abs(deltaY) && Math.abs(deltaX) > 10) {
-      e.preventDefault();
-    }
   };
 
   const handleTouchEnd = () => {
@@ -320,8 +374,9 @@ function HeroCarousel({ children, autoplaySpeed = 7000 }: { children: React.Reac
     const isLeftSwipe = deltaX < -50;
     const isRightSwipe = deltaX > 50;
 
-    if (isLeftSwipe) goBack();
-    if (isRightSwipe) advance();
+    if (isLeftSwipe) advance();
+    else if (isRightSwipe) goBack();
+    else scrollToSlide(currentRef.current);
 
     suppressClickRef.current = touchMovedRef.current && Math.abs(deltaX) > 10;
 
@@ -356,11 +411,12 @@ function HeroCarousel({ children, autoplaySpeed = 7000 }: { children: React.Reac
       }}
     >
       <div
-        className="flex transition-transform duration-700 ease-in-out will-change-transform"
-        style={{ transform: `translateX(-${current * 100}%)` }}
+        ref={trackRef}
+        className="flex overflow-x-auto scroll-smooth snap-x snap-mandatory no-scrollbar"
+        style={{ WebkitOverflowScrolling: 'touch' }}
       >
         {slides.map((slide, i) => (
-          <div key={i} className="w-full flex-shrink-0">{slide}</div>
+          <div key={i} className="w-full flex-shrink-0 snap-start">{slide}</div>
         ))}
       </div>
       {/* Arrow navigation - hidden on mobile */}

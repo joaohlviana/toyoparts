@@ -24,6 +24,8 @@ import { PrivacyPage } from './pages/PrivacyPage';
 import { DeliveryPage } from './pages/DeliveryPage';
 import { ReturnsPage } from './pages/ReturnsPage';
 import { OrderTrackingPage } from './pages/OrderTrackingPage';
+import { ContactPage } from './pages/ContactPage';
+import { StorePage } from './pages/StorePage';
 
 // ─── Router ──────────────────────────────────────────────────────────────────
 
@@ -46,9 +48,15 @@ export const router = createBrowserRouter([
       { index: true, Component: HomePage },
       { path: 'acesso', Component: MagicLoginPage },
       { path: 'sobre', Component: SobrePage },
+      { path: 'fale-conosco', Component: ContactPage },
+      { path: 'loja-fisica', Component: StorePage },
+      { path: 'privacidade', Component: PrivacyPage },
       { path: 'politica-de-privacidade', Component: PrivacyPage },
+      { path: 'entrega', Component: DeliveryPage },
       { path: 'politica-de-entrega',     Component: DeliveryPage },
+      { path: 'troca-devolucoes',        Component: ReturnsPage },
       { path: 'trocas-e-devolucoes',     Component: ReturnsPage },
+      { path: 'rastreamento-correios',   Component: OrderTrackingPage },
       { path: 'rastreamento',            Component: OrderTrackingPage },
       { path: 'auth/callback', Component: AuthCallbackPage },
       { path: 'minha-conta/pedidos', Component: OrderHistoryPage },

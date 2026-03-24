@@ -236,7 +236,7 @@ export function DeliveryPage() {
       <SEOHead
         title="Política de Entrega — Toyoparts"
         description="Entenda como funciona o processo de entrega, prazos, cálculo de frete e instruções para recebimento de peças Toyota."
-        canonical="https://www.toyoparts.com.br/politica-de-entrega"
+        canonical="https://www.toyoparts.com.br/entrega"
       />
       <PolicyShell
         hero={{

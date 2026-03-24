@@ -228,7 +228,7 @@ export function ReturnsPage() {
       <SEOHead
         title="Trocas e Devoluções — Toyoparts"
         description="Política de trocas e devoluções da Toyoparts. Direito de arrependimento, garantia de fábrica, condições e como solicitar."
-        canonical="https://www.toyoparts.com.br/trocas-e-devolucoes"
+        canonical="https://www.toyoparts.com.br/troca-devolucoes"
       />
       <PolicyShell
         hero={{

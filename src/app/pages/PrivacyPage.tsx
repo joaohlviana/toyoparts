@@ -222,7 +222,7 @@ export function PrivacyPage() {
       <SEOHead
         title="Política de Privacidade — Toyoparts"
         description="Saiba como a Toyoparts coleta, usa e protege seus dados pessoais em conformidade com a LGPD."
-        canonical="https://www.toyoparts.com.br/politica-de-privacidade"
+        canonical="https://www.toyoparts.com.br/privacidade"
       />
       <PolicyShell
         hero={{

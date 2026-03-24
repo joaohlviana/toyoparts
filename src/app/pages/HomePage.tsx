@@ -98,6 +98,32 @@ const DEPARTMENTS = [
 
 /* ── Promotional Hero Slide — Horizontal 2-col Canva-style banner ─────── */
 
+const FEATURED_CATEGORY_ORDER = [
+  'acessorios-externos',
+  'acessorios-internos',
+  'pecas',
+  'iluminacao',
+  'acessorios-pick-up-e-suv',
+  'outlet',
+  'ofertas',
+  'itens-promocionais',
+];
+
+function getFeaturedCategories(categories: CategoryNode[], images: Record<string, string>): CategoryNode[] {
+  return categories
+    .filter((cat) => !!findCategoryImage(cat.name, images))
+    .sort((a, b) => {
+      const aIndex = FEATURED_CATEGORY_ORDER.indexOf(catSlugify(a.name));
+      const bIndex = FEATURED_CATEGORY_ORDER.indexOf(catSlugify(b.name));
+      const aScore = aIndex === -1 ? FEATURED_CATEGORY_ORDER.length + 1 : aIndex;
+      const bScore = bIndex === -1 ? FEATURED_CATEGORY_ORDER.length + 1 : bIndex;
+
+      if (aScore !== bScore) return aScore - bScore;
+      return b.product_count - a.product_count;
+    })
+    .slice(0, 6);
+}
+
 function PromotionalHeroSlide({ 
   productName, 
   modelYear, 
@@ -704,7 +730,7 @@ export function HomePage() {
         {/* ────────────────────────────────────────────────────────────────── */}
         <section className="py-12 sm:py-16 lg:py-20">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-            <SectionHead title="Departamentos" subtitle="Encontre a peça certa para seu veículo navegando por categoria." action="Ver todos" actionHref="/pecas" />
+            <SectionHead title="Departamentos" subtitle="Os departamentos mais visitados, com acesso rápido e foto cadastrada." action="Ver todos" actionHref="/pecas" />
 
           {/* Loading skeleton */}
           {catsLoading && (
@@ -729,6 +755,10 @@ export function HomePage() {
 
           {/* Real categories from API */}
           {!catsLoading && realCategories.length > 0 && (() => {
+            const featuredCategories = getFeaturedCategories(realCategories, categoryImages);
+
+            if (featuredCategories.length === 0) return null;
+
             const renderCard = (cat: CategoryNode, isMobile: boolean) => {
               const imgUrl = findCategoryImage(cat.name, categoryImages);
               const childCount = (cat.children_data || cat.children || []).filter(c => c.is_active).length;
@@ -829,14 +859,14 @@ export function HomePage() {
                 {/* Mobile: horizontal scroll like an app */}
                 <div className="sm:hidden -mr-4">
                   <div className="flex gap-3 overflow-x-auto no-scrollbar snap-x snap-mandatory pr-4 pb-1">
-                    {realCategories.map(cat => renderCard(cat, true))}
+                    {featuredCategories.map(cat => renderCard(cat, true))}
                     {/* Spacer for last-item peek */}
                     <div className="flex-shrink-0 w-1" aria-hidden />
                   </div>
                 </div>
                 {/* Desktop: grid */}
                 <div className="hidden sm:grid grid-cols-3 lg:grid-cols-4 gap-4">
-                  {realCategories.map(cat => renderCard(cat, false))}
+                  {featuredCategories.map(cat => renderCard(cat, false))}
                 </div>
               </>
             );

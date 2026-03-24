@@ -30,9 +30,9 @@ export function Footer() {
           <div>
             <h3 className="font-semibold mb-3 text-xs uppercase tracking-[0.1em] text-white/80">Institucional</h3>
             <ul className="space-y-2 text-[13px] text-white/60 font-normal">
-              <li><Link to="/" className="hover:text-white transition-colors">Sobre</Link></li>
-              <li><Link to="/" className="hover:text-white transition-colors">Política de Privacidade</Link></li>
-              <li><a href="https://maps.google.com/?q=Toyopar+Londrina" target="_blank" rel="noopener noreferrer" className="hover:text-white transition-colors">Loja Física (Toyopar)</a></li>
+              <li><Link to="/sobre" className="hover:text-white transition-colors">Sobre</Link></li>
+              <li><Link to="/privacidade" className="hover:text-white transition-colors">Política de Privacidade</Link></li>
+              <li><Link to="/loja-fisica" className="hover:text-white transition-colors">Loja Física (Toyopar)</Link></li>
             </ul>
           </div>
 
@@ -40,14 +40,14 @@ export function Footer() {
           <div>
             <h3 className="font-semibold mb-3 text-xs uppercase tracking-[0.1em] text-white/80">Minha Conta</h3>
             <ul className="space-y-2 text-[13px] text-white/60 font-normal mb-5">
-              <li><Link to="/" className="hover:text-white transition-colors">Entrar</Link></li>
+              <li><Link to="/acesso" className="hover:text-white transition-colors">Entrar</Link></li>
             </ul>
 
             <h3 className="font-semibold mb-3 text-xs uppercase tracking-[0.1em] text-white/80">Informações de Envio</h3>
             <ul className="space-y-2 text-[13px] text-white/60 font-normal">
-              <li><Link to="/" className="hover:text-white transition-colors">Política de Entrega</Link></li>
-              <li><Link to="/" className="hover:text-white transition-colors">Trocas e Devoluções</Link></li>
-              <li><Link to="/" className="hover:text-white transition-colors">Rastreamento de Pedidos</Link></li>
+              <li><Link to="/entrega" className="hover:text-white transition-colors">Política de Entrega</Link></li>
+              <li><Link to="/troca-devolucoes" className="hover:text-white transition-colors">Trocas e Devoluções</Link></li>
+              <li><Link to="/rastreamento-correios" className="hover:text-white transition-colors">Rastreamento de Pedidos</Link></li>
             </ul>
           </div>
 
@@ -80,7 +80,7 @@ export function Footer() {
               <p className="font-semibold text-white/80 text-xs">Central de atendimento</p>
               <div className="flex items-center gap-2">
                 <Phone className="w-3.5 h-3.5 text-white/40 flex-shrink-0" />
-                <span className="break-all sm:break-normal">(43) 3294-1144</span>
+                <span className="break-all sm:break-normal">(43) 3294-1144 | Ramal: 1126 | 1196</span>
               </div>
               <div className="flex items-center gap-2">
                 <Mail className="w-3.5 h-3.5 text-white/40 flex-shrink-0" />
@@ -89,7 +89,7 @@ export function Footer() {
                 </a>
               </div>
               <p className="text-[10px] text-white/40 mt-1.5 font-normal">
-                Seg a Sex: 8h às 18h | Sáb: 8h às 12h.
+                Atendimento: Seg a Sex: 8h às 18h | Sáb: 8h às 12h.
               </p>
             </div>
           </div>

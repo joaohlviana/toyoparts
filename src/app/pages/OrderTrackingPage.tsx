@@ -154,7 +154,7 @@ export function OrderTrackingPage() {
       <SEOHead
         title="Rastrear Pedido — Toyoparts"
         description="Acompanhe o status do seu pedido Toyoparts em tempo real. Insira o número do pedido para ver onde está sua peça."
-        canonical="https://www.toyoparts.com.br/rastreamento"
+        canonical="https://www.toyoparts.com.br/rastreamento-correios"
       />
 
       <div className="min-h-screen bg-background">

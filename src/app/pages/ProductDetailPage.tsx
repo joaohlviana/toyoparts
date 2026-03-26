@@ -22,6 +22,7 @@ import { trackProductView, trackAddToCartSI } from '../lib/search-intelligence-a
 import { RelatedProductsByView } from '../components/RelatedProductsByView';
 import { NewsletterBanner } from '../components/newsletter/NewsletterBanner';
 import { cacheProductData, getCachedProduct, cacheSnapshot } from '../lib/product-cache';
+import { Skeleton } from '../components/ui/skeleton';
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0`;
 const HEADERS: HeadersInit = {
@@ -86,6 +87,53 @@ export function ProductDetailPage() {
   const [cep, setCep] = useState('');
 
   const { addItem, setOpen } = useCart();
+
+  const ProductDetailSkeleton = () => (
+    <div className="min-h-screen bg-secondary animate-in fade-in duration-300">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-6 space-y-4">
+        <Skeleton className="h-4 w-56" />
+        <div className="bg-card rounded-2xl shadow-sm border border-border overflow-hidden">
+          <div className="grid grid-cols-1 lg:grid-cols-12">
+            <div className="lg:col-span-5 border-b lg:border-b-0 lg:border-r border-border/60 p-4 sm:p-5 bg-secondary/5">
+              <Skeleton className="aspect-[4/3] sm:aspect-square w-full rounded-2xl" />
+              <div className="flex gap-3 mt-3">
+                {[...Array(4)].map((_, index) => (
+                  <Skeleton key={index} className="w-20 h-20 rounded-xl" />
+                ))}
+              </div>
+            </div>
+
+            <div className="lg:col-span-4 p-4 lg:p-6 space-y-4 border-b lg:border-b-0 lg:border-r border-border/60">
+              <Skeleton className="h-8 w-[85%]" />
+              <Skeleton className="h-5 w-[65%]" />
+              <div className="flex gap-2">
+                <Skeleton className="h-7 w-28 rounded-md" />
+                <Skeleton className="h-7 w-24 rounded-md" />
+              </div>
+              <Skeleton className="h-24 w-full rounded-2xl" />
+              <div className="grid grid-cols-3 gap-3">
+                {[...Array(3)].map((_, index) => (
+                  <Skeleton key={index} className="h-20 rounded-xl" />
+                ))}
+              </div>
+            </div>
+
+            <div className="lg:col-span-3 p-4 lg:p-6 space-y-4">
+              <Skeleton className="h-10 w-32" />
+              <Skeleton className="h-7 w-40" />
+              <Skeleton className="h-28 w-full rounded-2xl" />
+              <Skeleton className="h-11 w-full rounded-xl bg-primary/10" />
+              <Skeleton className="h-11 w-full rounded-xl" />
+            </div>
+          </div>
+        </div>
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+          <Skeleton className="h-40 rounded-2xl lg:col-span-2" />
+          <Skeleton className="h-40 rounded-2xl" />
+        </div>
+      </div>
+    </div>
+  );
 
   useEffect(() => {
     if (!sku) return;
@@ -218,16 +266,7 @@ export function ProductDetailPage() {
 
   // ─── Loading ────────────────────────────────────────────────────────────
   if (loading) {
-    return (
-      <div className="min-h-screen bg-background flex flex-col">
-        <div className="flex-1 flex items-center justify-center">
-          <div className="flex flex-col items-center gap-3">
-            <Loader2 className="w-8 h-8 animate-spin text-primary" />
-            <p className="text-sm text-muted-foreground">Carregando produto...</p>
-          </div>
-        </div>
-      </div>
-    );
+    return <ProductDetailSkeleton />;
   }
 
   // ─── Error ──────────────────────────────────────────────────────────────

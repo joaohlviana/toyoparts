@@ -10,16 +10,34 @@ import { VehicleMenuBar } from './VehicleMenuBar';
 import { Footer } from './layout/Footer';
 import { CompatibilityBanner } from './CompatibilityBanner';
 import { BottomNavigation } from './layout/BottomNavigation';
+import { Skeleton } from './ui/skeleton';
 import { useCart } from '../lib/cart/cart-store';
 import { CartDrawer } from './cart/CartDrawer';
 
 // ─── Page loading fallback ───────────────────────────────────────────────────
 function PageLoader() {
   return (
-    <div className="flex items-center justify-center min-h-[60vh]">
-      <div className="flex flex-col items-center gap-3">
-        <div className="w-8 h-8 border-3 border-primary/20 border-t-primary rounded-full animate-spin" />
-        <p className="text-sm text-muted-foreground">Carregando...</p>
+    <div className="min-h-[60vh] animate-in fade-in duration-300">
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 sm:py-10 space-y-8">
+        <div className="space-y-3">
+          <Skeleton className="h-4 w-28 rounded-full bg-primary/10" />
+          <Skeleton className="h-10 w-full max-w-2xl rounded-2xl" />
+          <Skeleton className="h-5 w-full max-w-xl" />
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 sm:gap-5">
+          {[...Array(8)].map((_, index) => (
+            <div key={index} className="rounded-2xl border border-border/50 bg-card/60 overflow-hidden">
+              <Skeleton className="aspect-square w-full rounded-none" />
+              <div className="p-4 space-y-3">
+                <Skeleton className="h-3 w-20" />
+                <Skeleton className="h-4 w-[85%]" />
+                <Skeleton className="h-4 w-[60%]" />
+                <Skeleton className="h-9 w-full rounded-xl bg-primary/10" />
+              </div>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

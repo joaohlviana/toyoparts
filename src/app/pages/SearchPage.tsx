@@ -1228,6 +1228,12 @@ export function SearchPage({
             </Select>
           </div>
 
+          {isSearching && !isFirstLoad && (
+            <div className="mb-4 rounded-full bg-muted/60 overflow-hidden">
+              <div className="h-1.5 w-full bg-[linear-gradient(90deg,transparent,rgba(235,10,30,0.35),transparent)] bg-[length:200%_100%] animate-[shimmer_1.6s_linear_infinite]" />
+            </div>
+          )}
+
           {/* ── Active Filters Chips ── */}
           {activeFacetCount > 0 && (
             <div className="flex flex-wrap items-center gap-1.5 mb-5">
@@ -1275,14 +1281,14 @@ export function SearchPage({
 
           {/* ── Loading State ── */}
           {isFirstLoad && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 animate-in fade-in duration-300">
               {[...Array(8)].map((_, i) => <ProductCardSkeleton key={i} />)}
             </div>
           )}
 
           {/* ── Empty State ── */}
           {!isFirstLoad && hits.length === 0 && (
-            <div className="flex flex-col items-center justify-center py-20">
+            <div className="flex flex-col items-center justify-center py-20 animate-in fade-in duration-300">
               <Package className="w-10 h-10 text-muted-foreground/20 mb-4" />
               <p className="text-sm font-medium text-foreground mb-1">Nenhum resultado</p>
               <p className="text-xs text-muted-foreground mb-4">Tente ajustar os filtros ou termos de busca</p>
@@ -1305,7 +1311,7 @@ export function SearchPage({
 
           {/* ── Product Grid ── */}
           {!isFirstLoad && hits.length > 0 && (
-            <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4 lg:gap-5">
+            <div className={`grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4 lg:gap-5 transition-opacity duration-200 ${isSearching ? 'opacity-65' : 'opacity-100'} animate-in fade-in duration-300`}>
               {hits.map((hit, idx) => (
                 <ProductCard key={hit.id} hit={hit} onClick={() => goToProduct(hit, idx)} />
               ))}
@@ -1319,6 +1325,10 @@ export function SearchPage({
 
       {/* ── Custom scrollbar styles ── */}
       <style>{`
+        @keyframes shimmer {
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
         .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
         .custom-scrollbar::-webkit-scrollbar-thumb { background: #d1d5db; border-radius: 2px; }

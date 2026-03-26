@@ -5,6 +5,7 @@ import { projectId, publicAnonKey } from '../../../utils/supabase/info';
 import { useNavigate, Link } from 'react-router';
 import { ToyopartsLogo } from './ToyopartsLogo';
 import { useCart } from '../lib/cart/cart-store';
+import { Skeleton } from './ui/skeleton';
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0`;
 const HEADERS: HeadersInit = {
@@ -465,11 +466,18 @@ export function MegaMenu({
 
         {/* Loading */}
         {suggestionsLoading && searchValue.trim().length >= 2 && suggestions.length === 0 && (
-          <div className={`${isMobile ? 'py-10' : 'py-6'} text-center`}>
-            <div className={`${isMobile ? 'w-6 h-6' : 'w-5 h-5'} border-2 border-black/10 border-t-primary rounded-full animate-spin mx-auto`} />
-            {isMobile && <p className="text-[14px] text-[#86868b] mt-3">Buscando{aiMode ? ' com IA' : ''}...</p>}
-          </div>
-        )}
+            <div className={`${isMobile ? 'py-6 px-4' : 'py-4 px-3'} space-y-3 animate-in fade-in duration-200`}>
+              {[...Array(isMobile ? 4 : 3)].map((_, index) => (
+                <div key={index} className="flex items-center gap-3">
+                  <Skeleton className={`${isMobile ? 'w-12 h-12 rounded-xl' : 'w-11 h-11 rounded-lg'} bg-[#f5f5f7]`} />
+                  <div className="flex-1 space-y-2">
+                    <Skeleton className="h-3 w-[70%] bg-[#f0f0f2]" />
+                    <Skeleton className="h-3 w-[45%] bg-[#f5f5f7]" />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
 
         {/* Category Suggestions */}
         {searchValue.trim().length >= 2 && categorySuggestions.length > 0 && (
@@ -1099,11 +1107,19 @@ export function MegaMenu({
                       {/* Current Level Categories */}
                       <div className="bg-white rounded-2xl shadow-sm border border-black/[0.04] overflow-hidden">
                         {isLoading ? (
-                          <div className="flex flex-col items-center justify-center py-20 gap-4">
-                            <div className="w-10 h-10 border-3 border-black/5 border-t-primary rounded-full animate-spin" />
-                            <span className="text-[14px] text-[#86868b] font-medium">Carregando catálogo...</span>
-                          </div>
-                        ) : (() => {
+                            <div className="p-4 space-y-3 animate-in fade-in duration-200">
+                              {[...Array(6)].map((_, index) => (
+                                <div key={index} className="flex items-center gap-3 rounded-2xl border border-black/[0.04] bg-[#fbfbfd] p-3">
+                                  <Skeleton className="w-12 h-12 rounded-xl bg-[#f0f0f2]" />
+                                  <div className="flex-1 space-y-2">
+                                    <Skeleton className="h-3.5 w-[55%] bg-[#ececf0]" />
+                                    <Skeleton className="h-3 w-[35%] bg-[#f3f3f6]" />
+                                  </div>
+                                  <Skeleton className="w-5 h-5 rounded-full bg-[#f0f0f2]" />
+                                </div>
+                              ))}
+                            </div>
+                          ) : (() => {
                           const nodes = mobileDeptStack.length === 0 
                             ? topCategories 
                             : (mobileDeptStack[mobileDeptStack.length - 1].children_data || mobileDeptStack[mobileDeptStack.length - 1].children || []).filter(c => c.is_active);

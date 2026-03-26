@@ -17,6 +17,7 @@ import { TrendingUp, Sparkles, Users, Eye } from 'lucide-react';
 import { ProductCard, ProductCardHit } from './ProductCard';
 import { ScrollSlider } from './ScrollSlider';
 import { siActivation } from '../lib/search-intelligence-api';
+import { Skeleton } from './ui/skeleton';
 
 interface RelatedProductsByViewProps {
   /** Current product SKU (excluded from recommendations) */
@@ -64,8 +65,30 @@ export function RelatedProductsByView({ sku, limit = 8, className = '' }: Relate
   // Don't render anything if no products and not loading
   if (!loading && products.length === 0) return null;
 
-  // Don't show loading skeleton (supplementary content — only show when ready)
-  if (loading) return null;
+  if (loading) {
+    return (
+      <section className={`py-8 sm:py-12 animate-in fade-in duration-300 ${className}`}>
+        <div className="flex items-center justify-between mb-6">
+          <div className="space-y-2">
+            <Skeleton className="h-6 w-48" />
+            <Skeleton className="h-4 w-40" />
+          </div>
+        </div>
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4 lg:gap-5">
+          {[...Array(Math.min(limit, 4))].map((_, index) => (
+            <div key={index} className="rounded-xl border border-border/50 overflow-hidden bg-card/70">
+              <Skeleton className="aspect-square w-full rounded-none" />
+              <div className="p-4 space-y-3">
+                <Skeleton className="h-3 w-20" />
+                <Skeleton className="h-4 w-[80%]" />
+                <Skeleton className="h-4 w-[55%]" />
+              </div>
+            </div>
+          ))}
+        </div>
+      </section>
+    );
+  }
 
   const sourceInfo = SOURCE_LABELS[source] || SOURCE_LABELS.mixed;
 

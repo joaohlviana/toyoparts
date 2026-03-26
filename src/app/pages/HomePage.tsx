@@ -31,6 +31,7 @@ import {
 } from '../seo-config';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
 import { useIsMobile } from '../hooks/useMediaQuery';
+import { Skeleton } from '../components/ui/skeleton';
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0`;
 const HEADERS: HeadersInit = { Authorization: `Bearer ${publicAnonKey}`, apikey: publicAnonKey, 'Content-Type': 'application/json' };
@@ -580,6 +581,33 @@ export function HomePage() {
     }
   };
 
+  const heroSkeleton = (
+    <div className="relative h-[max(340px,52svh)] sm:h-[400px] md:h-[440px] lg:h-[480px] overflow-hidden bg-[#0a0a0a]">
+      <div className="absolute inset-0 bg-[radial-gradient(ellipse_80%_60%_at_50%_0%,rgba(235,10,30,0.18),transparent)]" />
+      <div className="absolute inset-0 bg-[linear-gradient(110deg,rgba(255,255,255,0.03),rgba(255,255,255,0.1),rgba(255,255,255,0.03))] bg-[length:200%_100%] animate-[shimmer_2.8s_infinite]" />
+      <div className="relative z-10 h-full max-w-7xl mx-auto px-5 sm:px-10 md:px-14 lg:px-20 py-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-6">
+        <div className="space-y-4 w-full max-w-xl">
+          <Skeleton className="h-4 w-32 bg-white/15" />
+          <Skeleton className="h-12 sm:h-16 w-full max-w-lg bg-white/15" />
+          <Skeleton className="h-8 sm:h-10 w-56 bg-white/10" />
+          <div className="flex gap-2">
+            <Skeleton className="h-8 w-28 rounded-full bg-white/10" />
+            <Skeleton className="h-8 w-40 rounded-full bg-white/10 hidden sm:block" />
+          </div>
+        </div>
+        <div className="flex items-end gap-4 sm:gap-6 w-full sm:w-auto">
+          <div className="space-y-3 w-40 sm:w-56">
+            <Skeleton className="h-4 w-20 bg-white/10" />
+            <Skeleton className="h-6 w-28 bg-white/15" />
+            <Skeleton className="h-20 w-36 bg-white/15" />
+            <Skeleton className="h-4 w-24 bg-white/10" />
+          </div>
+          <Skeleton className="w-[110px] h-[110px] sm:w-[180px] sm:h-[180px] lg:w-[240px] lg:h-[240px] rounded-[28px] bg-white/10" />
+        </div>
+      </div>
+    </div>
+  );
+
   return (
     <>
       <SEOHead
@@ -613,7 +641,7 @@ export function HomePage() {
         {/* ────────────────────────────────────────────────────────────────── */}
         <section className="w-full overflow-hidden">
           {heroBannersLoading ? (
-            <div className="relative h-[max(340px,52svh)] sm:h-[400px] md:h-[440px] lg:h-[480px] bg-[#0a0a0a]" />
+            heroSkeleton
           ) : (
             <HeroCarousel autoplaySpeed={7000}>
               {[
@@ -938,15 +966,17 @@ export function HomePage() {
             <SectionHead overline="Promoções" title="Ofertas especiais" subtitle="Peças selecionadas com descontos exclusivos." action="Ver todas" actionHref="/pecas" />
 
             {loading ? (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4 lg:gap-5">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3 sm:gap-4 lg:gap-5 animate-in fade-in duration-300">
                 {[...Array(5)].map((_, i) => <ProductCardSkeleton key={i} />)}
               </div>
             ) : (promoProducts.length > 0 || featuredProducts.length > 0) ? (
+              <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
               <ScrollSlider>
                 {(promoProducts.length > 0 ? promoProducts : featuredProducts).slice(0, 10).map(h => (
                   <ProductCard key={h.id || h.sku} hit={h} />
                 ))}
               </ScrollSlider>
+              </div>
             ) : (
               <div className="flex flex-col items-center py-16 text-muted-foreground">
                 <Package className="w-10 h-10 mb-3 opacity-20" />
@@ -1030,15 +1060,17 @@ export function HomePage() {
             <SectionHead overline="Destaques" title="Mais procurados" subtitle="Os produtos mais populares da nossa loja." action="Ver todos" actionHref="/pecas" />
 
             {loading ? (
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4 lg:gap-5">
+              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-3 sm:gap-4 lg:gap-5 animate-in fade-in duration-300">
                 {[...Array(5)].map((_, i) => <ProductCardSkeleton key={i} />)}
               </div>
             ) : featuredProducts.length > 0 ? (
+              <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
               <ScrollSlider>
                 {featuredProducts.slice(0, 10).map(h => (
                   <ProductCard key={h.id || h.sku} hit={h} />
                 ))}
               </ScrollSlider>
+              </div>
             ) : (
               <div className="flex flex-col items-center py-16 text-muted-foreground">
                 <Package className="w-10 h-10 mb-3 opacity-20" />
@@ -1052,16 +1084,18 @@ export function HomePage() {
         {/*  9. NOVIDADES                                                    */}
         {/* ────────────────────────────────────────────────────────────────── */}
         {!loading && newProducts.length > 0 && (
-          <section className="pb-12 sm:pb-16 lg:pb-20">
-            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-              <SectionHead title="Novidades" action="Ver todos" actionHref="/pecas" />
-              <ScrollSlider>
-                {newProducts.slice(0, 10).map(h => (
-                  <ProductCard key={h.id || h.sku} hit={h} />
-                ))}
-              </ScrollSlider>
-            </div>
-          </section>
+            <section className="pb-12 sm:pb-16 lg:pb-20">
+              <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                <SectionHead title="Novidades" action="Ver todos" actionHref="/pecas" />
+                <div className="animate-in fade-in slide-in-from-bottom-2 duration-300">
+                <ScrollSlider>
+                  {newProducts.slice(0, 10).map(h => (
+                    <ProductCard key={h.id || h.sku} hit={h} />
+                  ))}
+                </ScrollSlider>
+                </div>
+              </div>
+            </section>
         )}
 
         {/* ────────────────────────────────────────────────────────────────── */}
@@ -1134,6 +1168,12 @@ export function HomePage() {
         {/* ── Floating WhatsApp ── */}
 
       </div>
+      <style>{`
+        @keyframes shimmer {
+          0% { background-position: 200% 0; }
+          100% { background-position: -200% 0; }
+        }
+      `}</style>
     </>
   );
 }

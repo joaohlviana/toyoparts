@@ -9,6 +9,7 @@
 import { Hono } from 'npm:hono';
 import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
 import * as kv from './kv_store.tsx';
+import * as meili from './meilisearch.tsx';
 
 const app = new Hono();
 
@@ -21,6 +22,123 @@ const SITE_URL = 'https://www.toyoparts.com.br';
 const SITE_NAME = 'Toyoparts';
 const SNAPSHOT_BUCKET = 'make-1d6e33e0-snapshots';
 const SNAPSHOT_PREFIX = 'snapshot:';
+const CATEGORY_TREE_CACHE_KEY = 'meta:category_tree';
+
+type SnapshotRouteType = 'home' | 'static' | 'department' | 'subcategory' | 'leaf';
+
+interface CategoryNode {
+  id: string | number;
+  name: string;
+  is_active?: boolean;
+  children_data?: CategoryNode[];
+  children?: CategoryNode[];
+}
+
+interface SnapshotRouteRecord {
+  path: string;
+  url: string;
+  route_type: SnapshotRouteType;
+  title: string;
+  description: string;
+  h1: string;
+  category_id?: string;
+  category_name?: string;
+  product_count: number;
+  depth: number;
+  breadcrumb: string[];
+  requested?: boolean;
+  has_snapshot?: boolean;
+  snapshot_generated_at?: string | null;
+  snapshot_age_hours?: number | null;
+  snapshot_status?: 'fresh' | 'stale' | 'missing';
+}
+
+const STATIC_SNAPSHOT_ROUTES: Array<Pick<SnapshotRouteRecord, 'path' | 'route_type' | 'title' | 'description' | 'h1'>> = [
+  {
+    path: '/',
+    route_type: 'home',
+    title: `${SITE_NAME} | Pecas e Acessorios Genuinos Toyota`,
+    description: 'Compre pecas e acessorios genuinos Toyota para Corolla, Hilux, SW4, Yaris, Etios, RAV4, Prius e Corolla Cross.',
+    h1: 'Pecas e Acessorios Genuinos Toyota',
+  },
+  {
+    path: '/sobre',
+    route_type: 'static',
+    title: `Sobre a ${SITE_NAME} | Pecas e Acessorios Toyota`,
+    description: 'Conheca a Toyoparts e a nossa operacao especializada em pecas e acessorios genuinos Toyota.',
+    h1: 'Sobre a Toyoparts',
+  },
+  {
+    path: '/privacidade',
+    route_type: 'static',
+    title: `Politica de Privacidade | ${SITE_NAME}`,
+    description: 'Entenda como a Toyoparts trata dados pessoais, seguranca e privacidade.',
+    h1: 'Politica de Privacidade',
+  },
+  {
+    path: '/entrega',
+    route_type: 'static',
+    title: `Politica de Entrega | ${SITE_NAME}`,
+    description: 'Consulte prazos, modalidades de envio e regras de entrega da Toyoparts.',
+    h1: 'Politica de Entrega',
+  },
+  {
+    path: '/troca-devolucoes',
+    route_type: 'static',
+    title: `Trocas e Devolucoes | ${SITE_NAME}`,
+    description: 'Veja como funcionam as trocas e devolucoes na Toyoparts.',
+    h1: 'Trocas e Devolucoes',
+  },
+  {
+    path: '/rastreamento-correios',
+    route_type: 'static',
+    title: `Rastreamento de Pedidos | ${SITE_NAME}`,
+    description: 'Acompanhe o status do envio e o rastreamento do seu pedido na Toyoparts.',
+    h1: 'Rastreamento de Pedidos',
+  },
+  {
+    path: '/loja-fisica',
+    route_type: 'static',
+    title: `Loja Fisica | ${SITE_NAME}`,
+    description: 'Conheca a unidade fisica e os canais de atendimento presencial da Toyoparts.',
+    h1: 'Loja Fisica',
+  },
+  {
+    path: '/fale-conosco',
+    route_type: 'static',
+    title: `Fale Conosco | ${SITE_NAME}`,
+    description: 'Entre em contato com a equipe Toyoparts para tirar duvidas sobre pedidos, produtos e atendimento.',
+    h1: 'Fale Conosco',
+  },
+  {
+    path: '/outlet',
+    route_type: 'static',
+    title: `Outlet Toyota | ${SITE_NAME}`,
+    description: 'Confira ofertas e oportunidades em pecas e acessorios Toyota no outlet da Toyoparts.',
+    h1: 'Outlet Toyota',
+  },
+  {
+    path: '/ofertas',
+    route_type: 'static',
+    title: `Ofertas Toyota | ${SITE_NAME}`,
+    description: 'Veja as principais ofertas de pecas e acessorios Toyota da Toyoparts.',
+    h1: 'Ofertas Toyota',
+  },
+  {
+    path: '/pecas-promocionais',
+    route_type: 'static',
+    title: `Pecas Promocionais | ${SITE_NAME}`,
+    description: 'Explore pecas promocionais e oportunidades especiais em produtos Toyota.',
+    h1: 'Pecas Promocionais',
+  },
+  {
+    path: '/todos-departamentos',
+    route_type: 'static',
+    title: `Todos os Departamentos | ${SITE_NAME}`,
+    description: 'Navegue por todos os departamentos e categorias da Toyoparts.',
+    h1: 'Todos os Departamentos',
+  },
+];
 
 // ─── Helpers ────────────────────────────────────────────────────────────────
 
@@ -107,6 +225,198 @@ async function ensureBucket() {
   } catch (e: any) {
     console.warn('[Snapshot] Bucket check failed:', e.message);
   }
+}
+
+function getChildren(node: CategoryNode | null | undefined): CategoryNode[] {
+  if (!node) return [];
+  return (node.children_data || node.children || []).filter(Boolean);
+}
+
+function getTopCategoryNodes(tree: CategoryNode | null): CategoryNode[] {
+  if (!tree) return [];
+  const walk = (node: CategoryNode): CategoryNode[] => {
+    const activeChildren = getChildren(node).filter((child) => child.is_active !== false);
+    if (activeChildren.length === 0) return [];
+    if (activeChildren.length === 1) return walk(activeChildren[0]);
+    return activeChildren;
+  };
+  return walk(tree);
+}
+
+function normalizeRoutePath(input: string): string {
+  if (!input) return '';
+  const trimmed = input.trim();
+  if (!trimmed) return '';
+  let candidate = trimmed;
+  try {
+    const url = new URL(trimmed.startsWith('http') ? trimmed : `${SITE_URL}${trimmed.startsWith('/') ? '' : '/'}${trimmed}`);
+    candidate = url.pathname || '/';
+  } catch {
+    candidate = trimmed.startsWith('/') ? trimmed : `/${trimmed}`;
+  }
+
+  candidate = candidate
+    .replace(/[?#].*$/, '')
+    .replace(/\/{2,}/g, '/')
+    .trim();
+
+  if (!candidate.startsWith('/')) candidate = `/${candidate}`;
+  if (candidate.length > 1) candidate = candidate.replace(/\/+$/, '');
+  return candidate || '/';
+}
+
+function deriveSnapshotAgeHours(generatedAt?: string | null): number | null {
+  if (!generatedAt) return null;
+  const ageMs = Date.now() - new Date(generatedAt).getTime();
+  if (!Number.isFinite(ageMs) || ageMs < 0) return null;
+  return Math.round((ageMs / 3600000) * 10) / 10;
+}
+
+function buildSnapshotStatus(generatedAt?: string | null): 'fresh' | 'stale' | 'missing' {
+  const age = deriveSnapshotAgeHours(generatedAt);
+  if (age == null) return 'missing';
+  return age <= 24 ? 'fresh' : 'stale';
+}
+
+async function getCategoryFacetCounts(): Promise<Record<string, number>> {
+  if (!meili.isConfigured()) return {};
+  try {
+    const res = await meili.search('', { limit: 0, facets: ['category_ids'] });
+    return res.facetDistribution?.category_ids || {};
+  } catch (err: any) {
+    console.warn('[Snapshot] Facet discovery failed:', err.message);
+    return {};
+  }
+}
+
+async function getSnapshotMetadataMap() {
+  const snapshots = await kv.getByPrefix(`${SNAPSHOT_PREFIX}category:`).catch(() => []);
+  const map = new Map<string, any>();
+  for (const item of (snapshots || [])) {
+    const key = item?.key || '';
+    const value = item?.value || item;
+    const path = key.replace(`${SNAPSHOT_PREFIX}category:`, '') || value?.path;
+    if (path) map.set(path, value);
+  }
+  return map;
+}
+
+function decorateRouteWithSnapshot(route: SnapshotRouteRecord, snapshotMeta?: any): SnapshotRouteRecord {
+  const generatedAt = snapshotMeta?.generated_at || null;
+  return {
+    ...route,
+    has_snapshot: !!generatedAt,
+    snapshot_generated_at: generatedAt,
+    snapshot_age_hours: deriveSnapshotAgeHours(generatedAt),
+    snapshot_status: buildSnapshotStatus(generatedAt),
+  };
+}
+
+async function discoverCategorySnapshotRoutes(options?: {
+  urls?: string[];
+  minProducts?: number;
+  maxDepth?: number;
+  includeStatic?: boolean;
+}) {
+  const minProducts = Math.max(1, Number(options?.minProducts || 1));
+  const maxDepth = Math.min(Math.max(1, Number(options?.maxDepth || 3)), 4);
+  const requestedPaths = new Set((options?.urls || []).map(normalizeRoutePath).filter(Boolean));
+
+  const tree = await kv.get(CATEGORY_TREE_CACHE_KEY).catch(() => null);
+  const facetCounts = await getCategoryFacetCounts();
+  const snapshotMeta = await getSnapshotMetadataMap();
+
+  const routes: SnapshotRouteRecord[] = [];
+  const seen = new Set<string>();
+  const topCats = Array.isArray(tree)
+    ? tree.flatMap((node) => getTopCategoryNodes(node as CategoryNode))
+    : getTopCategoryNodes(tree as CategoryNode | null);
+
+  const pushRoute = (route: SnapshotRouteRecord) => {
+    if (seen.has(route.path)) return;
+    seen.add(route.path);
+    routes.push(decorateRouteWithSnapshot({
+      ...route,
+      requested: requestedPaths.size > 0 ? requestedPaths.has(route.path) : false,
+    }, snapshotMeta.get(route.path)));
+  };
+
+  if (options?.includeStatic !== false) {
+    for (const preset of STATIC_SNAPSHOT_ROUTES) {
+      pushRoute({
+        ...preset,
+        url: `${SITE_URL}${preset.path}`,
+        product_count: 0,
+        depth: preset.path === '/' ? 0 : preset.path.split('/').filter(Boolean).length,
+        breadcrumb: preset.path === '/' ? ['Home'] : preset.path.split('/').filter(Boolean).map((part) => part.replace(/-/g, ' ')),
+      });
+    }
+  }
+
+  const visit = (node: CategoryNode, ancestors: CategoryNode[] = []) => {
+    if (!node || node.is_active === false) return;
+    const categoryId = String(node.id);
+    const productCount = Number(facetCounts[categoryId] || 0);
+    const lineage = [...ancestors, node];
+    const depth = lineage.length;
+    if (depth > maxDepth) return;
+
+    if (productCount >= minProducts) {
+      const path = `/${lineage.map((entry) => slugify(entry.name)).join('/')}`;
+      const breadcrumb = lineage.map((entry) => entry.name);
+      const titleName = node.name || breadcrumb[breadcrumb.length - 1] || 'Categoria';
+      pushRoute({
+        path,
+        url: `${SITE_URL}${path}`,
+        route_type: depth === 1 ? 'department' : depth === 2 ? 'subcategory' : 'leaf',
+        title: `${titleName} | Pecas e Acessorios Toyota | ${SITE_NAME}`,
+        description: `Explore ${titleName} na Toyoparts com ${productCount} produto${productCount === 1 ? '' : 's'} relacionados em estoque.`,
+        h1: titleName,
+        category_id: categoryId,
+        category_name: titleName,
+        product_count: productCount,
+        depth,
+        breadcrumb,
+      });
+    }
+
+    for (const child of getChildren(node)) {
+      visit(child, lineage);
+    }
+  };
+
+  for (const node of topCats) visit(node, []);
+
+  routes.sort((a, b) => {
+    if (a.requested !== b.requested) return a.requested ? -1 : 1;
+    if (a.route_type !== b.route_type) {
+      const order: Record<SnapshotRouteType, number> = { home: 0, static: 1, department: 2, subcategory: 3, leaf: 4 };
+      return order[a.route_type] - order[b.route_type];
+    }
+    if (b.product_count !== a.product_count) return b.product_count - a.product_count;
+    return a.path.localeCompare(b.path, 'pt-BR');
+  });
+
+  const routePaths = new Set(routes.map((route) => route.path));
+  const unmatchedRequested = requestedPaths.size > 0
+    ? Array.from(requestedPaths).filter((path) => !routePaths.has(path))
+    : [];
+
+  return {
+    routes,
+    summary: {
+      total_routes: routes.length,
+      category_routes: routes.filter((route) => route.category_id).length,
+      static_routes: routes.filter((route) => !route.category_id).length,
+      requested_urls: requestedPaths.size,
+      requested_matches: routes.filter((route) => route.requested).length,
+      unmatched_requested: unmatchedRequested.length,
+      fresh_snapshots: routes.filter((route) => route.snapshot_status === 'fresh').length,
+      stale_snapshots: routes.filter((route) => route.snapshot_status === 'stale').length,
+      missing_snapshots: routes.filter((route) => route.snapshot_status === 'missing').length,
+    },
+    unmatched_requested_paths: unmatchedRequested,
+  };
 }
 
 // ─── Product JSON-LD ────────────────────────────────────────────────────────
@@ -329,6 +639,222 @@ function renderProductHtml(product: any): string {
   -->
 </body>
 </html>`;
+}
+
+function buildCollectionJsonLd(route: SnapshotRouteRecord, products: any[]) {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'CollectionPage',
+    name: route.title,
+    url: route.url,
+    description: route.description,
+    mainEntity: {
+      '@type': 'ItemList',
+      numberOfItems: products.length,
+      itemListElement: products.map((product, index) => ({
+        '@type': 'ListItem',
+        position: index + 1,
+        url: `${SITE_URL}/produto/${product.sku}/${product.url_key || slugify(product.name || '')}`,
+        name: product.name || product.sku,
+      })),
+    },
+  };
+}
+
+function renderStaticSnapshotHtml(route: SnapshotRouteRecord): string {
+  const breadcrumbItems = route.path === '/'
+    ? [{ name: 'Home', url: '/' }]
+    : [
+        { name: 'Home', url: '/' },
+        { name: route.h1, url: route.path },
+      ];
+  const breadcrumbJsonLd = buildBreadcrumbJsonLd(breadcrumbItems);
+  const orgJsonLd = buildOrganizationJsonLd();
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(route.title)}</title>
+  <meta name="description" content="${escapeHtml(route.description)}">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="${route.url}">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="${escapeHtml(route.title)}">
+  <meta property="og:description" content="${escapeHtml(route.description)}">
+  <meta property="og:url" content="${route.url}">
+  <meta property="og:site_name" content="${SITE_NAME}">
+  <meta property="og:locale" content="pt_BR">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="${escapeHtml(route.title)}">
+  <meta name="twitter:description" content="${escapeHtml(route.description)}">
+  <script type="application/ld+json">${JSON.stringify(breadcrumbJsonLd)}</script>
+  <script type="application/ld+json">${JSON.stringify(orgJsonLd)}</script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; background: #fff; color: #111827; }
+    .wrap { max-width: 980px; margin: 0 auto; padding: 40px 16px 56px; }
+    .badge { display:inline-flex; align-items:center; gap:8px; padding:8px 12px; border-radius:999px; background:#fff1f2; color:#be123c; font-size:12px; font-weight:700; }
+    h1 { font-size: clamp(32px, 5vw, 54px); line-height:1.05; margin:20px 0 14px; letter-spacing:-0.03em; }
+    p { font-size: 16px; line-height: 1.7; color: #4b5563; max-width: 720px; }
+    .cta { display:inline-flex; margin-top:28px; padding:14px 22px; border-radius:14px; background:#111827; color:#fff; text-decoration:none; font-weight:700; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <span class="badge">Snapshot SEO</span>
+    <h1>${escapeHtml(route.h1)}</h1>
+    <p>${escapeHtml(route.description)}</p>
+    <a class="cta" href="${route.url}">Abrir pagina completa</a>
+  </main>
+</body>
+</html>`;
+}
+
+function renderCategorySnapshotHtml(route: SnapshotRouteRecord, products: any[]): string {
+  const breadcrumbItems = [
+    { name: 'Home', url: '/' },
+    ...route.breadcrumb.map((item, index) => ({
+      name: item,
+      url: `/${route.breadcrumb.slice(0, index + 1).map((part) => slugify(part)).join('/')}`,
+    })),
+  ];
+  const breadcrumbJsonLd = buildBreadcrumbJsonLd(breadcrumbItems);
+  const collectionJsonLd = buildCollectionJsonLd(route, products);
+  const orgJsonLd = buildOrganizationJsonLd();
+
+  return `<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>${escapeHtml(route.title)}</title>
+  <meta name="description" content="${escapeHtml(route.description)}">
+  <meta name="robots" content="index,follow">
+  <link rel="canonical" href="${route.url}">
+  <meta property="og:type" content="website">
+  <meta property="og:title" content="${escapeHtml(route.title)}">
+  <meta property="og:description" content="${escapeHtml(route.description)}">
+  <meta property="og:url" content="${route.url}">
+  <meta property="og:site_name" content="${SITE_NAME}">
+  <meta property="og:locale" content="pt_BR">
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="${escapeHtml(route.title)}">
+  <meta name="twitter:description" content="${escapeHtml(route.description)}">
+  <script type="application/ld+json">${JSON.stringify(collectionJsonLd)}</script>
+  <script type="application/ld+json">${JSON.stringify(breadcrumbJsonLd)}</script>
+  <script type="application/ld+json">${JSON.stringify(orgJsonLd)}</script>
+  <style>
+    body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; margin: 0; background: #ffffff; color: #111827; }
+    .wrap { max-width: 1180px; margin: 0 auto; padding: 28px 16px 56px; }
+    .breadcrumb { display:flex; gap:8px; flex-wrap:wrap; font-size:12px; color:#6b7280; margin-bottom:22px; }
+    .breadcrumb a { color:#2563eb; text-decoration:none; }
+    .hero { border:1px solid #e5e7eb; border-radius:28px; padding:28px; background:linear-gradient(135deg, #fff6f6 0%, #ffffff 55%, #f9fafb 100%); }
+    .eyebrow { display:inline-flex; align-items:center; gap:8px; font-size:11px; font-weight:800; letter-spacing:0.08em; text-transform:uppercase; color:#b91c1c; background:#fee2e2; padding:8px 12px; border-radius:999px; }
+    h1 { font-size: clamp(30px, 4.5vw, 52px); line-height:1.02; letter-spacing:-0.04em; margin:18px 0 14px; }
+    .lead { max-width:760px; color:#4b5563; font-size:16px; line-height:1.75; margin:0; }
+    .meta { display:flex; gap:12px; flex-wrap:wrap; margin-top:22px; }
+    .pill { padding:10px 14px; border-radius:999px; background:#fff; border:1px solid #e5e7eb; font-size:13px; color:#374151; }
+    .grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:16px; margin-top:28px; }
+    .card { display:block; border-radius:20px; border:1px solid #e5e7eb; overflow:hidden; text-decoration:none; color:inherit; background:#fff; }
+    .thumb { aspect-ratio: 4/3; width:100%; object-fit:cover; background:#f3f4f6; display:block; }
+    .placeholder { aspect-ratio: 4/3; width:100%; background:linear-gradient(135deg, #f3f4f6, #e5e7eb); display:flex; align-items:center; justify-content:center; color:#9ca3af; font-size:32px; }
+    .body { padding:16px; }
+    .name { font-size:15px; font-weight:700; line-height:1.35; margin:0 0 8px; color:#111827; }
+    .price { font-size:18px; font-weight:800; color:#15803d; margin:0; }
+    .actions { margin-top:28px; display:flex; gap:12px; flex-wrap:wrap; }
+    .btn { display:inline-flex; padding:14px 18px; border-radius:14px; background:#111827; color:#fff; text-decoration:none; font-weight:700; }
+    .btn-light { background:#fff; color:#111827; border:1px solid #e5e7eb; }
+  </style>
+</head>
+<body>
+  <main class="wrap">
+    <nav class="breadcrumb" aria-label="Breadcrumb">
+      ${breadcrumbItems.map((item, index) =>
+        index < breadcrumbItems.length - 1
+          ? `<a href="${SITE_URL}${item.url}">${escapeHtml(item.name)}</a><span>/</span>`
+          : `<span>${escapeHtml(item.name)}</span>`
+      ).join('')}
+    </nav>
+
+    <section class="hero">
+      <span class="eyebrow">Snapshot SEO de Categoria</span>
+      <h1>${escapeHtml(route.h1)}</h1>
+      <p class="lead">${escapeHtml(route.description)}</p>
+      <div class="meta">
+        <span class="pill">${route.product_count} produto${route.product_count === 1 ? '' : 's'} encontrados</span>
+        <span class="pill">URL canonica pronta para indexacao</span>
+        <span class="pill">Categoria ${escapeHtml(route.breadcrumb.join(' > '))}</span>
+      </div>
+      <div class="actions">
+        <a class="btn" href="${route.url}">Abrir pagina completa</a>
+        <a class="btn btn-light" href="${SITE_URL}/busca?category_name=${encodeURIComponent(route.category_name || route.h1)}">Ver busca relacionada</a>
+      </div>
+    </section>
+
+    <section class="grid">
+      ${products.map((product) => {
+        const urlKey = product.url_key || slugify(product.name || '');
+        const productUrl = `${SITE_URL}/produto/${product.sku}/${urlKey}`;
+        const price = Number(product.special_price && product.special_price > 0 && product.special_price < product.price ? product.special_price : product.price || 0);
+        const image = product.image_url || '';
+        return `<a class="card" href="${productUrl}">
+          ${image
+            ? `<img class="thumb" src="${escapeHtml(image)}" alt="${escapeHtml(product.name || product.sku)}" loading="eager">`
+            : `<div class="placeholder">&#128663;</div>`}
+          <div class="body">
+            <p class="name">${escapeHtml(product.name || product.sku)}</p>
+            <p class="price">${formatPrice(price)}</p>
+          </div>
+        </a>`;
+      }).join('')}
+    </section>
+  </main>
+</body>
+</html>`;
+}
+
+async function fetchProductsForCategorySnapshot(categoryId: string, limit = 12) {
+  if (!meili.isConfigured()) return [];
+  try {
+    const res = await meili.search('', {
+      limit,
+      filter: `category_ids = "${categoryId}"`,
+    });
+    return Array.isArray(res.hits) ? res.hits : [];
+  } catch (err: any) {
+    console.warn(`[Snapshot] Product fetch for category ${categoryId} failed:`, err.message);
+    return [];
+  }
+}
+
+async function generateRouteSnapshot(route: SnapshotRouteRecord, force = false) {
+  const cacheKey = `${SNAPSHOT_PREFIX}category:${route.path}`;
+  if (!force) {
+    const existing = await kv.get(cacheKey).catch(() => null);
+    if (existing?.generated_at) {
+      const age = Date.now() - new Date(existing.generated_at).getTime();
+      if (age < 86400000) {
+        return { status: 'skipped', generated_at: existing.generated_at, html: existing.html };
+      }
+    }
+  }
+
+  const html = route.route_type === 'static' || route.route_type === 'home'
+    ? renderStaticSnapshotHtml(route)
+    : renderCategorySnapshotHtml(route, await fetchProductsForCategorySnapshot(route.category_id || '', 12));
+
+  const payload = {
+    type: route.route_type,
+    path: route.path,
+    category_id: route.category_id || null,
+    product_count: route.product_count,
+    generated_at: new Date().toISOString(),
+    html,
+  };
+
+  await kv.set(cacheKey, payload);
+  return { status: 'generated', generated_at: payload.generated_at, html };
 }
 
 // ─── GET /snapshot/product/:sku — Gera ou retorna snapshot HTML ──────────────
@@ -717,6 +1243,150 @@ app.get('/manifest', async (c) => {
 });
 
 // ─── DELETE /snapshot/purge — Limpa TODOS os snapshots ───────────────────────
+
+app.post('/categories/discover', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const rawUrls = String(body.urls || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const data = await discoverCategorySnapshotRoutes({
+      urls: rawUrls,
+      minProducts: body.minProducts || 1,
+      maxDepth: body.maxDepth || 3,
+      includeStatic: body.includeStatic !== false,
+    });
+
+    return c.json({ ok: true, ...data });
+  } catch (err: any) {
+    return c.json({ error: err.message, ok: false }, 500);
+  }
+});
+
+app.post('/categories/generate', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const rawUrls = String(body.urls || '')
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean);
+
+    const discovery = await discoverCategorySnapshotRoutes({
+      urls: rawUrls,
+      minProducts: body.minProducts || 1,
+      maxDepth: body.maxDepth || 3,
+      includeStatic: body.includeStatic !== false,
+    });
+
+    const requestedOnly = body.onlyRequested === true && rawUrls.length > 0;
+    const force = body.force === true;
+    const candidates = requestedOnly
+      ? discovery.routes.filter((route) => route.requested)
+      : discovery.routes;
+    const limit = Math.max(1, Math.min(Number(body.limit || candidates.length || 50), 500));
+    const selected = candidates.slice(0, limit);
+
+    const results: Array<{ path: string; route_type: SnapshotRouteType; status: string; generated_at: string | null; product_count: number }> = [];
+    let generated = 0;
+    let skipped = 0;
+    let errors = 0;
+
+    for (const route of selected) {
+      try {
+        const result = await generateRouteSnapshot(route, force);
+        if (result.status === 'generated') generated += 1;
+        else skipped += 1;
+        results.push({
+          path: route.path,
+          route_type: route.route_type,
+          status: result.status,
+          generated_at: result.generated_at || null,
+          product_count: route.product_count,
+        });
+      } catch (err: any) {
+        errors += 1;
+        results.push({
+          path: route.path,
+          route_type: route.route_type,
+          status: `error: ${err.message}`,
+          generated_at: null,
+          product_count: route.product_count,
+        });
+      }
+    }
+
+    return c.json({
+      ok: true,
+      processed: selected.length,
+      generated,
+      skipped,
+      errors,
+      total_discovered: discovery.routes.length,
+      requested_matches: discovery.summary.requested_matches,
+      unmatched_requested_paths: discovery.unmatched_requested_paths,
+      results,
+    });
+  } catch (err: any) {
+    return c.json({ error: err.message, ok: false }, 500);
+  }
+});
+
+app.get('/categories/manifest', async (c) => {
+  try {
+    const snapshots = await kv.getByPrefix(`${SNAPSHOT_PREFIX}category:`).catch(() => []);
+    const routes = (snapshots || [])
+      .map((entry: any) => {
+        const value = entry?.value || entry;
+        return {
+          path: value?.path || entry?.key?.replace(`${SNAPSHOT_PREFIX}category:`, ''),
+          route_type: value?.type || 'category',
+          category_id: value?.category_id || null,
+          product_count: Number(value?.product_count || 0),
+          generated_at: value?.generated_at || null,
+        };
+      })
+      .filter((item: any) => !!item.path)
+      .sort((a: any, b: any) => (b.generated_at || '').localeCompare(a.generated_at || ''));
+
+    return c.json({ ok: true, total: routes.length, routes });
+  } catch (err: any) {
+    return c.json({ error: err.message, ok: false, total: 0, routes: [] }, 500);
+  }
+});
+
+app.get('/category/*', async (c) => {
+  const wildcard = c.req.param('*') || '';
+  const path = normalizeRoutePath(`/${wildcard}`);
+
+  try {
+    const cacheKey = `${SNAPSHOT_PREFIX}category:${path}`;
+    const cached = await kv.get(cacheKey).catch(() => null);
+    if (cached?.html) {
+      return c.html(cached.html, 200, {
+        'Cache-Control': 'public, s-maxage=86400, stale-while-revalidate=604800',
+        'X-Snapshot': 'CATEGORY_HIT',
+      });
+    }
+
+    const discovery = await discoverCategorySnapshotRoutes({ includeStatic: true });
+    const route = discovery.routes.find((item) => item.path === path);
+    if (!route) {
+      return c.html(`<html><head><title>Pagina nao encontrada | ${SITE_NAME}</title><meta name="robots" content="noindex"></head><body><h1>Pagina nao encontrada</h1></body></html>`, 404, {
+        'X-Snapshot': 'CATEGORY_404',
+      });
+    }
+
+    const generated = await generateRouteSnapshot(route, true);
+    return c.html(generated.html, 200, {
+      'Cache-Control': 'public, s-maxage=86400, stale-while-revalidate=604800',
+      'X-Snapshot': 'CATEGORY_GENERATED',
+    });
+  } catch (err: any) {
+    return c.json({ error: err.message }, 500);
+  }
+});
 
 app.delete('/purge', async (c) => {
   try {

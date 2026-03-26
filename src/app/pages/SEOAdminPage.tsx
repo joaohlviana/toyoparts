@@ -2,7 +2,7 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   Search, Loader2, Save, Sparkles, BarChart3, CheckCircle2,
   XCircle, AlertTriangle, FileText, Globe, Eye, Copy, Check,
-  ArrowUpDown, ChevronDown, RefreshCw, Zap, TrendingUp
+  ArrowUpDown, ChevronDown, RefreshCw, Zap, TrendingUp, Database
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { projectId } from '../../../utils/supabase/info';
@@ -52,6 +52,42 @@ interface SEOStats {
   distribution: { excellent: number; good: number; fair: number; poor: number };
 }
 
+interface SnapshotRouteRecord {
+  path: string;
+  url: string;
+  route_type: 'home' | 'static' | 'department' | 'subcategory' | 'leaf';
+  title: string;
+  description: string;
+  h1: string;
+  category_id?: string;
+  category_name?: string;
+  product_count: number;
+  depth: number;
+  breadcrumb: string[];
+  requested?: boolean;
+  has_snapshot?: boolean;
+  snapshot_generated_at?: string | null;
+  snapshot_age_hours?: number | null;
+  snapshot_status?: 'fresh' | 'stale' | 'missing';
+}
+
+interface SnapshotDiscoveryResponse {
+  ok?: boolean;
+  routes: SnapshotRouteRecord[];
+  summary: {
+    total_routes: number;
+    category_routes: number;
+    static_routes: number;
+    requested_urls: number;
+    requested_matches: number;
+    unmatched_requested: number;
+    fresh_snapshots: number;
+    stale_snapshots: number;
+    missing_snapshots: number;
+  };
+  unmatched_requested_paths: string[];
+}
+
 // ─── Score Ring ───────────────────────────────────────────────────────────────
 
 function ScoreRing({ pct, size = 56 }: { pct: number; size?: number }) {
@@ -91,7 +127,7 @@ function CheckItem({ check }: { check: SEOCheck }) {
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export function SEOAdminPage() {
-  const [activeTab, setActiveTab] = useState<'editor' | 'batch' | 'stats'>('editor');
+  const [activeTab, setActiveTab] = useState<'editor' | 'batch' | 'stats' | 'snapshots'>('editor');
   
   return (
     <div className="max-w-[1280px] mx-auto px-4 lg:px-6 pt-6 pb-12">
@@ -110,6 +146,7 @@ export function SEOAdminPage() {
         {[
           { id: 'editor' as const, label: 'Editor de SEO', icon: FileText },
           { id: 'batch' as const, label: 'Geracao em Lote', icon: Sparkles },
+          { id: 'snapshots' as const, label: 'Snapshots SEO', icon: Database },
           { id: 'stats' as const, label: 'Estatisticas', icon: BarChart3 },
         ].map(tab => (
           <button
@@ -129,6 +166,7 @@ export function SEOAdminPage() {
 
       {activeTab === 'editor' && <SEOEditorTab />}
       {activeTab === 'batch' && <SEOBatchTab />}
+      {activeTab === 'snapshots' && <SEOSnapshotsTab />}
       {activeTab === 'stats' && <SEOStatsTab />}
     </div>
   );
@@ -470,6 +508,271 @@ function SEOBatchTab() {
 }
 
 // ─── Stats Tab ──────────────────────────────────────────────────────────────
+
+function SEOSnapshotsTab() {
+  const [discovering, setDiscovering] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [urlsText, setUrlsText] = useState('');
+  const [minProducts, setMinProducts] = useState(1);
+  const [maxDepth, setMaxDepth] = useState(3);
+  const [onlyRequested, setOnlyRequested] = useState(true);
+  const [force, setForce] = useState(false);
+  const [discovery, setDiscovery] = useState<SnapshotDiscoveryResponse | null>(null);
+  const [generationResults, setGenerationResults] = useState<Array<{ path: string; route_type: string; status: string; generated_at: string | null; product_count: number }>>([]);
+
+  const discoverSnapshots = useCallback(async () => {
+    setDiscovering(true);
+    try {
+      const res = await adminFetch(`${API}/snapshot/categories/discover`, {
+        method: 'POST',
+        body: JSON.stringify({
+          urls: urlsText,
+          minProducts,
+          maxDepth,
+          includeStatic: true,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      setDiscovery(data);
+      toast.success(`${data.summary.total_routes} rotas analisadas para snapshot.`);
+    } catch (e: any) {
+      toast.error(`Erro ao descobrir snapshots: ${e.message}`);
+    } finally {
+      setDiscovering(false);
+    }
+  }, [urlsText, minProducts, maxDepth]);
+
+  const generateSnapshots = useCallback(async () => {
+    setGenerating(true);
+    try {
+      const res = await adminFetch(`${API}/snapshot/categories/generate`, {
+        method: 'POST',
+        body: JSON.stringify({
+          urls: urlsText,
+          minProducts,
+          maxDepth,
+          includeStatic: true,
+          onlyRequested,
+          force,
+        }),
+      });
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      setGenerationResults(data.results || []);
+      toast.success(`${data.generated} snapshots gerados, ${data.skipped} reaproveitados.`);
+      await discoverSnapshots();
+    } catch (e: any) {
+      toast.error(`Erro ao gerar snapshots: ${e.message}`);
+    } finally {
+      setGenerating(false);
+    }
+  }, [urlsText, minProducts, maxDepth, onlyRequested, force, discoverSnapshots]);
+
+  return (
+    <div className="space-y-6">
+      <Card className="p-5 space-y-4">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
+              <Database className="w-4 h-4 text-primary" /> Snapshot de Categorias SEO
+            </h3>
+            <p className="text-xs text-muted-foreground mt-1 max-w-3xl">
+              Descobre automaticamente as variacoes de categoria com produto real, cruza uma lista de URLs do legado
+              e gera snapshots HTML cacheados para rotas prioritarias de SEO.
+            </p>
+          </div>
+          <Badge variant="outline" className="text-[10px]">Categorias + rotas fixas</Badge>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_auto] gap-4">
+          <div className="space-y-2">
+            <label className="text-xs font-medium text-foreground">URLs para cruzar (opcional)</label>
+            <textarea
+              value={urlsText}
+              onChange={(e) => setUrlsText(e.target.value)}
+              rows={10}
+              placeholder="Cole aqui as URLs do legado, uma por linha. Ex.: https://www.toyoparts.com.br/pecas/filtros"
+              className="w-full rounded-xl border border-input bg-input-background px-3 py-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:border-ring resize-y transition-[color,box-shadow]"
+            />
+            <p className="text-[11px] text-muted-foreground">
+              Se deixar vazio, o sistema lista automaticamente todas as categorias com produto encontradas no catalogo.
+            </p>
+          </div>
+
+          <div className="space-y-3 min-w-[220px]">
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-foreground">Minimo de produtos</label>
+              <Select value={String(minProducts)} onValueChange={(value) => setMinProducts(Number(value))}>
+                <SelectTrigger size="sm">
+                  <SelectValue placeholder="Minimo..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1">1 produto</SelectItem>
+                  <SelectItem value="2">2 produtos</SelectItem>
+                  <SelectItem value="3">3 produtos</SelectItem>
+                  <SelectItem value="5">5 produtos</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-xs font-medium text-foreground">Profundidade maxima</label>
+              <Select value={String(maxDepth)} onValueChange={(value) => setMaxDepth(Number(value))}>
+                <SelectTrigger size="sm">
+                  <SelectValue placeholder="Profundidade..." />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="1">1 nivel</SelectItem>
+                  <SelectItem value="2">2 niveis</SelectItem>
+                  <SelectItem value="3">3 niveis</SelectItem>
+                  <SelectItem value="4">4 niveis</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+
+            <label className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-xs text-foreground">
+              <input type="checkbox" checked={onlyRequested} onChange={(e) => setOnlyRequested(e.target.checked)} className="rounded border-border" />
+              Gerar apenas as URLs coladas
+            </label>
+
+            <label className="flex items-center gap-2 rounded-lg border border-border px-3 py-2 text-xs text-foreground">
+              <input type="checkbox" checked={force} onChange={(e) => setForce(e.target.checked)} className="rounded border-border" />
+              Regerar mesmo se o snapshot existir
+            </label>
+
+            <div className="space-y-2 pt-2">
+              <Button onClick={discoverSnapshots} disabled={discovering} className="w-full gap-1.5">
+                {discovering ? <Loader2 className="w-4 h-4 animate-spin" /> : <Search className="w-4 h-4" />}
+                Descobrir URLs
+              </Button>
+              <Button onClick={generateSnapshots} disabled={generating} variant="outline" className="w-full gap-1.5">
+                {generating ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+                Gerar Snapshots
+              </Button>
+            </div>
+          </div>
+        </div>
+      </Card>
+
+      {discovery && (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+            <StatCard label="Rotas Descobertas" value={discovery.summary.total_routes} />
+            <StatCard label="Categorias" value={discovery.summary.category_routes} />
+            <StatCard label="Matches da Lista" value={`${discovery.summary.requested_matches}/${discovery.summary.requested_urls || 0}`} />
+            <StatCard label="Fresh" value={discovery.summary.fresh_snapshots} color="text-green-600" />
+            <StatCard label="Sem Snapshot" value={discovery.summary.missing_snapshots} color="text-orange-600" />
+          </div>
+
+          {discovery.unmatched_requested_paths.length > 0 && (
+            <Card className="p-4 border-amber-200 bg-amber-50/50">
+              <h4 className="text-sm font-semibold text-amber-900 mb-2">URLs coladas sem correspondencia</h4>
+              <div className="flex flex-wrap gap-2">
+                {discovery.unmatched_requested_paths.map((path) => (
+                  <Badge key={path} variant="outline" className="text-[11px] border-amber-300 text-amber-900 bg-white">
+                    {path}
+                  </Badge>
+                ))}
+              </div>
+            </Card>
+          )}
+
+          <Card className="p-5">
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <h3 className="text-sm font-semibold text-foreground">Rotas elegiveis para snapshot</h3>
+              <Badge variant="secondary" className="text-[10px]">{discovery.routes.length} linhas</Badge>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b border-border text-left">
+                    <th className="py-2 pr-3 text-xs font-medium text-muted-foreground">URL</th>
+                    <th className="py-2 pr-3 text-xs font-medium text-muted-foreground">Tipo</th>
+                    <th className="py-2 pr-3 text-xs font-medium text-muted-foreground">Produtos</th>
+                    <th className="py-2 pr-3 text-xs font-medium text-muted-foreground">Snapshot</th>
+                    <th className="py-2 text-xs font-medium text-muted-foreground">Hierarquia</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {discovery.routes.slice(0, 120).map((route) => (
+                    <tr key={route.path} className="border-b border-border/70 align-top">
+                      <td className="py-3 pr-3">
+                        <div className="space-y-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <a href={route.url} target="_blank" rel="noreferrer" className="text-xs font-mono text-primary hover:underline break-all">
+                              {route.path}
+                            </a>
+                            {route.requested && <Badge variant="outline" className="text-[10px]">colada</Badge>}
+                          </div>
+                          <p className="text-[11px] text-muted-foreground line-clamp-2">{route.title}</p>
+                        </div>
+                      </td>
+                      <td className="py-3 pr-3">
+                        <Badge variant={route.category_id ? 'default' : 'secondary'} className="text-[10px] capitalize">
+                          {route.route_type}
+                        </Badge>
+                      </td>
+                      <td className="py-3 pr-3 text-xs text-foreground">{route.product_count}</td>
+                      <td className="py-3 pr-3">
+                        <div className="space-y-1">
+                          <Badge
+                            variant="outline"
+                            className={cn(
+                              'text-[10px]',
+                              route.snapshot_status === 'fresh' && 'border-green-200 text-green-700 bg-green-50',
+                              route.snapshot_status === 'stale' && 'border-yellow-200 text-yellow-700 bg-yellow-50',
+                              route.snapshot_status === 'missing' && 'border-muted text-muted-foreground bg-background'
+                            )}
+                          >
+                            {route.snapshot_status === 'fresh' ? 'Atual' : route.snapshot_status === 'stale' ? 'Vencido' : 'Ausente'}
+                          </Badge>
+                          {route.snapshot_generated_at && (
+                            <p className="text-[10px] text-muted-foreground">{route.snapshot_age_hours}h atras</p>
+                          )}
+                        </div>
+                      </td>
+                      <td className="py-3">
+                        <p className="text-[11px] text-muted-foreground">{route.breadcrumb.join(' > ') || 'Home'}</p>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {discovery.routes.length > 120 && (
+              <p className="text-[11px] text-muted-foreground mt-3">
+                Mostrando as primeiras 120 rotas. A geracao continua usando toda a lista descoberta.
+              </p>
+            )}
+          </Card>
+        </>
+      )}
+
+      {generationResults.length > 0 && (
+        <Card className="p-5">
+          <h3 className="text-sm font-semibold text-foreground mb-4">Ultima geracao</h3>
+          <div className="space-y-2 max-h-80 overflow-y-auto">
+            {generationResults.map((result) => (
+              <div key={`${result.path}-${result.status}`} className="flex items-center gap-3 py-2 border-b border-border last:border-0">
+                {result.status.startsWith('error')
+                  ? <XCircle className="w-4 h-4 text-red-500 flex-shrink-0" />
+                  : result.status === 'generated'
+                    ? <CheckCircle2 className="w-4 h-4 text-green-500 flex-shrink-0" />
+                    : <RefreshCw className="w-4 h-4 text-muted-foreground flex-shrink-0" />}
+                <span className="text-xs font-mono text-muted-foreground w-52 shrink-0 truncate">{result.path}</span>
+                <span className="text-xs text-foreground flex-1">{result.status}</span>
+                <span className="text-[11px] text-muted-foreground shrink-0">{result.product_count} prod.</span>
+              </div>
+            ))}
+          </div>
+        </Card>
+      )}
+    </div>
+  );
+}
 
 function SEOStatsTab() {
   const [stats, setStats] = useState<SEOStats | null>(null);

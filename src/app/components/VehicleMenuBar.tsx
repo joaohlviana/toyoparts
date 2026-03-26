@@ -1,8 +1,9 @@
-import React, { useRef, useState, useEffect, useCallback } from 'react';
+import React, { useRef, useState, useEffect, useCallback, useMemo } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router';
 import { CAR_MODELS_SEO } from '../seo-config';
 import { ChevronRight, ArrowRight, Menu, X, Loader2 } from 'lucide-react';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
+import { AnimatePresence, motion } from 'motion/react';
 
 // ─── API ─────────────────────────────────────────────────────────────────────
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0`;
@@ -114,6 +115,9 @@ const MODEL_DEPARTMENTS: Record<string, Department[]> = {
   prius: COMMON_DEPTS('prius'),
 };
 
+const MODEL_MENU_IMAGE_VERSION = '1770898453';
+const MENU_IMAGE_WARMUP_DELAY_MS = 500;
+
 // ─── Component ───────────────────────────────────────────────────────────────
 export function VehicleMenuBar() {
   const location = useLocation();
@@ -121,6 +125,8 @@ export function VehicleMenuBar() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const barRef = useRef<HTMLDivElement>(null);
   const panelTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const warmedImageUrlsRef = useRef<Set<string>>(new Set());
+  const warmedCategoriesRef = useRef(false);
 
   // Vehicle model hover state
   const [activeModel, setActiveModel] = useState<string | null>(null);
@@ -142,7 +148,7 @@ export function VehicleMenuBar() {
 
   // ─── Category Fetching ──────────────────────────────────────────────────
   const fetchCategories = useCallback(async () => {
-    if (hasFetchedCats) return;
+    if (hasFetchedCats || isLoadingCats) return;
     setIsLoadingCats(true);
     try {
       const [treeRes, imgRes] = await Promise.all([
@@ -165,7 +171,7 @@ export function VehicleMenuBar() {
     } finally {
       setIsLoadingCats(false);
     }
-  }, [hasFetchedCats]);
+  }, [hasFetchedCats, isLoadingCats]);
 
   // ─── Helpers ────────────────────────────────────────────────────────────
   const getTopCategories = (tree: CategoryNode | null): CategoryNode[] => {
@@ -212,6 +218,23 @@ export function VehicleMenuBar() {
   };
 
   const topCategories = getTopCategories(categoryTree);
+  const activeCategory = useMemo(
+    () => topCategories.find((cat) => String(cat.id) === activeCategoryId) ?? null,
+    [activeCategoryId, topCategories]
+  );
+
+  const warmImage = useCallback((url: string | null | undefined) => {
+    if (!url || typeof window === 'undefined') return;
+    if (warmedImageUrlsRef.current.has(url)) return;
+    warmedImageUrlsRef.current.add(url);
+    const image = new window.Image();
+    image.decoding = 'async';
+    image.src = url;
+  }, []);
+
+  const warmImages = useCallback((urls: Array<string | null | undefined>) => {
+    urls.forEach((url) => warmImage(url));
+  }, [warmImage]);
 
   // ─── Scroll overflow detection ─────────────────────────────────────────
   const updateScrollState = useCallback(() => {
@@ -251,6 +274,45 @@ export function VehicleMenuBar() {
     window.addEventListener('keydown', handleKey);
     return () => window.removeEventListener('keydown', handleKey);
   }, []);
+
+  useEffect(() => {
+    const modelMenuUrls = Object.values(MODEL_DEPARTMENTS)
+      .flat()
+      .map((dept) => `${S3}/${dept.imgKey}?v=${MODEL_MENU_IMAGE_VERSION}`);
+
+    const warmMenuAssets = () => {
+      warmImages(modelMenuUrls);
+
+      if (!warmedCategoriesRef.current) {
+        warmedCategoriesRef.current = true;
+        void fetchCategories();
+      }
+    };
+
+    if (typeof window === 'undefined') return;
+
+    if ('requestIdleCallback' in window) {
+      const idleId = window.requestIdleCallback(warmMenuAssets, {
+        timeout: MENU_IMAGE_WARMUP_DELAY_MS,
+      });
+      return () => window.cancelIdleCallback(idleId);
+    }
+
+    const timeoutId = window.setTimeout(warmMenuAssets, MENU_IMAGE_WARMUP_DELAY_MS);
+    return () => window.clearTimeout(timeoutId);
+  }, [fetchCategories, warmImages]);
+
+  useEffect(() => {
+    if (!topCategories.length || !Object.keys(categoryImages).length) return;
+
+    const categoryMenuUrls = topCategories.flatMap((category) =>
+      getSubcategories(category)
+        .map((sub) => getCategoryImage(category.name, sub.name))
+        .filter(Boolean)
+    );
+
+    warmImages(categoryMenuUrls);
+  }, [categoryImages, topCategories, warmImages]);
 
   // ─── Model Hover handlers ─────────────────────────────────────────────
   const handleModelEnter = (slug: string) => {
@@ -493,18 +555,21 @@ export function VehicleMenuBar() {
 
                 {/* Content — subcategory cards */}
                 <div className="flex-1 py-5 pl-6 overflow-y-auto">
-                  {topCategories.map(cat => {
-                    if (activeCategoryId !== String(cat.id)) return null;
-                    const subs = getSubcategories(cat);
-
-                    return (
-                      <div key={cat.id} className="animate-in fade-in duration-150">
+                  <AnimatePresence mode="wait" initial={false}>
+                    {activeCategory && (
+                      <motion.div
+                        key={activeCategory.id}
+                        initial={{ opacity: 0, y: 10, filter: 'blur(4px)' }}
+                        animate={{ opacity: 1, y: 0, filter: 'blur(0px)' }}
+                        exit={{ opacity: 0, y: -8, filter: 'blur(3px)' }}
+                        transition={{ duration: 0.2, ease: [0.22, 1, 0.36, 1] }}
+                      >
                         <div className="flex items-baseline justify-between mb-4">
                           <h3 className="text-[18px] font-semibold text-[#1d1d1f] tracking-[-0.01em]">
-                            {cat.name}
+                            {activeCategory.name}
                           </h3>
                           <button
-                            onClick={() => handleCategoryClick(String(cat.id), cat.name)}
+                            onClick={() => handleCategoryClick(String(activeCategory.id), activeCategory.name)}
                             className="group/link flex items-center gap-1 text-[12px] font-normal text-[#2997ff] hover:underline"
                           >
                             Ver tudo
@@ -513,8 +578,8 @@ export function VehicleMenuBar() {
                         </div>
 
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-                          {subs.map(sub => {
-                            const imgUrl = getCategoryImage(cat.name, sub.name);
+                          {getSubcategories(activeCategory).map((sub) => {
+                            const imgUrl = getCategoryImage(activeCategory.name, sub.name);
                             return (
                               <button
                                 key={sub.id}
@@ -527,7 +592,8 @@ export function VehicleMenuBar() {
                                       src={imgUrl}
                                       alt={sub.name}
                                       className="w-full h-full object-cover transition-transform duration-500 group-hover/card:scale-[1.03]"
-                                      loading="lazy"
+                                      loading="eager"
+                                      decoding="async"
                                       onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
                                     />
                                   </div>
@@ -545,9 +611,9 @@ export function VehicleMenuBar() {
                             );
                           })}
                         </div>
-                      </div>
-                    );
-                  })}
+                      </motion.div>
+                    )}
+                  </AnimatePresence>
                 </div>
               </div>
             ) : (
@@ -570,63 +636,78 @@ export function VehicleMenuBar() {
         <div className="bg-[rgba(251,251,253,0.97)] backdrop-blur-2xl backdrop-saturate-[180%] border-b border-black/[0.08] shadow-[0_8px_32px_rgba(0,0,0,0.08)]">
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
 
-            {activeModelData && (
-              <div className="animate-in fade-in duration-150">
-                {/* Header */}
-                <div className="flex items-center justify-between mb-5">
-                  <h3 className="text-[18px] sm:text-[20px] font-semibold text-[#1d1d1f] tracking-[-0.01em]">
-                    {activeModelData.name}
-                  </h3>
-                  <Link
-                    to={`/pecas/${activeModelData.slug}`}
-                    onClick={() => setActiveModel(null)}
-                    className="group/link flex items-center gap-1 text-[12px] font-normal text-[#2997ff] hover:underline transition-colors"
-                  >
-                    Ver todos os produtos
-                    <ArrowRight className="w-3 h-3 transition-transform group-hover/link:translate-x-0.5" strokeWidth={2} />
-                  </Link>
-                </div>
-
-                {/* Department cards grid */}
-                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-                  {activeDepts.map((dept) => (
+            <AnimatePresence mode="wait" initial={false}>
+              {activeModelData && (
+                <motion.div
+                  key={activeModelData.slug}
+                  initial={{ opacity: 0, y: 12, scale: 0.992, filter: 'blur(5px)' }}
+                  animate={{ opacity: 1, y: 0, scale: 1, filter: 'blur(0px)' }}
+                  exit={{ opacity: 0, y: -10, scale: 0.996, filter: 'blur(4px)' }}
+                  transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
+                >
+                  {/* Header */}
+                  <div className="flex items-center justify-between mb-5">
+                    <h3 className="text-[18px] sm:text-[20px] font-semibold text-[#1d1d1f] tracking-[-0.01em]">
+                      {activeModelData.name}
+                    </h3>
                     <Link
-                      key={dept.path}
-                      to={`/pecas/${activeModelData.slug}/${dept.path}`}
+                      to={`/pecas/${activeModelData.slug}`}
                       onClick={() => setActiveModel(null)}
-                      className="group/card rounded-2xl overflow-hidden bg-[#f5f5f7] hover:bg-[#ebebed] transition-all duration-200"
+                      className="group/link flex items-center gap-1 text-[12px] font-normal text-[#2997ff] hover:underline transition-colors"
                     >
-                      <div className="relative aspect-[4/3] overflow-hidden bg-[#e8e8ed]">
-                        <img
-                          src={`${S3}/${dept.imgKey}?v=1770898453`}
-                          alt={dept.name}
-                          className="w-full h-full object-cover transition-transform duration-500 group-hover/card:scale-[1.04]"
-                          loading="lazy"
-                          onError={(e) => {
-                            const target = e.target as HTMLImageElement;
-                            target.style.display = 'none';
-                          }}
-                        />
-                        <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                          <span className="text-[24px] font-bold text-[#d2d2d7]/60">
-                            {dept.name.charAt(0)}
-                          </span>
-                        </div>
-                      </div>
-
-                      <div className="px-2.5 py-2">
-                        <span className="block text-[11px] sm:text-[12px] font-medium text-[#1d1d1f] group-hover/card:text-primary transition-colors leading-tight">
-                          {dept.name}
-                        </span>
-                        <span className="block text-[10px] text-[#86868b] mt-0.5 line-clamp-1 leading-tight">
-                          {dept.description}
-                        </span>
-                      </div>
+                      Ver todos os produtos
+                      <ArrowRight className="w-3 h-3 transition-transform group-hover/link:translate-x-0.5" strokeWidth={2} />
                     </Link>
-                  ))}
-                </div>
-              </div>
-            )}
+                  </div>
+
+                  {/* Department cards grid */}
+                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                    {activeDepts.map((dept, index) => (
+                      <motion.div
+                        key={`${activeModelData.slug}-${dept.path}`}
+                        initial={{ opacity: 0, y: 10 }}
+                        animate={{ opacity: 1, y: 0 }}
+                        transition={{ duration: 0.18, delay: index * 0.018, ease: [0.22, 1, 0.36, 1] }}
+                      >
+                        <Link
+                          to={`/pecas/${activeModelData.slug}/${dept.path}`}
+                          onClick={() => setActiveModel(null)}
+                          className="group/card block rounded-2xl overflow-hidden bg-[#f5f5f7] hover:bg-[#ebebed] transition-all duration-200"
+                        >
+                          <div className="relative aspect-[4/3] overflow-hidden bg-[#e8e8ed]">
+                            <img
+                              src={`${S3}/${dept.imgKey}?v=${MODEL_MENU_IMAGE_VERSION}`}
+                              alt={dept.name}
+                              className="w-full h-full object-cover transition-transform duration-500 group-hover/card:scale-[1.04]"
+                              loading="eager"
+                              decoding="async"
+                              onError={(e) => {
+                                const target = e.target as HTMLImageElement;
+                                target.style.display = 'none';
+                              }}
+                            />
+                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
+                              <span className="text-[24px] font-bold text-[#d2d2d7]/60">
+                                {dept.name.charAt(0)}
+                              </span>
+                            </div>
+                          </div>
+
+                          <div className="px-2.5 py-2">
+                            <span className="block text-[11px] sm:text-[12px] font-medium text-[#1d1d1f] group-hover/card:text-primary transition-colors leading-tight">
+                              {dept.name}
+                            </span>
+                            <span className="block text-[10px] text-[#86868b] mt-0.5 line-clamp-1 leading-tight">
+                              {dept.description}
+                            </span>
+                          </div>
+                        </Link>
+                      </motion.div>
+                    ))}
+                  </div>
+                </motion.div>
+              )}
+            </AnimatePresence>
           </div>
         </div>
       </div>

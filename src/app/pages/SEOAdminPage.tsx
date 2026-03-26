@@ -2,7 +2,8 @@ import React, { useState, useCallback, useEffect, useMemo } from 'react';
 import {
   Search, Loader2, Save, Sparkles, BarChart3, CheckCircle2,
   XCircle, AlertTriangle, FileText, Globe, Eye, Copy, Check,
-  ArrowUpDown, ChevronDown, RefreshCw, Zap, TrendingUp, Database
+  ArrowUpDown, ChevronDown, RefreshCw, Zap, TrendingUp, Database,
+  ShieldCheck, Gauge, Bot, Layers3
 } from 'lucide-react';
 import { toast } from 'sonner';
 import { projectId } from '../../../utils/supabase/info';
@@ -88,6 +89,61 @@ interface SnapshotDiscoveryResponse {
   unmatched_requested_paths: string[];
 }
 
+interface SEOHealthCheck {
+  id: string;
+  category: string;
+  title: string;
+  status: 'ok' | 'warning' | 'critical';
+  score: number;
+  maxScore: number;
+  detail: string;
+  recommendation?: string | null;
+}
+
+interface SEOHealthPillar {
+  id: string;
+  title: string;
+  score: number;
+  maxScore: number;
+  percentage: number;
+}
+
+interface SEOHealthResponse {
+  generated_at: string;
+  overall: {
+    score: number;
+    grade: string;
+    enterprise_ready: boolean;
+  };
+  coverage: {
+    active_products: number;
+    seo_title_pct: number;
+    meta_description_pct: number;
+    url_key_pct: number;
+    avg_quality_score: number;
+    product_snapshots: number;
+    product_snapshot_pct: number;
+    category_snapshots: number;
+    category_snapshot_pct: number;
+    eligible_category_routes: number;
+    sitemap_files: number;
+  };
+  checks: SEOHealthCheck[];
+  pillars: SEOHealthPillar[];
+  gaps: Array<{
+    id: string;
+    severity: 'warning' | 'critical';
+    title: string;
+    detail: string;
+    recommendation?: string | null;
+  }>;
+  raw: {
+    meili_configured: boolean;
+    sitemap_status: string;
+    sitemap_last_completed_at?: string | null;
+  };
+}
+
 // ─── Score Ring ───────────────────────────────────────────────────────────────
 
 function ScoreRing({ pct, size = 56 }: { pct: number; size?: number }) {
@@ -127,7 +183,7 @@ function CheckItem({ check }: { check: SEOCheck }) {
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export function SEOAdminPage() {
-  const [activeTab, setActiveTab] = useState<'editor' | 'batch' | 'stats' | 'snapshots'>('editor');
+  const [activeTab, setActiveTab] = useState<'dashboard' | 'editor' | 'batch' | 'stats' | 'snapshots'>('dashboard');
   
   return (
     <div className="max-w-[1280px] mx-auto px-4 lg:px-6 pt-6 pb-12">
@@ -144,6 +200,7 @@ export function SEOAdminPage() {
       {/* Tabs */}
       <div className="flex items-center gap-1 mb-6 border-b border-border">
         {[
+          { id: 'dashboard' as const, label: 'SEO Dashboard', icon: Gauge },
           { id: 'editor' as const, label: 'Editor de SEO', icon: FileText },
           { id: 'batch' as const, label: 'Geracao em Lote', icon: Sparkles },
           { id: 'snapshots' as const, label: 'Snapshots SEO', icon: Database },
@@ -164,6 +221,7 @@ export function SEOAdminPage() {
         ))}
       </div>
 
+      {activeTab === 'dashboard' && <SEODashboardTab />}
       {activeTab === 'editor' && <SEOEditorTab />}
       {activeTab === 'batch' && <SEOBatchTab />}
       {activeTab === 'snapshots' && <SEOSnapshotsTab />}
@@ -173,6 +231,210 @@ export function SEOAdminPage() {
 }
 
 // ─── Editor Tab ──────────────────────────────────────────────────────────────
+
+function SEODashboardTab() {
+  const [health, setHealth] = useState<SEOHealthResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const loadHealth = useCallback(async (silent = false) => {
+    if (silent) setRefreshing(true);
+    else setLoading(true);
+
+    try {
+      const res = await adminFetch(`${API}/admin/seo/health`);
+      const data = await res.json();
+      if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+      setHealth(data);
+    } catch (e: any) {
+      toast.error(`Erro ao carregar dashboard SEO: ${e.message}`);
+    } finally {
+      if (silent) setRefreshing(false);
+      else setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    loadHealth();
+  }, [loadHealth]);
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center py-16">
+        <Loader2 className="w-6 h-6 animate-spin text-primary" />
+      </div>
+    );
+  }
+
+  if (!health) {
+    return (
+      <div className="text-center py-16 text-muted-foreground">
+        <Gauge className="w-12 h-12 mx-auto mb-3 text-muted-foreground/30" />
+        <p className="text-sm">Nao foi possivel carregar o dashboard de saude SEO.</p>
+      </div>
+    );
+  }
+
+  const criticalGaps = health.gaps.filter((gap) => gap.severity === 'critical');
+
+  return (
+    <div className="space-y-6">
+      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+        <div>
+          <h2 className="text-lg font-semibold text-foreground flex items-center gap-2">
+            <Gauge className="w-5 h-5 text-primary" /> SEO Dashboard
+          </h2>
+          <p className="text-sm text-muted-foreground mt-1">
+            Saude de SEO para e-commerce com score, pilares enterprise, checklist tecnico e gaps reais.
+          </p>
+        </div>
+        <Button variant="outline" onClick={() => loadHealth(true)} disabled={refreshing} className="gap-1.5">
+          {refreshing ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+          Atualizar Analise
+        </Button>
+      </div>
+
+      <div className="grid grid-cols-2 xl:grid-cols-5 gap-4">
+        <Card className="p-5">
+          <p className="text-xs text-muted-foreground mb-2">Score Geral</p>
+          <div className="flex items-center justify-between gap-3">
+            <div>
+              <p className="text-3xl font-bold text-foreground">{health.overall.score}%</p>
+              <p className="text-xs text-muted-foreground mt-1">Nota {health.overall.grade}</p>
+            </div>
+            <ScoreRing pct={health.overall.score} size={64} />
+          </div>
+        </Card>
+        <StatCard
+          label="Enterprise Ready"
+          value={health.overall.enterprise_ready ? 'Sim' : 'Nao'}
+          color={health.overall.enterprise_ready ? 'text-green-600' : 'text-orange-600'}
+          sub={`${criticalGaps.length} gap(s) criticos`}
+        />
+        <StatCard label="Produtos Ativos" value={health.coverage.active_products} />
+        <StatCard label="Snapshots Produto" value={`${health.coverage.product_snapshot_pct}%`} sub={`${health.coverage.product_snapshots} gerados`} />
+        <StatCard label="Snapshots Categoria" value={`${health.coverage.category_snapshot_pct}%`} sub={`${health.coverage.category_snapshots}/${health.coverage.eligible_category_routes}`} />
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-6">
+        <Card className="p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <Layers3 className="w-4 h-4 text-primary" />
+            <h3 className="text-sm font-semibold text-foreground">Pilares Enterprise de SEO</h3>
+          </div>
+          <div className="space-y-4">
+            {health.pillars.map((pillar) => (
+              <div key={pillar.id} className="space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <span className="text-sm font-medium text-foreground">{pillar.title}</span>
+                  <span className="text-xs text-muted-foreground">{pillar.percentage}%</span>
+                </div>
+                <div className="w-full bg-muted rounded-full h-2.5">
+                  <div
+                    className={cn(
+                      'h-2.5 rounded-full transition-all',
+                      pillar.percentage >= 85 ? 'bg-green-500' : pillar.percentage >= 65 ? 'bg-yellow-500' : 'bg-red-500'
+                    )}
+                    style={{ width: `${pillar.percentage}%` }}
+                  />
+                </div>
+                <p className="text-[11px] text-muted-foreground">{pillar.score}/{pillar.maxScore} pontos</p>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <ShieldCheck className="w-4 h-4 text-primary" />
+            <h3 className="text-sm font-semibold text-foreground">Resumo Operacional</h3>
+          </div>
+          <div className="space-y-3">
+            <SummaryRow label="Titulos SEO" value={`${health.coverage.seo_title_pct}%`} />
+            <SummaryRow label="Meta descriptions" value={`${health.coverage.meta_description_pct}%`} />
+            <SummaryRow label="Slugs amigaveis" value={`${health.coverage.url_key_pct}%`} />
+            <SummaryRow label="Qualidade media" value={`${health.coverage.avg_quality_score}%`} />
+            <SummaryRow label="Sitemap status" value={health.raw.sitemap_status} />
+            <SummaryRow label="Arquivos de sitemap" value={health.coverage.sitemap_files} />
+            <SummaryRow label="MeiliSearch" value={health.raw.meili_configured ? 'Configurado' : 'Ausente'} />
+            <SummaryRow label="Ultima leitura" value={new Date(health.generated_at).toLocaleString('pt-BR')} />
+          </div>
+        </Card>
+      </div>
+
+      <div className="grid grid-cols-1 xl:grid-cols-[1.1fr_0.9fr] gap-6">
+        <Card className="p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <Bot className="w-4 h-4 text-primary" />
+            <h3 className="text-sm font-semibold text-foreground">Checklist SEO Enterprise</h3>
+          </div>
+          <div className="space-y-3">
+            {health.checks.map((check) => (
+              <div key={check.id} className="flex items-start gap-3 p-3 rounded-xl border border-border bg-background">
+                <Badge
+                  variant="outline"
+                  className={cn(
+                    'mt-0.5 text-[10px] shrink-0',
+                    check.status === 'ok' && 'border-green-200 text-green-700 bg-green-50',
+                    check.status === 'warning' && 'border-yellow-200 text-yellow-700 bg-yellow-50',
+                    check.status === 'critical' && 'border-red-200 text-red-700 bg-red-50'
+                  )}
+                >
+                  {check.status === 'ok' ? 'OK' : check.status === 'warning' ? 'Atencao' : 'Critico'}
+                </Badge>
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center justify-between gap-2">
+                    <p className="text-sm font-medium text-foreground">{check.title}</p>
+                    <span className="text-[11px] text-muted-foreground">{check.score}/{check.maxScore}</span>
+                  </div>
+                  <p className="text-xs text-muted-foreground mt-1">{check.detail}</p>
+                  {check.recommendation && check.status !== 'ok' && (
+                    <p className="text-[11px] text-foreground/80 mt-2">Proximo passo: {check.recommendation}</p>
+                  )}
+                </div>
+              </div>
+            ))}
+          </div>
+        </Card>
+
+        <Card className="p-5">
+          <div className="flex items-center gap-2 mb-4">
+            <AlertTriangle className="w-4 h-4 text-primary" />
+            <h3 className="text-sm font-semibold text-foreground">Gaps Reais do Setup</h3>
+          </div>
+          <div className="space-y-3">
+            {health.gaps.length === 0 ? (
+              <div className="rounded-xl border border-green-200 bg-green-50 p-4 text-sm text-green-800">
+                Nenhum gap aberto. O setup atual atende o checklist enterprise sem ressalvas.
+              </div>
+            ) : (
+              health.gaps.map((gap) => (
+                <div key={gap.id} className="rounded-xl border border-border p-4">
+                  <div className="flex items-center gap-2 mb-2">
+                    <Badge
+                      variant="outline"
+                      className={cn(
+                        'text-[10px]',
+                        gap.severity === 'critical' ? 'border-red-200 text-red-700 bg-red-50' : 'border-yellow-200 text-yellow-700 bg-yellow-50'
+                      )}
+                    >
+                      {gap.severity === 'critical' ? 'Critico' : 'Atencao'}
+                    </Badge>
+                    <p className="text-sm font-medium text-foreground">{gap.title}</p>
+                  </div>
+                  <p className="text-xs text-muted-foreground">{gap.detail}</p>
+                  {gap.recommendation && (
+                    <p className="text-[11px] text-foreground/80 mt-2">Acao recomendada: {gap.recommendation}</p>
+                  )}
+                </div>
+              ))
+            )}
+          </div>
+        </Card>
+      </div>
+    </div>
+  );
+}
 
 function SEOEditorTab() {
   const [sku, setSku] = useState('');
@@ -867,6 +1129,15 @@ function StatCard({ label, value, sub, color }: { label: string; value: string |
       <p className={cn('text-xl font-bold', color || 'text-foreground')}>{value}</p>
       {sub && <p className="text-[10px] text-muted-foreground mt-0.5">{sub}</p>}
     </Card>
+  );
+}
+
+function SummaryRow({ label, value }: { label: string; value: string | number }) {
+  return (
+    <div className="flex items-center justify-between gap-3 border-b border-border/70 pb-2 last:border-0 last:pb-0">
+      <span className="text-xs text-muted-foreground">{label}</span>
+      <span className="text-sm font-medium text-foreground text-right">{value}</span>
+    </div>
   );
 }
 

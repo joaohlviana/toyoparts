@@ -24,7 +24,7 @@ const SNAPSHOT_BUCKET = 'make-1d6e33e0-snapshots';
 const SNAPSHOT_PREFIX = 'snapshot:';
 const CATEGORY_TREE_CACHE_KEY = 'meta:category_tree';
 
-type SnapshotRouteType = 'home' | 'static' | 'department' | 'subcategory' | 'leaf';
+type SnapshotRouteType = 'home' | 'static' | 'vehicle' | 'vehicle-category' | 'department' | 'subcategory' | 'leaf';
 
 interface CategoryNode {
   id: string | number;
@@ -43,15 +43,36 @@ interface SnapshotRouteRecord {
   h1: string;
   category_id?: string;
   category_name?: string;
+  model_name?: string;
+  model_slug?: string;
+  model_facet_value?: string;
   product_count: number;
   depth: number;
   breadcrumb: string[];
+  breadcrumb_items?: Array<{ name: string; url: string }>;
   requested?: boolean;
   has_snapshot?: boolean;
   snapshot_generated_at?: string | null;
   snapshot_age_hours?: number | null;
   snapshot_status?: 'fresh' | 'stale' | 'missing';
 }
+
+interface VehicleSnapshotTarget {
+  slug: string;
+  name: string;
+  aliases: string[];
+}
+
+const VEHICLE_SNAPSHOT_TARGETS: VehicleSnapshotTarget[] = [
+  { slug: 'hilux', name: 'Hilux', aliases: ['Hilux', '35'] },
+  { slug: 'corolla', name: 'Corolla', aliases: ['Corolla', '38'] },
+  { slug: 'corolla-cross', name: 'Corolla Cross', aliases: ['Corolla Cross', '206'] },
+  { slug: 'yaris', name: 'Yaris', aliases: ['Yaris', '205'] },
+  { slug: 'sw4', name: 'SW4', aliases: ['SW4', '204'] },
+  { slug: 'etios', name: 'Etios', aliases: ['Etios', '37', '207'] },
+  { slug: 'rav4', name: 'RAV4', aliases: ['RAV4', 'Rav4', '36'] },
+  { slug: 'prius', name: 'Prius', aliases: ['Prius', '40'] },
+];
 
 const STATIC_SNAPSHOT_ROUTES: Array<Pick<SnapshotRouteRecord, 'path' | 'route_type' | 'title' | 'description' | 'h1'>> = [
   {
@@ -289,6 +310,35 @@ async function getCategoryFacetCounts(): Promise<Record<string, number>> {
   }
 }
 
+async function getModelFacetCounts(): Promise<Record<string, number>> {
+  if (!meili.isConfigured()) return {};
+  try {
+    const res = await meili.search('', {
+      limit: 0,
+      filter: ['in_stock = true'],
+      facets: ['modelos'],
+    });
+    return res.facetDistribution?.modelos || {};
+  } catch (err: any) {
+    console.warn('[Snapshot] Model facet discovery failed:', err.message);
+    return {};
+  }
+}
+
+function resolveSnapshotVehicleTargets(modelFacetCounts: Record<string, number>) {
+  return VEHICLE_SNAPSHOT_TARGETS
+    .map((target) => {
+      const matchingAlias = target.aliases.find((alias) => Number(modelFacetCounts[alias] || 0) > 0);
+      if (!matchingAlias) return null;
+      return {
+        ...target,
+        facetValue: matchingAlias,
+        productCount: Number(modelFacetCounts[matchingAlias] || 0),
+      };
+    })
+    .filter(Boolean) as Array<VehicleSnapshotTarget & { facetValue: string; productCount: number }>;
+}
+
 async function getSnapshotMetadataMap() {
   const snapshots = await kv.getByPrefix(`${SNAPSHOT_PREFIX}category:`).catch(() => []);
   const map = new Map<string, any>();
@@ -324,6 +374,7 @@ async function discoverCategorySnapshotRoutes(options?: {
 
   const tree = await kv.get(CATEGORY_TREE_CACHE_KEY).catch(() => null);
   const facetCounts = await getCategoryFacetCounts();
+  const modelFacetCounts = await getModelFacetCounts();
   const snapshotMeta = await getSnapshotMetadataMap();
 
   const routes: SnapshotRouteRecord[] = [];
@@ -350,6 +401,74 @@ async function discoverCategorySnapshotRoutes(options?: {
         depth: preset.path === '/' ? 0 : preset.path.split('/').filter(Boolean).length,
         breadcrumb: preset.path === '/' ? ['Home'] : preset.path.split('/').filter(Boolean).map((part) => part.replace(/-/g, ' ')),
       });
+    }
+  }
+
+  const vehicleTargets = resolveSnapshotVehicleTargets(modelFacetCounts);
+  for (const vehicle of vehicleTargets) {
+    if (vehicle.productCount < minProducts) continue;
+
+    const vehiclePath = `/pecas/${vehicle.slug}`;
+    pushRoute({
+      path: vehiclePath,
+      url: `${SITE_URL}${vehiclePath}`,
+      route_type: 'vehicle',
+      title: `Pecas e Acessorios Toyota ${vehicle.name} | ${SITE_NAME}`,
+      description: `Explore pecas e acessorios genuinos Toyota para ${vehicle.name} com ${vehicle.productCount} produto${vehicle.productCount === 1 ? '' : 's'} em estoque na ${SITE_NAME}.`,
+      h1: `Pecas e Acessorios Toyota ${vehicle.name}`,
+      model_name: vehicle.name,
+      model_slug: vehicle.slug,
+      model_facet_value: vehicle.facetValue,
+      product_count: vehicle.productCount,
+      depth: 1,
+      breadcrumb: ['Pecas', vehicle.name],
+      breadcrumb_items: [
+        { name: 'Home', url: '/' },
+        { name: 'Pecas', url: '/pecas' },
+        { name: vehicle.name, url: vehiclePath },
+      ],
+    });
+
+    if (!meili.isConfigured()) continue;
+
+    try {
+      const categorySearch = await meili.search('', {
+        limit: 0,
+        filter: [`modelos = "${vehicle.facetValue}"`, 'in_stock = true'],
+        facets: ['category_names'],
+      });
+      const categoryFacetCounts = categorySearch.facetDistribution?.category_names || {};
+      for (const [categoryName, rawCount] of Object.entries(categoryFacetCounts)) {
+        const productCount = Number(rawCount || 0);
+        const safeCategoryName = String(categoryName || '').trim();
+        if (!safeCategoryName || productCount < minProducts) continue;
+
+        const categorySlug = slugify(safeCategoryName);
+        const comboPath = `${vehiclePath}/${categorySlug}`;
+        pushRoute({
+          path: comboPath,
+          url: `${SITE_URL}${comboPath}`,
+          route_type: 'vehicle-category',
+          title: `${safeCategoryName} para ${vehicle.name} | Pecas e Acessorios Toyota | ${SITE_NAME}`,
+          description: `Encontre ${safeCategoryName.toLowerCase()} para Toyota ${vehicle.name} com ${productCount} produto${productCount === 1 ? '' : 's'} disponive${productCount === 1 ? 'l' : 'is'} na ${SITE_NAME}.`,
+          h1: `${safeCategoryName} para ${vehicle.name}`,
+          category_name: safeCategoryName,
+          model_name: vehicle.name,
+          model_slug: vehicle.slug,
+          model_facet_value: vehicle.facetValue,
+          product_count: productCount,
+          depth: 2,
+          breadcrumb: ['Pecas', vehicle.name, safeCategoryName],
+          breadcrumb_items: [
+            { name: 'Home', url: '/' },
+            { name: 'Pecas', url: '/pecas' },
+            { name: vehicle.name, url: vehiclePath },
+            { name: safeCategoryName, url: comboPath },
+          ],
+        });
+      }
+    } catch (err: any) {
+      console.warn(`[Snapshot] Vehicle category discovery failed for ${vehicle.name}:`, err.message);
     }
   }
 
@@ -390,7 +509,7 @@ async function discoverCategorySnapshotRoutes(options?: {
   routes.sort((a, b) => {
     if (a.requested !== b.requested) return a.requested ? -1 : 1;
     if (a.route_type !== b.route_type) {
-      const order: Record<SnapshotRouteType, number> = { home: 0, static: 1, department: 2, subcategory: 3, leaf: 4 };
+      const order: Record<SnapshotRouteType, number> = { home: 0, static: 1, vehicle: 2, 'vehicle-category': 3, department: 4, subcategory: 5, leaf: 6 };
       return order[a.route_type] - order[b.route_type];
     }
     if (b.product_count !== a.product_count) return b.product_count - a.product_count;
@@ -407,7 +526,9 @@ async function discoverCategorySnapshotRoutes(options?: {
     summary: {
       total_routes: routes.length,
       category_routes: routes.filter((route) => route.category_id).length,
-      static_routes: routes.filter((route) => !route.category_id).length,
+      vehicle_routes: routes.filter((route) => route.route_type === 'vehicle').length,
+      vehicle_category_routes: routes.filter((route) => route.route_type === 'vehicle-category').length,
+      static_routes: routes.filter((route) => route.route_type === 'static' || route.route_type === 'home').length,
       requested_urls: requestedPaths.size,
       requested_matches: routes.filter((route) => route.requested).length,
       unmatched_requested: unmatchedRequested.length,
@@ -712,16 +833,37 @@ function renderStaticSnapshotHtml(route: SnapshotRouteRecord): string {
 }
 
 function renderCategorySnapshotHtml(route: SnapshotRouteRecord, products: any[]): string {
-  const breadcrumbItems = [
-    { name: 'Home', url: '/' },
-    ...route.breadcrumb.map((item, index) => ({
-      name: item,
-      url: `/${route.breadcrumb.slice(0, index + 1).map((part) => slugify(part)).join('/')}`,
-    })),
-  ];
+  const breadcrumbItems = route.breadcrumb_items?.length
+    ? route.breadcrumb_items
+    : [
+        { name: 'Home', url: '/' },
+        ...route.breadcrumb.map((item, index) => ({
+          name: item,
+          url: `/${route.breadcrumb.slice(0, index + 1).map((part) => slugify(part)).join('/')}`,
+        })),
+      ];
   const breadcrumbJsonLd = buildBreadcrumbJsonLd(breadcrumbItems);
   const collectionJsonLd = buildCollectionJsonLd(route, products);
   const orgJsonLd = buildOrganizationJsonLd();
+  const snapshotLabel = route.route_type === 'vehicle'
+    ? 'Snapshot SEO de Veiculo'
+    : route.route_type === 'vehicle-category'
+      ? 'Snapshot SEO de Veiculo + Categoria'
+      : 'Snapshot SEO de Categoria';
+  const contextPills = [
+    `${route.product_count} produto${route.product_count === 1 ? '' : 's'} encontrados`,
+    'URL canonica pronta para indexacao',
+  ];
+
+  if (route.model_name) {
+    contextPills.push(`Linha Toyota ${route.model_name}`);
+  }
+
+  if (route.route_type === 'vehicle-category' && route.category_name) {
+    contextPills.push(`Categoria ${route.category_name}`);
+  } else if (route.route_type !== 'vehicle' && route.breadcrumb.length > 0) {
+    contextPills.push(`Categoria ${route.breadcrumb.join(' > ')}`);
+  }
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -778,17 +920,19 @@ function renderCategorySnapshotHtml(route: SnapshotRouteRecord, products: any[])
     </nav>
 
     <section class="hero">
-      <span class="eyebrow">Snapshot SEO de Categoria</span>
+      <span class="eyebrow">${escapeHtml(snapshotLabel)}</span>
       <h1>${escapeHtml(route.h1)}</h1>
       <p class="lead">${escapeHtml(route.description)}</p>
       <div class="meta">
-        <span class="pill">${route.product_count} produto${route.product_count === 1 ? '' : 's'} encontrados</span>
-        <span class="pill">URL canonica pronta para indexacao</span>
-        <span class="pill">Categoria ${escapeHtml(route.breadcrumb.join(' > '))}</span>
+        ${contextPills.map((pill) => `<span class="pill">${escapeHtml(pill)}</span>`).join('')}
       </div>
       <div class="actions">
         <a class="btn" href="${route.url}">Abrir pagina completa</a>
-        <a class="btn btn-light" href="${SITE_URL}/busca?category_name=${encodeURIComponent(route.category_name || route.h1)}">Ver busca relacionada</a>
+        <a class="btn btn-light" href="${route.route_type === 'vehicle'
+          ? `${SITE_URL}/busca?modelo=${encodeURIComponent(route.model_name || '')}`
+          : route.route_type === 'vehicle-category'
+            ? `${SITE_URL}/busca?modelo=${encodeURIComponent(route.model_name || '')}&category_name=${encodeURIComponent(route.category_name || route.h1)}`
+            : `${SITE_URL}/busca?category_name=${encodeURIComponent(route.category_name || route.h1)}`}">Ver busca relacionada</a>
       </div>
     </section>
 
@@ -814,16 +958,30 @@ function renderCategorySnapshotHtml(route: SnapshotRouteRecord, products: any[])
 </html>`;
 }
 
-async function fetchProductsForCategorySnapshot(categoryId: string, limit = 12) {
+async function fetchProductsForRouteSnapshot(route: SnapshotRouteRecord, limit = 12) {
   if (!meili.isConfigured()) return [];
   try {
-    const res = await meili.search('', {
+    const filters: string[] = ['in_stock = true'];
+    let query = '';
+
+    if (route.category_id) {
+      filters.push(`category_ids = "${route.category_id}"`);
+    }
+    if (route.model_facet_value) {
+      filters.push(`modelos = "${route.model_facet_value}"`);
+    }
+    if (route.route_type === 'vehicle-category' && route.category_name) {
+      filters.push(`category_names = "${route.category_name}"`);
+      query = route.category_name;
+    }
+
+    const res = await meili.search(query, {
       limit,
-      filter: `category_ids = "${categoryId}"`,
+      filter: filters,
     });
     return Array.isArray(res.hits) ? res.hits : [];
   } catch (err: any) {
-    console.warn(`[Snapshot] Product fetch for category ${categoryId} failed:`, err.message);
+    console.warn(`[Snapshot] Product fetch for route ${route.path} failed:`, err.message);
     return [];
   }
 }
@@ -842,7 +1000,7 @@ async function generateRouteSnapshot(route: SnapshotRouteRecord, force = false) 
 
   const html = route.route_type === 'static' || route.route_type === 'home'
     ? renderStaticSnapshotHtml(route)
-    : renderCategorySnapshotHtml(route, await fetchProductsForCategorySnapshot(route.category_id || '', 12));
+    : renderCategorySnapshotHtml(route, await fetchProductsForRouteSnapshot(route, 12));
 
   const payload = {
     type: route.route_type,

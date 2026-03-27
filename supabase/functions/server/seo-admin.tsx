@@ -17,6 +17,16 @@ var SNAPSHOT_PRODUCT_PREFIX = 'snapshot:product:';
 var SNAPSHOT_CATEGORY_PREFIX = 'snapshot:category:';
 var SITEMAP_STATUS_KEY = 'meta:sitemap_status';
 var CATEGORY_TREE_CACHE_KEY = 'meta:category_tree';
+var VEHICLE_SNAPSHOT_TARGETS = [
+  { slug: 'hilux', name: 'Hilux', aliases: ['Hilux', '35'] },
+  { slug: 'corolla', name: 'Corolla', aliases: ['Corolla', '38'] },
+  { slug: 'corolla-cross', name: 'Corolla Cross', aliases: ['Corolla Cross', '206'] },
+  { slug: 'yaris', name: 'Yaris', aliases: ['Yaris', '205'] },
+  { slug: 'sw4', name: 'SW4', aliases: ['SW4', '204'] },
+  { slug: 'etios', name: 'Etios', aliases: ['Etios', '37', '207'] },
+  { slug: 'rav4', name: 'RAV4', aliases: ['RAV4', 'Rav4', '36'] },
+  { slug: 'prius', name: 'Prius', aliases: ['Prius', '40'] },
+];
 
 export var seoAdmin = new Hono();
 
@@ -101,6 +111,23 @@ function getTopCategoryNodes(tree: any): any[] {
     return tree.flatMap(function(node: any) { return walk(node); });
   }
   return walk(tree);
+}
+
+function resolveSnapshotVehicleTargets(modelFacetCounts: Record<string, number>) {
+  return VEHICLE_SNAPSHOT_TARGETS
+    .map(function(target: any) {
+      var matchingAlias = target.aliases.find(function(alias: string) {
+        return Number(modelFacetCounts[alias] || 0) > 0;
+      });
+      if (!matchingAlias) return null;
+      return {
+        slug: target.slug,
+        name: target.name,
+        facetValue: matchingAlias,
+        productCount: Number(modelFacetCounts[matchingAlias] || 0),
+      };
+    })
+    .filter(Boolean);
 }
 
 async function computeSeoStatsSnapshot() {
@@ -409,10 +436,12 @@ seoAdmin.get('/health', async (c) => {
     var categoryTree = await kv.get(CATEGORY_TREE_CACHE_KEY).catch(function() { return null; }) as any;
 
     var facetCounts: Record<string, number> = {};
+    var modelFacetCounts: Record<string, number> = {};
     if (meili.isConfigured()) {
       try {
-        var facetResult = await meili.search('', { limit: 0, facets: ['category_ids'] });
+        var facetResult = await meili.search('', { limit: 0, filter: ['in_stock = true'], facets: ['category_ids', 'modelos'] });
         facetCounts = facetResult.facetDistribution?.category_ids || {};
+        modelFacetCounts = facetResult.facetDistribution?.modelos || {};
       } catch (facetErr: any) {
         console.warn('[seo-admin/health] category facet fetch failed:', facetErr.message);
       }
@@ -429,8 +458,38 @@ seoAdmin.get('/health', async (c) => {
     };
     for (var i = 0; i < topNodes.length; i++) visit(topNodes[i], 1);
 
+    var eligibleVehicleRoutes = 0;
+    var eligibleVehicleCategoryRoutes = 0;
+    var snapshotVehicleTargets = resolveSnapshotVehicleTargets(modelFacetCounts) as any[];
+    for (var vehicleIdx = 0; vehicleIdx < snapshotVehicleTargets.length; vehicleIdx++) {
+      var vehicle = snapshotVehicleTargets[vehicleIdx];
+      if (!vehicle || vehicle.productCount <= 0) continue;
+      eligibleVehicleRoutes++;
+      if (!meili.isConfigured()) continue;
+      try {
+        var vehicleFacetResult = await meili.search('', {
+          limit: 0,
+          filter: ['in_stock = true', 'modelos = "' + vehicle.facetValue + '"'],
+          facets: ['category_names'],
+        });
+        var vehicleCategoryFacetCounts = vehicleFacetResult.facetDistribution?.category_names || {};
+        for (var vehicleCategoryName in vehicleCategoryFacetCounts) {
+          if (Number(vehicleCategoryFacetCounts[vehicleCategoryName] || 0) > 0) {
+            eligibleVehicleCategoryRoutes++;
+          }
+        }
+      } catch (vehicleFacetErr: any) {
+        console.warn('[seo-admin/health] vehicle facet fetch failed for ' + vehicle.name + ':', vehicleFacetErr.message);
+      }
+    }
+
+    var collectionSnapshots = categorySnapshots.filter(function(entry: any) {
+      var value = entry?.value || entry;
+      return value?.type !== 'home' && value?.type !== 'static';
+    });
+    var eligibleCollectionRoutes = eligibleCategoryRoutes + eligibleVehicleRoutes + eligibleVehicleCategoryRoutes;
     var productSnapshotCoverage = activeProducts > 0 ? Math.round((productSnapshots.length / activeProducts) * 100) : 0;
-    var categorySnapshotCoverage = eligibleCategoryRoutes > 0 ? Math.round((categorySnapshots.length / eligibleCategoryRoutes) * 100) : 0;
+    var categorySnapshotCoverage = eligibleCollectionRoutes > 0 ? Math.round((collectionSnapshots.length / eligibleCollectionRoutes) * 100) : 0;
     var sitemapFiles = sitemapStatus?.files_detail || [];
     var sitemapGenerated = sitemapStatus?.status === 'success' && sitemapFiles.length > 0;
 
@@ -450,7 +509,7 @@ seoAdmin.get('/health', async (c) => {
       evaluateCheck('org-schema', 'structured-data', 'Organization/Store schema', 4, 4, 'Organization/AutoPartsStore esta configurado nas paginas SEO criticas.', null),
       evaluateCheck('social-share', 'structured-data', 'Open Graph e social share', 4, 4, 'Open Graph/Twitter e endpoint /seo/share/:sku ativos para compartilhamento.', null),
       evaluateCheck('product-snapshots', 'rendering', 'Cobertura de snapshots de produto', productSnapshotCoverage >= 90 ? 8 : productSnapshotCoverage >= 60 ? 5 : productSnapshotCoverage >= 30 ? 3 : 1, 8, productSnapshots.length + ' snapshots para ' + activeProducts + ' produtos ativos (' + productSnapshotCoverage + '%).', 'Aumentar a cobertura de snapshots de produto e manter regeneracao continua.'),
-      evaluateCheck('category-snapshots', 'rendering', 'Cobertura de snapshots de categoria', categorySnapshotCoverage >= 80 ? 6 : categorySnapshotCoverage >= 50 ? 4 : categorySnapshotCoverage >= 20 ? 2 : 1, 6, categorySnapshots.length + ' snapshots para ' + eligibleCategoryRoutes + ' rotas elegiveis (' + categorySnapshotCoverage + '%).', 'Gerar snapshots para mais rotas de categoria com produto real.'),
+      evaluateCheck('category-snapshots', 'rendering', 'Cobertura de snapshots de landings', categorySnapshotCoverage >= 80 ? 6 : categorySnapshotCoverage >= 50 ? 4 : categorySnapshotCoverage >= 20 ? 2 : 1, 6, collectionSnapshots.length + ' snapshots para ' + eligibleCollectionRoutes + ' rotas elegiveis (' + categorySnapshotCoverage + '%).', 'Gerar snapshots para mais landings de categoria, veiculo e veiculo x categoria com produto real.'),
       evaluateCheck('model-landings', 'architecture', 'Landings indexaveis por modelo', 4, 4, 'Rotas /pecas/:modelo e /pecas/:modelo/:categoriaSlug existem com canonical e conteudo SEO.', null),
       evaluateCheck('category-tree', 'architecture', 'Arvore de categorias carregada', categoryTree ? 4 : 0, 4, categoryTree ? 'Arvore de categorias em cache e pronta para discovery.' : 'Arvore de categorias ausente no cache.', 'Sincronizar a arvore de categorias do Magento para manter a IA e os snapshots coerentes.'),
       evaluateCheck('edge-proxy', 'infrastructure', 'Snapshot proxy no dominio principal', 0, 8, 'Ainda nao ha proxy/worker dedicado servindo snapshots diretamente no dominio principal para bots.', 'Implementar proxy de snapshots no dominio principal para fechar o setup enterprise de renderizacao SEO.'),
@@ -518,9 +577,11 @@ seoAdmin.get('/health', async (c) => {
         avg_quality_score: stats.avg_score,
         product_snapshots: productSnapshots.length,
         product_snapshot_pct: productSnapshotCoverage,
-        category_snapshots: categorySnapshots.length,
+        category_snapshots: collectionSnapshots.length,
         category_snapshot_pct: categorySnapshotCoverage,
-        eligible_category_routes: eligibleCategoryRoutes,
+        eligible_category_routes: eligibleCollectionRoutes,
+        eligible_vehicle_routes: eligibleVehicleRoutes,
+        eligible_vehicle_category_routes: eligibleVehicleCategoryRoutes,
         sitemap_files: sitemapFiles.length,
       },
       checks: checks,

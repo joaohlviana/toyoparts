@@ -56,12 +56,14 @@ interface SEOStats {
 interface SnapshotRouteRecord {
   path: string;
   url: string;
-  route_type: 'home' | 'static' | 'department' | 'subcategory' | 'leaf';
+  route_type: 'home' | 'static' | 'vehicle' | 'vehicle-category' | 'department' | 'subcategory' | 'leaf';
   title: string;
   description: string;
   h1: string;
   category_id?: string;
   category_name?: string;
+  model_name?: string;
+  model_slug?: string;
   product_count: number;
   depth: number;
   breadcrumb: string[];
@@ -78,6 +80,8 @@ interface SnapshotDiscoveryResponse {
   summary: {
     total_routes: number;
     category_routes: number;
+    vehicle_routes?: number;
+    vehicle_category_routes?: number;
     static_routes: number;
     requested_urls: number;
     requested_matches: number;
@@ -87,6 +91,19 @@ interface SnapshotDiscoveryResponse {
     missing_snapshots: number;
   };
   unmatched_requested_paths: string[];
+}
+
+function formatSnapshotRouteType(type: SnapshotRouteRecord['route_type'] | string) {
+  switch (type) {
+    case 'home': return 'home';
+    case 'static': return 'estatica';
+    case 'vehicle': return 'veiculo';
+    case 'vehicle-category': return 'veiculo x categoria';
+    case 'department': return 'departamento';
+    case 'subcategory': return 'subcategoria';
+    case 'leaf': return 'folha';
+    default: return type;
+  }
 }
 
 interface SEOHealthCheck {
@@ -126,6 +143,8 @@ interface SEOHealthResponse {
     category_snapshots: number;
     category_snapshot_pct: number;
     eligible_category_routes: number;
+    eligible_vehicle_routes?: number;
+    eligible_vehicle_category_routes?: number;
     sitemap_files: number;
   };
   checks: SEOHealthCheck[];
@@ -313,7 +332,11 @@ function SEODashboardTab() {
         />
         <StatCard label="Produtos Ativos" value={health.coverage.active_products} />
         <StatCard label="Snapshots Produto" value={`${health.coverage.product_snapshot_pct}%`} sub={`${health.coverage.product_snapshots} gerados`} />
-        <StatCard label="Snapshots Categoria" value={`${health.coverage.category_snapshot_pct}%`} sub={`${health.coverage.category_snapshots}/${health.coverage.eligible_category_routes}`} />
+        <StatCard
+          label="Snapshots Landings"
+          value={`${health.coverage.category_snapshot_pct}%`}
+          sub={`${health.coverage.category_snapshots}/${health.coverage.eligible_category_routes}`}
+        />
       </div>
 
       <div className="grid grid-cols-1 xl:grid-cols-[1.2fr_0.8fr] gap-6">
@@ -837,14 +860,14 @@ function SEOSnapshotsTab() {
         <div className="flex items-start justify-between gap-4">
           <div>
             <h3 className="text-sm font-semibold text-foreground flex items-center gap-2">
-              <Database className="w-4 h-4 text-primary" /> Snapshot de Categorias SEO
+              <Database className="w-4 h-4 text-primary" /> Snapshots de Landings SEO
             </h3>
             <p className="text-xs text-muted-foreground mt-1 max-w-3xl">
-              Descobre automaticamente as variacoes de categoria com produto real, cruza uma lista de URLs do legado
-              e gera snapshots HTML cacheados para rotas prioritarias de SEO.
+              Descobre automaticamente landings de departamentos, veiculos e cruzamentos veiculo x categoria com produto real,
+              cruza uma lista de URLs do legado e gera snapshots HTML cacheados para rotas prioritarias de SEO.
             </p>
           </div>
-          <Badge variant="outline" className="text-[10px]">Categorias + rotas fixas</Badge>
+          <Badge variant="outline" className="text-[10px]">Categorias + veiculos + rotas fixas</Badge>
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-[1.4fr_auto] gap-4">
@@ -854,11 +877,11 @@ function SEOSnapshotsTab() {
               value={urlsText}
               onChange={(e) => setUrlsText(e.target.value)}
               rows={10}
-              placeholder="Cole aqui as URLs do legado, uma por linha. Ex.: https://www.toyoparts.com.br/pecas/filtros"
+              placeholder="Cole aqui as URLs do legado, uma por linha. Ex.: https://www.toyoparts.com.br/pecas/corolla/acessorios-internos"
               className="w-full rounded-xl border border-input bg-input-background px-3 py-3 text-sm text-foreground placeholder:text-muted-foreground/50 focus:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 focus-visible:border-ring resize-y transition-[color,box-shadow]"
             />
             <p className="text-[11px] text-muted-foreground">
-              Se deixar vazio, o sistema lista automaticamente todas as categorias com produto encontradas no catalogo.
+              Se deixar vazio, o sistema lista automaticamente todas as categorias, modelos e combinacoes com produto encontradas no catalogo.
             </p>
           </div>
 
@@ -919,9 +942,11 @@ function SEOSnapshotsTab() {
 
       {discovery && (
         <>
-          <div className="grid grid-cols-2 lg:grid-cols-5 gap-4">
+          <div className="grid grid-cols-2 lg:grid-cols-6 gap-4">
             <StatCard label="Rotas Descobertas" value={discovery.summary.total_routes} />
             <StatCard label="Categorias" value={discovery.summary.category_routes} />
+            <StatCard label="Veiculos" value={discovery.summary.vehicle_routes || 0} />
+            <StatCard label="Combos V x C" value={discovery.summary.vehicle_category_routes || 0} />
             <StatCard label="Matches da Lista" value={`${discovery.summary.requested_matches}/${discovery.summary.requested_urls || 0}`} />
             <StatCard label="Fresh" value={discovery.summary.fresh_snapshots} color="text-green-600" />
             <StatCard label="Sem Snapshot" value={discovery.summary.missing_snapshots} color="text-orange-600" />
@@ -966,14 +991,15 @@ function SEOSnapshotsTab() {
                             <a href={route.url} target="_blank" rel="noreferrer" className="text-xs font-mono text-primary hover:underline break-all">
                               {route.path}
                             </a>
-                            {route.requested && <Badge variant="outline" className="text-[10px]">colada</Badge>}
-                          </div>
-                          <p className="text-[11px] text-muted-foreground line-clamp-2">{route.title}</p>
+                          {route.requested && <Badge variant="outline" className="text-[10px]">colada</Badge>}
+                          {route.model_name && <Badge variant="secondary" className="text-[10px]">{route.model_name}</Badge>}
                         </div>
-                      </td>
-                      <td className="py-3 pr-3">
-                        <Badge variant={route.category_id ? 'default' : 'secondary'} className="text-[10px] capitalize">
-                          {route.route_type}
+                        <p className="text-[11px] text-muted-foreground line-clamp-2">{route.title}</p>
+                      </div>
+                    </td>
+                    <td className="py-3 pr-3">
+                        <Badge variant={route.category_id || route.model_name ? 'default' : 'secondary'} className="text-[10px] capitalize">
+                          {formatSnapshotRouteType(route.route_type)}
                         </Badge>
                       </td>
                       <td className="py-3 pr-3 text-xs text-foreground">{route.product_count}</td>

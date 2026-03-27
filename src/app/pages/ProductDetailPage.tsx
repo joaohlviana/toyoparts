@@ -122,8 +122,8 @@ export function ProductDetailPage() {
               <Skeleton className="h-10 w-32" />
               <Skeleton className="h-7 w-40" />
               <Skeleton className="h-28 w-full rounded-2xl" />
-              <Skeleton className="h-11 w-full rounded-xl bg-primary/10" />
-              <Skeleton className="h-11 w-full rounded-xl" />
+              <Skeleton className="h-11 w-full rounded-xl bg-muted/80" />
+              <Skeleton className="h-11 w-full rounded-xl bg-muted/70" />
             </div>
           </div>
         </div>

@@ -61,8 +61,17 @@ export function getAdminHeaders(): HeadersInit {
 // All admin pages should use this instead of raw fetch for /admin/* routes.
 
 export async function adminFetch(url: string, init?: RequestInit): Promise<Response> {
-  const headers = { ...getAdminHeaders(), ...(init?.headers || {}) };
-  const res = await fetch(url, { ...init, headers });
+  const baseHeaders = new Headers(getAdminHeaders());
+  const customHeaders = new Headers(init?.headers || {});
+  customHeaders.forEach((value, key) => {
+    baseHeaders.set(key, value);
+  });
+
+  if (typeof FormData !== 'undefined' && init?.body instanceof FormData && !customHeaders.has('Content-Type')) {
+    baseHeaders.delete('Content-Type');
+  }
+
+  const res = await fetch(url, { ...init, headers: baseHeaders });
 
   if (res.status === 401) {
     // Session expired or invalid — notify listeners (triggers re-login)

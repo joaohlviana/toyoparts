@@ -22,25 +22,27 @@ function slugify(text: any): string {
     || 'sem-nome';
 }
 
+function escapeXml(str: any): string {
+  return String(str ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&apos;');
+}
+
 // ─── ROBOTS.TXT ──────────────────────────────────────────────────────────────
 app.get('/robots.txt', (c) => {
   const robots = `User-agent: *
 Allow: /
-Disallow: /minha-conta/*
-Disallow: /checkout/*
-Disallow: /admin/*
+Disallow: /minha-conta/
+Disallow: /checkout/
+Disallow: /admin/
 Disallow: /acesso
-Disallow: /search?*
-Disallow: /*?order=*
-Disallow: /*?dir=*
-Disallow: /*?limit=*
-Disallow: /*?utm_*
-Disallow: /*?fbclid=*
-Disallow: /*?gclid=*
+Disallow: /busca
 
-Sitemap: ${SUPABASE_URL}/storage/v1/object/public/make-1d6e33e0-sitemaps/sitemap_index.xml
-Sitemap: ${SUPABASE_URL}/functions/v1/make-server-1d6e33e0/seo/sitemap.xml
-Sitemap: ${SUPABASE_URL}/functions/v1/make-server-1d6e33e0/seo/fora_de_catalogo.xml
+Sitemap: ${SITE_URL}/sitemap.xml
+Sitemap: ${SITE_URL}/fora_de_catalogo.xml
 `;
   return c.text(robots, 200, {
     'Content-Type': 'text/plain',
@@ -122,8 +124,49 @@ app.get('/sitemap.xml', async (c) => {
     <loc>${SITE_URL}/pecas/${modelSlug}</loc>
     <changefreq>daily</changefreq>
     <priority>0.8</priority>
-  </url>`;
+        </url>`;
       }).join('');
+
+    // 5. Gerar URLs publicas de snapshots de categoria/veiculo ja materializados
+    const snapshotRows = await kv.getByPrefix('snapshot:category:').catch(() => []);
+    const seenSnapshotPaths = new Set<string>(['/', '/pecas']);
+    const snapshotUrlsXml = (snapshotRows || [])
+      .map((entry: any) => entry?.value || entry)
+      .filter((value: any) => value?.path)
+      .filter((value: any) => {
+        const path = String(value.path || '');
+        if (!path || seenSnapshotPaths.has(path)) return false;
+        seenSnapshotPaths.add(path);
+        return true;
+      })
+      .map((value: any) => {
+        const path = String(value.path || '');
+        const routeType = String(value.type || 'category');
+        const lastMod = value.generated_at
+          ? String(value.generated_at).split('T')[0]
+          : new Date().toISOString().split('T')[0];
+        const priority =
+          routeType === 'vehicle' ? '0.85'
+          : routeType === 'vehicle-category' ? '0.80'
+          : routeType === 'department' ? '0.80'
+          : routeType === 'subcategory' ? '0.75'
+          : routeType === 'leaf' ? '0.70'
+          : routeType === 'home' ? '1.0'
+          : '0.65';
+        const changefreq =
+          routeType === 'vehicle' || routeType === 'vehicle-category' || routeType === 'department'
+            ? 'daily'
+            : 'weekly';
+
+        return `
+  <url>
+    <loc>${SITE_URL}${escapeXml(path)}</loc>
+    <lastmod>${lastMod}</lastmod>
+    <changefreq>${changefreq}</changefreq>
+    <priority>${priority}</priority>
+  </url>`;
+      })
+      .join('');
 
     const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
@@ -139,6 +182,7 @@ app.get('/sitemap.xml', async (c) => {
     <priority>0.9</priority>
   </url>
 ${modelUrlsXml}
+${snapshotUrlsXml}
 ${productUrlsXml}
 </urlset>`;
 

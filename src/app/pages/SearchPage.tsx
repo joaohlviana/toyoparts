@@ -21,7 +21,7 @@ import {
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { ProductCard, ProductCardSkeleton } from '../components/ProductCard';
-import { CategoryTreeFilter, getCategoryNameById } from '../components/CategoryTreeFilter';
+import { CategoryTreeFilter, getCategoryNameById, preloadCategoryTree } from '../components/CategoryTreeFilter';
 import {
   Drawer,
   DrawerContent,
@@ -353,6 +353,8 @@ export function SearchPage({
 
   // Fetch metadata for labels
   useEffect(() => {
+    preloadCategoryTree().catch(() => null);
+
     const fetchMeta = async (attempt = 1) => {
       try {
         const res = await fetch(`${API}/search/meta`, { headers: HEADERS });
@@ -1073,14 +1075,13 @@ export function SearchPage({
 
         {/* ── Desktop Sidebar (borderless, minimal) ── */}
         <aside className="hidden lg:block w-[220px] flex-shrink-0 sticky top-6">
-          <div className="flex items-center justify-between mb-4">
-            <span className="text-xs font-semibold text-muted-foreground uppercase tracking-wider">Filtros</span>
-            {activeFacetCount > 0 && (
+          {activeFacetCount > 0 && (
+            <div className="flex justify-end mb-4">
               <button onClick={clearAll} className="text-[11px] text-primary font-medium hover:underline">
                 Limpar ({activeFacetCount})
               </button>
-            )}
-          </div>
+            </div>
+          )}
           <div>{sidebarContent}</div>
         </aside>
 

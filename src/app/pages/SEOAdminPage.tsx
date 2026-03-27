@@ -249,6 +249,9 @@ export function SEOAdminPage() {
   );
 }
 
+const SNAPSHOT_UI_STORAGE_KEY = 'toyoparts:seo-snapshots-ui';
+const SNAPSHOT_RESULTS_STORAGE_KEY = 'toyoparts:seo-snapshots-results';
+
 // ─── Editor Tab ──────────────────────────────────────────────────────────────
 
 function SEODashboardTab() {
@@ -797,13 +800,61 @@ function SEOBatchTab() {
 function SEOSnapshotsTab() {
   const [discovering, setDiscovering] = useState(false);
   const [generating, setGenerating] = useState(false);
-  const [urlsText, setUrlsText] = useState('');
-  const [minProducts, setMinProducts] = useState(1);
-  const [maxDepth, setMaxDepth] = useState(3);
-  const [onlyRequested, setOnlyRequested] = useState(true);
-  const [force, setForce] = useState(false);
+  const [urlsText, setUrlsText] = useState(() => {
+    if (typeof window === 'undefined') return '';
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(SNAPSHOT_UI_STORAGE_KEY) || '{}');
+      return stored.urlsText || '';
+    } catch {
+      return '';
+    }
+  });
+  const [minProducts, setMinProducts] = useState(() => {
+    if (typeof window === 'undefined') return 1;
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(SNAPSHOT_UI_STORAGE_KEY) || '{}');
+      return Number(stored.minProducts || 1);
+    } catch {
+      return 1;
+    }
+  });
+  const [maxDepth, setMaxDepth] = useState(() => {
+    if (typeof window === 'undefined') return 3;
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(SNAPSHOT_UI_STORAGE_KEY) || '{}');
+      return Number(stored.maxDepth || 3);
+    } catch {
+      return 3;
+    }
+  });
+  const [onlyRequested, setOnlyRequested] = useState(() => {
+    if (typeof window === 'undefined') return true;
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(SNAPSHOT_UI_STORAGE_KEY) || '{}');
+      return stored.onlyRequested ?? true;
+    } catch {
+      return true;
+    }
+  });
+  const [force, setForce] = useState(() => {
+    if (typeof window === 'undefined') return false;
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(SNAPSHOT_UI_STORAGE_KEY) || '{}');
+      return stored.force ?? false;
+    } catch {
+      return false;
+    }
+  });
   const [discovery, setDiscovery] = useState<SnapshotDiscoveryResponse | null>(null);
-  const [generationResults, setGenerationResults] = useState<Array<{ path: string; route_type: string; status: string; generated_at: string | null; product_count: number }>>([]);
+  const [generationResults, setGenerationResults] = useState<Array<{ path: string; route_type: string; status: string; generated_at: string | null; product_count: number }>>(() => {
+    if (typeof window === 'undefined') return [];
+    try {
+      const stored = JSON.parse(window.localStorage.getItem(SNAPSHOT_RESULTS_STORAGE_KEY) || '[]');
+      return Array.isArray(stored) ? stored : [];
+    } catch {
+      return [];
+    }
+  });
 
   const discoverSnapshots = useCallback(async () => {
     setDiscovering(true);
@@ -853,6 +904,36 @@ function SEOSnapshotsTab() {
       setGenerating(false);
     }
   }, [urlsText, minProducts, maxDepth, onlyRequested, force, discoverSnapshots]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(SNAPSHOT_UI_STORAGE_KEY, JSON.stringify({
+      urlsText,
+      minProducts,
+      maxDepth,
+      onlyRequested,
+      force,
+    }));
+  }, [urlsText, minProducts, maxDepth, onlyRequested, force]);
+
+  useEffect(() => {
+    if (typeof window === 'undefined') return;
+    window.localStorage.setItem(SNAPSHOT_RESULTS_STORAGE_KEY, JSON.stringify(generationResults));
+  }, [generationResults]);
+
+  useEffect(() => {
+    discoverSnapshots();
+  }, []);
+
+  const snapshotRoutesReadyForSitemap = useMemo(
+    () => discovery?.routes.filter((route) => route.has_snapshot).length || 0,
+    [discovery]
+  );
+
+  const snapshotCoveragePct = useMemo(() => {
+    if (!discovery?.routes?.length) return 0;
+    return Math.round((snapshotRoutesReadyForSitemap / discovery.routes.length) * 100);
+  }, [discovery, snapshotRoutesReadyForSitemap]);
 
   return (
     <div className="space-y-6">
@@ -951,6 +1032,60 @@ function SEOSnapshotsTab() {
             <StatCard label="Fresh" value={discovery.summary.fresh_snapshots} color="text-green-600" />
             <StatCard label="Sem Snapshot" value={discovery.summary.missing_snapshots} color="text-orange-600" />
           </div>
+
+          <Card className={cn(
+            'p-5 border',
+            snapshotRoutesReadyForSitemap > 0
+              ? 'border-green-200 bg-green-50/70'
+              : 'border-amber-200 bg-amber-50/70'
+          )}>
+            <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4">
+              <div className="space-y-2">
+                <div className="flex items-center gap-2">
+                  {snapshotRoutesReadyForSitemap > 0 ? (
+                    <CheckCircle2 className="w-4 h-4 text-green-600" />
+                  ) : (
+                    <AlertTriangle className="w-4 h-4 text-amber-600" />
+                  )}
+                  <h3 className="text-sm font-semibold text-foreground">
+                    Sitemap publico dos snapshots
+                  </h3>
+                </div>
+                <p className="text-sm text-foreground/80 leading-relaxed max-w-3xl">
+                  {snapshotRoutesReadyForSitemap > 0
+                    ? `${snapshotRoutesReadyForSitemap} URL${snapshotRoutesReadyForSitemap === 1 ? '' : 's'} publica${snapshotRoutesReadyForSitemap === 1 ? '' : 's'} com snapshot ja entram automaticamente no sitemap.xml. O sitemap lista as rotas canonicas, como /pecas/corolla/acessorios-internos, e nao endpoints internos de /snapshot/.`
+                    : 'Ainda nao ha rotas materializadas com snapshot suficiente para entrar no sitemap publico. Gere os snapshots para ativar essa cobertura de SEO.'}
+                </p>
+                <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
+                  <Badge variant="secondary" className="text-[10px]">
+                    Cobertura no sitemap: {snapshotCoveragePct}%
+                  </Badge>
+                  <Badge variant="outline" className="text-[10px]">
+                    {snapshotRoutesReadyForSitemap} URLs prontas para indexacao
+                  </Badge>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  variant="outline"
+                  onClick={() => window.open(`${window.location.origin}/sitemap.xml`, '_blank', 'noopener,noreferrer')}
+                  className="gap-1.5"
+                >
+                  <Globe className="w-4 h-4" />
+                  Abrir sitemap.xml
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={discoverSnapshots}
+                  disabled={discovering}
+                  className="gap-1.5"
+                >
+                  {discovering ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                  Revalidar status
+                </Button>
+              </div>
+            </div>
+          </Card>
 
           {discovery.unmatched_requested_paths.length > 0 && (
             <Card className="p-4 border-amber-200 bg-amber-50/50">

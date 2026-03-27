@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { 
   X, Save, Layout, Tag, DollarSign, Package, Truck, 
   FileText, Search, Settings, Image as ImageIcon,
@@ -76,6 +76,122 @@ const RichTextSimple = ({ value, onChange, placeholder }: any) => (
   />
 );
 
+function slugifyAssetName(value: string): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+    || 'produto';
+}
+
+function normalizeMediaPreviewUrl(file: string): string {
+  if (!file) return '';
+  if (file.startsWith('http')) return file;
+  if (file.startsWith('/')) return `https://www.toyoparts.com.br/pub/media/catalog/product${file}`;
+  return file;
+}
+
+function buildEditorMediaEntries(product: any, customMap: Record<string, any>) {
+  const entries: any[] = [];
+  const seen = new Set<string>();
+
+  const pushEntry = (file: string, meta?: Partial<any>) => {
+    if (!file) return;
+    const normalizedFile = String(file).trim();
+    if (!normalizedFile) return;
+    const previewUrl = normalizeMediaPreviewUrl(normalizedFile);
+    const dedupeKey = previewUrl || normalizedFile;
+    if (seen.has(dedupeKey)) return;
+    seen.add(dedupeKey);
+
+    entries.push({
+      file: normalizedFile,
+      preview_url: previewUrl,
+      media_type: 'image',
+      disabled: false,
+      position: entries.length + 1,
+      ...meta,
+    });
+  };
+
+  const galleryCandidates = [
+    ...(Array.isArray(product.media_gallery_entries) ? product.media_gallery_entries : []),
+    ...(Array.isArray(product.media_gallery) ? product.media_gallery : []),
+  ];
+
+  for (const entry of galleryCandidates) {
+    if (!entry?.file) continue;
+    pushEntry(entry.file, entry);
+  }
+
+  pushEntry(customMap.image || product.image_url, {
+    label: customMap.image_label || 'Imagem principal',
+    _source: 'base',
+  });
+  pushEntry(customMap.small_image, {
+    label: customMap.small_image_label || 'Small image',
+    _source: 'small',
+  });
+  pushEntry(customMap.thumbnail, {
+    label: customMap.thumbnail_label || 'Thumbnail',
+    _source: 'thumbnail',
+  });
+  pushEntry(customMap.swatch_image, {
+    label: 'Swatch',
+    _source: 'swatch',
+  });
+
+  return entries;
+}
+
+async function convertImageToWebp(file: File, productName: string, sku: string, index: number): Promise<File> {
+  const objectUrl = URL.createObjectURL(file);
+
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('Nao foi possivel abrir a imagem selecionada'));
+      img.src = objectUrl;
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = image.naturalWidth || image.width;
+    canvas.height = image.naturalHeight || image.height;
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Nao foi possivel preparar a conversao da imagem');
+    }
+
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, 'image/webp', 0.9);
+    });
+
+    if (!blob) {
+      throw new Error('Nao foi possivel converter a imagem para WebP');
+    }
+
+    const safeName = slugifyAssetName(productName);
+    const safeSku = slugifyAssetName(sku);
+    const suffix = index > 0 ? `-${index + 1}` : '';
+
+    return new File(
+      [blob],
+      `${safeName}-${safeSku}${suffix}.webp`,
+      { type: 'image/webp', lastModified: Date.now() }
+    );
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
+}
+
 // --- Main Component ---
 
 interface ProductEditorProps {
@@ -89,8 +205,11 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
   const [activeTab, setActiveTab] = useState('principal');
   const [metadata, setMetadata] = useState<any>({ categories: [], models: [], years: [], versions: [] });
   const [categoryTree, setCategoryTree] = useState<CategoryNode[]>([]);
+  const [mediaUploading, setMediaUploading] = useState(false);
+  const [mediaProgress, setMediaProgress] = useState('');
+  const mediaInputRef = useRef<HTMLInputElement>(null);
 
-  const { control, handleSubmit, reset, watch, setValue, formState: { errors, isSubmitting } } = useForm({
+  const { control, register, handleSubmit, reset, watch, setValue, formState: { errors, isSubmitting } } = useForm({
     defaultValues: {
       // Identity
       id: '', sku: '', name: '', type_id: 'simple', attribute_set_id: 4, created_at: '', updated_at: '',
@@ -107,6 +226,9 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
       media_gallery_entries: [] as any[]
     }
   });
+
+  const mediaEntries = watch('media_gallery_entries') || [];
+  const productName = watch('name') || sku;
 
   useEffect(() => {
     if (sku) {
@@ -162,6 +284,7 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
         ...product,
         custom_attributes_map: customMap,
         stock_data: stockData,
+        media_gallery_entries: buildEditorMediaEntries(product, customMap),
       });
 
     } catch (err: any) {
@@ -211,6 +334,59 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
 
     } catch (err: any) {
       toast.error(err.message);
+    }
+  };
+
+  const handleProductImageUpload = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    const imageFiles = Array.from(files).filter((file) => file.type.startsWith('image/'));
+    if (imageFiles.length === 0) {
+      toast.error('Selecione pelo menos uma imagem valida');
+      return;
+    }
+
+    setMediaUploading(true);
+    setMediaProgress('');
+
+    try {
+      const existingEntries = Array.isArray(mediaEntries) ? mediaEntries : [];
+
+      for (let index = 0; index < imageFiles.length; index++) {
+        const current = imageFiles[index];
+        setMediaProgress(`Processando ${index + 1} de ${imageFiles.length}`);
+
+        const webpFile = await convertImageToWebp(current, productName, sku, existingEntries.length + index);
+        const formData = new FormData();
+        formData.append('file', webpFile);
+
+        const res = await adminFetch(`${API}/admin/products/${sku}/upload-image`, {
+          method: 'POST',
+          body: formData,
+        });
+
+        if (!res.ok) {
+          const errorData = await res.json().catch(() => ({}));
+          throw new Error(errorData.error || `Falha no upload da imagem ${index + 1}`);
+        }
+
+        const data = await res.json();
+        if (data?.product) {
+          setValue('media_gallery_entries', data.product.media_gallery_entries || data.product.media_gallery || [], { shouldDirty: true });
+        }
+      }
+
+      toast.success(`${imageFiles.length} imagem(ns) processada(s) em WebP`);
+      await loadData();
+    } catch (err: any) {
+      console.error('[ProductEditor] upload-image error:', err);
+      toast.error(err.message || 'Erro ao enviar imagens');
+    } finally {
+      setMediaUploading(false);
+      setMediaProgress('');
+      if (mediaInputRef.current) {
+        mediaInputRef.current.value = '';
+      }
     }
   };
 
@@ -363,21 +539,21 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
                   <FormSection title="A. Identificação">
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                       <FormField label="ID (Read-only)">
-                        <Input {...control.register('id')} disabled className="bg-muted/50 font-mono" />
+                        <Input {...register('id')} disabled className="bg-muted/50 font-mono" />
                       </FormField>
                       <FormField label="SKU">
-                        <Input {...control.register('sku', { required: true })} className="font-mono" />
+                        <Input {...register('sku', { required: true })} className="font-mono" />
                       </FormField>
                       <div className="col-span-full">
                         <FormField label="Nome do Produto" required>
-                          <Input {...control.register('name', { required: true })} />
+                          <Input {...register('name', { required: true })} />
                         </FormField>
                       </div>
                       <FormField label="Tipo">
-                        <Input {...control.register('type_id')} disabled className="bg-muted/50" />
+                        <Input {...register('type_id')} disabled className="bg-muted/50" />
                       </FormField>
                       <FormField label="Attribute Set ID">
-                        <Input type="number" {...control.register('attribute_set_id')} />
+                        <Input type="number" {...register('attribute_set_id')} />
                       </FormField>
                     </div>
                   </FormSection>
@@ -451,18 +627,18 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
                 <Card.Content className="p-6">
                   <FormSection title="G. Otimização SEO">
                     <FormField label="URL Key (Slug)">
-                      <Input {...control.register('custom_attributes_map.url_key')} className="font-mono text-xs" />
+                      <Input {...register('custom_attributes_map.url_key')} className="font-mono text-xs" />
                     </FormField>
                     <FormField label="Meta Title">
-                      <Input {...control.register('custom_attributes_map.meta_title')} />
+                      <Input {...register('custom_attributes_map.meta_title')} />
                     </FormField>
                     <FormField label="Meta Keywords">
-                      <Input {...control.register('custom_attributes_map.meta_keyword')} placeholder="Separe por vírgula" />
+                      <Input {...register('custom_attributes_map.meta_keyword')} placeholder="Separe por vírgula" />
                     </FormField>
                     <FormField label="Meta Description">
                       <textarea 
                          className="w-full min-h-[80px] p-3 rounded-lg border border-border bg-input-background text-sm outline-none focus:ring-2 focus:ring-primary/20"
-                         {...control.register('custom_attributes_map.meta_description')}
+                         {...register('custom_attributes_map.meta_description')}
                       />
                     </FormField>
                   </FormSection>
@@ -562,16 +738,16 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
                         )}
                       />
                       <FormField label="Quantidade (Qty)">
-                        <Input type="number" {...control.register('stock_data.qty')} />
+                        <Input type="number" {...register('stock_data.qty')} />
                       </FormField>
                       <FormField label="Qtd. Mínima Venda">
-                        <Input type="number" {...control.register('stock_data.min_sale_qty')} />
+                        <Input type="number" {...register('stock_data.min_sale_qty')} />
                       </FormField>
                       <FormField label="Qtd. Máxima Venda">
-                        <Input type="number" {...control.register('stock_data.max_sale_qty')} />
+                        <Input type="number" {...register('stock_data.max_sale_qty')} />
                       </FormField>
                       <FormField label="Qtd. Notificação">
-                        <Input type="number" {...control.register('stock_data.notify_stock_qty')} />
+                        <Input type="number" {...register('stock_data.notify_stock_qty')} />
                       </FormField>
                     </div>
                   </FormSection>
@@ -584,19 +760,19 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
                   <FormSection title="E. Dimensões e Entrega">
                     <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                       <FormField label="Peso (kg)">
-                        <Input type="number" step="0.001" {...control.register('weight')} />
+                        <Input type="number" step="0.001" {...register('weight')} />
                       </FormField>
                       <FormField label="Comprimento (cm)">
-                        <Input type="number" {...control.register('custom_attributes_map.volume_length')} />
+                        <Input type="number" {...register('custom_attributes_map.volume_length')} />
                       </FormField>
                       <FormField label="Largura (cm)">
-                        <Input type="number" {...control.register('custom_attributes_map.volume_width')} />
+                        <Input type="number" {...register('custom_attributes_map.volume_width')} />
                       </FormField>
                       <FormField label="Altura (cm)">
-                        <Input type="number" {...control.register('custom_attributes_map.volume_height')} />
+                        <Input type="number" {...register('custom_attributes_map.volume_height')} />
                       </FormField>
                       <FormField label="Lead Time (Dias)">
-                        <Input type="number" {...control.register('custom_attributes_map.lead_time')} />
+                        <Input type="number" {...register('custom_attributes_map.lead_time')} />
                       </FormField>
                     </div>
                     <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
@@ -669,7 +845,7 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
                        />
                      </FormField>
                      <FormField label="Ordenação na Busca">
-                       <Input type="number" {...control.register('custom_attributes_map.ordena_busca')} />
+                       <Input type="number" {...register('custom_attributes_map.ordena_busca')} />
                      </FormField>
                    </FormSection>
                  </Card.Content>
@@ -681,18 +857,18 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
                    <FormSection title="I. Compatibilidade Automotiva">
                      <div className="space-y-4">
                         <FormField label="Modelos (IDs CSV)">
-                           <Input {...control.register('custom_attributes_map.modelo')} />
+                           <Input {...register('custom_attributes_map.modelo')} />
                         </FormField>
                         <FormField label="Anos (IDs CSV)">
-                           <Input {...control.register('custom_attributes_map.ano')} />
+                           <Input {...register('custom_attributes_map.ano')} />
                         </FormField>
                         <FormField label="Versões (IDs CSV)">
-                           <Input {...control.register('custom_attributes_map.versao')} />
+                           <Input {...register('custom_attributes_map.versao')} />
                         </FormField>
                         <FormField label="String de Compatibilidade Completa">
                            <textarea 
                              className="w-full min-h-[100px] p-3 rounded-lg border border-border bg-input-background text-xs font-mono"
-                             {...control.register('custom_attributes_map.compatibilidade')}
+                             {...register('custom_attributes_map.compatibilidade')}
                              placeholder="Modelo=Versao:Ano-Ano..."
                            />
                         </FormField>
@@ -714,13 +890,13 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
                           )}
                         />
                         <FormField label="Marca Anymarket">
-                          <Input {...control.register('custom_attributes_map.marca_anymarket')} />
+                          <Input {...register('custom_attributes_map.marca_anymarket')} />
                         </FormField>
                         <FormField label="Garantia (Meses)">
-                          <Input type="number" {...control.register('custom_attributes_map.garantia_meses_any')} />
+                          <Input type="number" {...register('custom_attributes_map.garantia_meses_any')} />
                         </FormField>
                         <FormField label="Texto Garantia">
-                          <Input {...control.register('custom_attributes_map.garantia_texto_anymarket')} />
+                          <Input {...register('custom_attributes_map.garantia_texto_anymarket')} />
                         </FormField>
                       </div>
                    </FormSection>
@@ -733,10 +909,10 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
                    <FormSection title="M. Embalagem e Origem">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <FormField label="Tipo Embalagem">
-                          <Input {...control.register('custom_attributes_map.ts_packaging_type')} />
+                          <Input {...register('custom_attributes_map.ts_packaging_type')} />
                         </FormField>
                         <FormField label="País Origem">
-                          <Input {...control.register('custom_attributes_map.ts_country_of_origin')} />
+                          <Input {...register('custom_attributes_map.ts_country_of_origin')} />
                         </FormField>
                       </div>
                    </FormSection>
@@ -756,29 +932,29 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
                           <div className="space-y-4">
                             <h4 className="text-sm font-medium">Imagens Principais (Caminho Relativo)</h4>
                             <FormField label="Imagem Base">
-                              <Input {...control.register('custom_attributes_map.image')} className="font-mono text-xs" />
+                              <Input {...register('custom_attributes_map.image')} className="font-mono text-xs" />
                             </FormField>
                             <FormField label="Small Image">
-                              <Input {...control.register('custom_attributes_map.small_image')} className="font-mono text-xs" />
+                              <Input {...register('custom_attributes_map.small_image')} className="font-mono text-xs" />
                             </FormField>
                             <FormField label="Thumbnail">
-                              <Input {...control.register('custom_attributes_map.thumbnail')} className="font-mono text-xs" />
+                              <Input {...register('custom_attributes_map.thumbnail')} className="font-mono text-xs" />
                             </FormField>
                             <FormField label="Swatch">
-                              <Input {...control.register('custom_attributes_map.swatch_image')} className="font-mono text-xs" />
+                              <Input {...register('custom_attributes_map.swatch_image')} className="font-mono text-xs" />
                             </FormField>
                           </div>
                           
                           <div className="space-y-4">
                              <h4 className="text-sm font-medium">Labels (Alt Text)</h4>
                              <FormField label="Image Label">
-                               <Input {...control.register('custom_attributes_map.image_label')} />
+                               <Input {...register('custom_attributes_map.image_label')} />
                              </FormField>
                              <FormField label="Small Image Label">
-                               <Input {...control.register('custom_attributes_map.small_image_label')} />
+                               <Input {...register('custom_attributes_map.small_image_label')} />
                              </FormField>
                              <FormField label="Thumbnail Label">
-                               <Input {...control.register('custom_attributes_map.thumbnail_label')} />
+                               <Input {...register('custom_attributes_map.thumbnail_label')} />
                              </FormField>
                           </div>
                        </div>
@@ -786,23 +962,54 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
                        <div className="mt-8 pt-8 border-t border-border">
                          <h4 className="text-sm font-medium mb-4">Galeria (Media Gallery Entries)</h4>
                          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-                            {(watch('media_gallery_entries') || []).map((entry: any, idx: number) => (
+                            {mediaEntries.map((entry: any, idx: number) => (
                                <div key={idx} className="relative group aspect-square bg-secondary rounded-lg border border-border overflow-hidden">
                                   <img 
-                                    src={entry.file.startsWith('http') ? entry.file : `https://www.toyoparts.com.br/pub/media/catalog/product${entry.file}`} 
-                                    alt="" 
+                                    src={entry.preview_url || normalizeMediaPreviewUrl(entry.file)}
+                                    alt={entry.label || `Midia ${idx + 1}`}
                                     className="w-full h-full object-cover"
                                   />
                                   <div className="absolute inset-0 bg-black/50 opacity-0 group-hover:opacity-100 transition-opacity flex flex-col items-center justify-center p-2 text-white text-xs">
                                      <p className="font-mono truncate w-full text-center">{entry.file}</p>
-                                     <Badge className="mt-2" variant="outline">Pos: {entry.position}</Badge>
+                                     <div className="mt-2 flex flex-wrap items-center justify-center gap-1">
+                                       <Badge className="text-[10px]" variant="outline">Pos: {entry.position}</Badge>
+                                       {entry._source && (
+                                         <Badge className="text-[10px]" variant="secondary">{entry._source}</Badge>
+                                       )}
+                                     </div>
                                   </div>
                                </div>
                             ))}
-                            <div className="aspect-square rounded-lg border-2 border-dashed border-border flex flex-col items-center justify-center text-muted-foreground hover:text-primary hover:border-primary transition-colors cursor-pointer">
+                            <button
+                              type="button"
+                              onClick={() => mediaInputRef.current?.click()}
+                              disabled={mediaUploading}
+                              className="aspect-square rounded-lg border-2 border-dashed border-border flex flex-col items-center justify-center text-muted-foreground hover:text-primary hover:border-primary transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+                            >
                                <Plus className="w-8 h-8" />
-                               <span className="text-xs font-medium mt-2">Adicionar</span>
-                            </div>
+                               <span className="text-xs font-medium mt-2">
+                                 {mediaUploading ? 'Convertendo...' : 'Adicionar'}
+                               </span>
+                            </button>
+                         </div>
+                         <input
+                           ref={mediaInputRef}
+                           type="file"
+                           accept="image/png,image/jpeg,image/webp"
+                           multiple
+                           className="hidden"
+                           onChange={(event) => handleProductImageUpload(event.target.files)}
+                         />
+                         <div className="mt-4 rounded-xl border border-border/60 bg-secondary/20 p-4 space-y-2">
+                           <p className="text-xs font-semibold text-foreground uppercase tracking-wider">
+                             Upload inteligente
+                           </p>
+                           <p className="text-sm text-muted-foreground leading-relaxed">
+                             As imagens selecionadas sao convertidas para WebP e renomeadas automaticamente com o nome do produto e o SKU antes do envio.
+                           </p>
+                           {mediaProgress && (
+                             <p className="text-xs font-medium text-primary">{mediaProgress}</p>
+                           )}
                          </div>
                        </div>
                     </FormSection>

@@ -22,6 +22,42 @@ interface CategoryNode {
   children?: CategoryNode[]; // fallback: endpoint pode retornar 'children' antes do cache migrar
 }
 
+function getNodeChildren(node: CategoryNode | null | undefined): CategoryNode[] {
+  if (!node) return [];
+  return node.children_data || node.children || [];
+}
+
+function isStructuralWrapper(node: CategoryNode | null | undefined): boolean {
+  if (!node) return false;
+  const name = String(node.name || '').trim().toLowerCase();
+  return node.level <= 1
+    || name === 'root'
+    || name === 'root catalog'
+    || name === 'default category'
+    || name === 'toyoparts';
+}
+
+function normalizeTreePayload(payload: unknown): CategoryNode | null {
+  const raw = Array.isArray(payload) ? payload[0] : payload;
+  if (!raw || typeof raw !== 'object') return null;
+
+  let node = raw as CategoryNode;
+  let safety = 0;
+
+  while (safety < 8 && isStructuralWrapper(node) && getNodeChildren(node).length === 1) {
+    node = getNodeChildren(node)[0];
+    safety += 1;
+  }
+
+  const children = getNodeChildren(node);
+  const onlyPlaceholderRoot =
+    String(node.name || '').trim().toLowerCase() === 'root' &&
+    children.length === 0;
+
+  if (onlyPlaceholderRoot) return null;
+  return node;
+}
+
 interface CategoryTreeFilterProps {
   /** facetDistribution from MeiliSearch — e.g. { "Filtros": 12, "Motor": 38 } */
   facetCounts: Record<string, number>;
@@ -48,6 +84,11 @@ export function resetTreeCache() {
   cachedTree = null;
   treeFetchPromise = null;
   fetchAttempts = 0;
+}
+
+export function preloadCategoryTree() {
+  if (typeof window === 'undefined') return Promise.resolve(null);
+  return fetchTree(false).catch(() => null);
 }
 
 async function fetchTree(forceRetry = false): Promise<CategoryNode | null> {
@@ -93,7 +134,7 @@ async function fetchTree(forceRetry = false): Promise<CategoryNode | null> {
 // ─── Public helper: resolve category ID → name from cached tree ──────────────
 function findNameById(node: CategoryNode, id: string): string | null {
   if (String(node.id) === id) return node.name;
-  for (const child of node.children_data || node.children || []) {
+  for (const child of getNodeChildren(node)) {
     const found = findNameById(child, id);
     if (found) return found;
   }
@@ -121,7 +162,7 @@ function sumDescendantCounts(
     : (facetCounts[String(node.id)] || 0);
 
   let total = ownCount;
-  for (const child of node.children_data || node.children || []) {
+  for (const child of getNodeChildren(node)) {
     total += sumDescendantCounts(child, facetCounts, facetKey);
   }
   return total;
@@ -148,7 +189,7 @@ function CategoryTreeNode({
   toggleExpand: (id: number) => void;
   expandedIds: Set<number>;
 }) {
-  const children = node.children_data || node.children || [];
+  const children = getNodeChildren(node);
   const hasChildren = children.length > 0;
   const isActive = node.is_active !== false && node.is_active !== 0;
   const isInactive = !isActive;
@@ -171,7 +212,7 @@ function CategoryTreeNode({
   // ── System/wrapper nodes: auto-expand, don't render as clickable row ──
   // Nodes at level 0 or 1 (Root Catalog / Default Category) are structural wrappers.
   // If there's only 1 child, skip rendering this node entirely and render the child.
-  if (node.level <= 1 && hasChildren && children.length === 1) {
+  if (isStructuralWrapper(node) && hasChildren && children.length === 1) {
     return (
       <CategoryTreeNode
         node={children[0]}
@@ -189,7 +230,7 @@ function CategoryTreeNode({
 
   // If this is a wrapper node (level 0 or 1) with multiple children,
   // don't render it as a row — just render its children directly.
-  if (node.level <= 1 && hasChildren) {
+  if (isStructuralWrapper(node) && hasChildren) {
     return (
       <div className="space-y-0.5">
         {children.map(child => (
@@ -276,14 +317,6 @@ function CategoryTreeNode({
               Inativa
             </span>
           )}
-          {descendantTotal > 0 && (
-            <span className={`text-[11px] tabular-nums flex-shrink-0 ${countColor}`}>
-              {ownCount > 0 && hasChildren && descendantTotal > ownCount
-                ? `${ownCount}`
-                : descendantTotal
-              }
-            </span>
-          )}
         </button>
       </div>
 
@@ -330,18 +363,27 @@ export function CategoryTreeFilter({
     setFetchError(false);
     fetchTree(forceRetry).then(t => {
       if (t) {
+        const normalized = normalizeTreePayload(t);
+        if (!normalized) {
+          console.warn('[CategoryTreeFilter] Tree payload came back as placeholder root only');
+          setFetchError(true);
+          setTree(null);
+          setLoading(false);
+          return;
+        }
         console.log('[CategoryTreeFilter] Tree loaded:', {
-          rootId: t.id,
-          rootName: t.name,
-          rootLevel: t.level,
-          childrenCount: t.children_data?.length || t.children?.length || 0,
-          children: (t.children_data || t.children || []).map((c: CategoryNode) => ({ id: c.id, name: c.name, childrenCount: c.children_data?.length || c.children?.length || 0 })),
+          rootId: normalized.id,
+          rootName: normalized.name,
+          rootLevel: normalized.level,
+          childrenCount: getNodeChildren(normalized).length,
+          children: getNodeChildren(normalized).map((c: CategoryNode) => ({ id: c.id, name: c.name, childrenCount: getNodeChildren(c).length })),
         });
+        setTree(normalized);
       } else {
         console.warn('[CategoryTreeFilter] Tree fetch returned null — will use flat list fallback');
         setFetchError(true);
+        setTree(null);
       }
-      setTree(t);
       setLoading(false);
     });
   }, []);
@@ -381,7 +423,7 @@ export function CategoryTreeFilter({
           newExpanded.add(ancestorId);
         }
       }
-      for (const child of node.children_data || node.children || []) {
+      for (const child of getNodeChildren(node)) {
         expandAncestors(child, [...ancestors, node.id]);
       }
     };
@@ -443,9 +485,6 @@ export function CategoryTreeFilter({
                   }`}
                 >
                   <span className="flex-1 truncate">{val}</span>
-                  <span className={`text-[11px] tabular-nums flex-shrink-0 ${
-                    isSelected ? 'text-primary/60' : 'text-muted-foreground/50'
-                  }`}>{count}</span>
                 </button>
               );
             })}
@@ -490,9 +529,6 @@ export function CategoryTreeFilter({
               }`}
             >
               <span className="flex-1 truncate">{val}</span>
-              <span className={`text-[11px] tabular-nums flex-shrink-0 px-1.5 py-0.5 rounded-full ${
-                isSelected ? 'bg-primary/20' : 'bg-black/[0.04] text-[#86868b]'
-              }`}>{count}</span>
             </button>
           );
         })}

@@ -23,6 +23,18 @@ async function ensureBucket() {
   }
 }
 
+function slugifyFilePart(value: string): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-')
+    || 'produto';
+}
+
 export const productAdmin = new Hono();
 
 // Helper to get product by SKU
@@ -448,14 +460,17 @@ productAdmin.post('/:sku/upload-image', async (c) => {
     const file = formData['file'] as File;
     if (!file) return c.json({ error: 'No file uploaded' }, 400);
 
-    const ext = file.name.split('.').pop();
-    const fileName = `${sku}_${Date.now()}.${ext}`;
+    const productSlug = slugifyFilePart(existing.name || sku);
+    const skuSlug = slugifyFilePart(sku);
+    const isWebp = file.type === 'image/webp' || file.name.toLowerCase().endsWith('.webp');
+    const ext = isWebp ? 'webp' : (file.name.split('.').pop() || 'jpg').toLowerCase();
+    const fileName = `${productSlug}-${skuSlug}-${Date.now()}.${ext}`;
     const filePath = `products/${sku}/${fileName}`;
 
     const { data, error } = await supabase.storage
       .from(BUCKET_NAME)
       .upload(filePath, file, {
-        contentType: file.type,
+        contentType: isWebp ? 'image/webp' : file.type,
         upsert: true
       });
 
@@ -466,17 +481,22 @@ productAdmin.post('/:sku/upload-image', async (c) => {
       .getPublicUrl(filePath);
 
     // Add to gallery and set as main if no image exists
-    const updatedMedia = [...(existing.media_gallery || []), { 
+    const mediaEntry = {
       file: publicUrl, 
-      label: 'Upload Admin',
+      label: existing.name || 'Upload Admin',
       position: (existing.media_gallery?.length || 0) + 1,
+      media_type: 'image',
       disabled: false
-    }];
+    };
+
+    const updatedMedia = [...(existing.media_gallery || []), mediaEntry];
+    const updatedGalleryEntries = [...(existing.media_gallery_entries || []), mediaEntry];
 
     const updatedProduct = {
       ...existing,
       image_url: existing.image_url || publicUrl,
       media_gallery: updatedMedia,
+      media_gallery_entries: updatedGalleryEntries,
       updated_at: new Date().toISOString()
     };
 

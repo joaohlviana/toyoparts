@@ -22,6 +22,7 @@ import * as kv from './kv_store.tsx';
 import * as meili from './meilisearch.tsx';
 
 const app = new Hono();
+const MAGENTO_BASE_URL = 'https://www.toyoparts.com.br';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,149 @@ function daysBack(days: number): string[] {
 
 function dateKeyToISO(dk: string): string {
   return `${dk.slice(0, 4)}-${dk.slice(4, 6)}-${dk.slice(6, 8)}`;
+}
+
+function getCustomAttr(product: any, code: string): any {
+  return product?.custom_attributes?.find((attr: any) => attr?.attribute_code === code)?.value;
+}
+
+function toNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function resolveInStock(product: any): boolean {
+  if (typeof product?.in_stock === 'boolean') return product.in_stock;
+  const stock = product?.extension_attributes?.stock;
+  const raw = typeof stock === 'string'
+    ? (() => {
+        try { return JSON.parse(stock); } catch { return null; }
+      })()
+    : stock;
+  const value = raw?.is_in_stock;
+  return value === true || value === 1 || value === '1';
+}
+
+function resolveQty(product: any): number | null {
+  const direct = toNumber(product?.qty);
+  if (direct !== null) return direct;
+  const stock = product?.extension_attributes?.stock;
+  const raw = typeof stock === 'string'
+    ? (() => {
+        try { return JSON.parse(stock); } catch { return null; }
+      })()
+    : stock;
+  return toNumber(raw?.qty);
+}
+
+function resolveImageUrl(product: any): string | null {
+  if (product?.image_url && String(product.image_url).startsWith('http')) {
+    return product.image_url;
+  }
+
+  if (Array.isArray(product?.images) && product.images[0]) {
+    return product.images[0];
+  }
+
+  if (Array.isArray(product?.media_gallery_entries)) {
+    const media = product.media_gallery_entries.find((entry: any) => !entry?.disabled && (!entry?.media_type || entry.media_type === 'image'));
+    if (media?.file) {
+      if (String(media.file).startsWith('http')) return media.file;
+      return `${MAGENTO_BASE_URL}/pub/media/catalog/product${media.file}`;
+    }
+  }
+
+  const imageAttr = getCustomAttr(product, 'image') ?? product?.image;
+  if (imageAttr && imageAttr !== 'no_selection') {
+    if (String(imageAttr).startsWith('http')) return imageAttr;
+    return `${MAGENTO_BASE_URL}/pub/media/catalog/product${imageAttr}`;
+  }
+
+  return null;
+}
+
+function normalizeRelatedProduct(product: any, sourceTag: string, meta: Record<string, any> = {}) {
+  const regularPrice = toNumber(product?.price) ?? 0;
+  const specialPrice = toNumber(product?.special_price);
+  const validSpecialPrice = specialPrice && specialPrice > 0 && specialPrice < regularPrice ? specialPrice : null;
+
+  return {
+    ...product,
+    sku: product?.sku,
+    name: product?.name,
+    price: regularPrice,
+    special_price: validSpecialPrice,
+    image_url: resolveImageUrl(product),
+    in_stock: resolveInStock(product),
+    qty: resolveQty(product),
+    _source: sourceTag,
+    ...meta,
+  };
+}
+
+function isRenderableRelatedProduct(product: any): boolean {
+  const price = Number(product?.price || 0);
+  const specialPrice = Number(product?.special_price || 0);
+  return !!product?.sku && !!product?.name && !!product?.image_url && (price > 0 || specialPrice > 0) && product?.in_stock !== false;
+}
+
+async function hydrateProductBySku(sku: string): Promise<any | null> {
+  try {
+    return await kv.get(`product:${sku}`);
+  } catch {
+    return null;
+  }
+}
+
+async function hydrateRelatedProducts(
+  skuMeta: Array<{ sku: string; [key: string]: any }>,
+  sourceTag: string
+): Promise<any[]> {
+  if (skuMeta.length === 0) return [];
+
+  const ordered = skuMeta.filter((item) => !!item?.sku);
+  const uniqueSkus = Array.from(new Set(ordered.map((item) => item.sku)));
+  const hitsBySku = new Map<string, any>();
+
+  if (uniqueSkus.length > 0 && meili.isConfigured()) {
+    try {
+      const skuList = uniqueSkus.map((value) => `"${value}"`).join(',');
+      const meiliResult = await meili.search('', {
+        filter: [`sku IN [${skuList}]`],
+        limit: uniqueSkus.length,
+      });
+      for (const hit of meiliResult?.hits || []) {
+        if (hit?.sku) hitsBySku.set(hit.sku, hit);
+      }
+    } catch (err) {
+      console.warn('[SI] hydrateRelatedProducts: Meili batch lookup failed:', err);
+    }
+  }
+
+  const products: any[] = [];
+  for (const item of ordered) {
+    let product = hitsBySku.get(item.sku) || null;
+
+    if (!product || !isRenderableRelatedProduct(normalizeRelatedProduct(product, sourceTag, item))) {
+      const hydrated = await hydrateProductBySku(item.sku);
+      if (hydrated) {
+        product = {
+          ...hydrated,
+          ...product,
+        };
+      }
+    }
+
+    if (!product) continue;
+
+    const normalized = normalizeRelatedProduct(product, sourceTag, item);
+    if (isRenderableRelatedProduct(normalized)) {
+      products.push(normalized);
+    }
+  }
+
+  return products;
 }
 
 // ─── Incremental Aggregate Updater ──────────────────────────────────────────
@@ -909,33 +1053,7 @@ app.get('/intelligence/related/:sku', async (c) => {
     let source = 'co_view';
 
     if (coViewSkus.length > 0) {
-      // Fetch product details from Meili
-      try {
-        const skuList = coViewSkus.map(s => `"${s.sku}"`).join(',');
-        const meiliResult = await meili.search('', {
-          filter: [`sku IN [${skuList}]`],
-          limit: limit,
-        });
-        if (meiliResult?.hits?.length > 0) {
-          // Maintain co_view_count order
-          const hitMap = new Map(meiliResult.hits.map((h: any) => [h.sku, h]));
-          products = coViewSkus
-            .filter(cv => hitMap.has(cv.sku))
-            .map(cv => ({
-              ...hitMap.get(cv.sku),
-              _co_view_count: cv.co_view_count,
-              _source: 'co_view',
-            }));
-        }
-      } catch (meiliErr) {
-        console.warn('[SI] related: Meili lookup failed for co-view SKUs:', meiliErr);
-        // Return basic co-view data without product details
-        products = coViewSkus.map(cv => ({
-          sku: cv.sku,
-          _co_view_count: cv.co_view_count,
-          _source: 'co_view',
-        }));
-      }
+      products = await hydrateRelatedProducts(coViewSkus, 'co_view');
     }
 
     // ── Level 2: Meilisearch similarity (if co-view insufficient) ───────
@@ -963,11 +1081,12 @@ app.get('/intelligence/related/:sku', async (c) => {
               limit: needed + 10, // fetch extra to filter out existing
             });
             if (similarResult?.hits) {
-              const newHits = similarResult.hits
+              const candidateSkus = similarResult.hits
                 .filter((h: any) => !existingSkus.has(h.sku))
-                .slice(0, needed)
-                .map((h: any) => ({ ...h, _source: 'similarity' }));
-              products = [...products, ...newHits];
+                .slice(0, needed + 6)
+                .map((h: any) => ({ sku: h.sku }));
+              const newHits = await hydrateRelatedProducts(candidateSkus, 'similarity');
+              products = [...products, ...newHits.slice(0, needed)];
             }
           }
         }
@@ -1002,26 +1121,27 @@ app.get('/intelligence/related/:sku', async (c) => {
           .map(([s]) => s);
 
         if (popularSkus.length > 0) {
-          const skuList = popularSkus.map(s => `"${s}"`).join(',');
-          const popResult = await meili.search('', {
-            filter: [`sku IN [${skuList}]`],
-            limit: popularSkus.length,
-          });
-          if (popResult?.hits) {
-            const newHits = popResult.hits
-              .filter((h: any) => !existingSkus.has(h.sku))
-              .map((h: any) => ({ ...h, _source: 'popular' }));
-            products = [...products, ...newHits];
-          }
+          const newHits = await hydrateRelatedProducts(
+            popularSkus.map((value) => ({ sku: value })),
+            'popular'
+          );
+          products = [...products, ...newHits];
         }
       } catch (e) {
         console.warn('[SI] related: popularity fallback failed:', e);
       }
     }
 
+    products = products
+      .filter((product, index, list) =>
+        isRenderableRelatedProduct(product) &&
+        list.findIndex((candidate) => candidate.sku === product.sku) === index
+      )
+      .slice(0, limit);
+
     const result = {
       sku,
-      products: products.slice(0, limit),
+      products,
       source,
       co_view_sessions: sessionsWithSku.length,
       period_days: days,

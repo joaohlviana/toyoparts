@@ -35,6 +35,23 @@ const SOURCE_LABELS: Record<string, { icon: React.ReactNode; label: string }> = 
   popular: { icon: <Eye className="w-3.5 h-3.5" />, label: 'Mais vistos' },
 };
 
+function hasRenderablePrice(hit: any) {
+  const price = Number(hit?.price || 0);
+  const specialPrice = Number(hit?.special_price || 0);
+  return price > 0 || specialPrice > 0;
+}
+
+function isRenderableRelatedProduct(hit: any) {
+  return (
+    !!hit?.sku &&
+    !!hit?.name &&
+    !!hit?.image_url &&
+    hasRenderablePrice(hit) &&
+    hit?.in_stock !== false &&
+    hit?.qty !== 0
+  );
+}
+
 export function RelatedProductsByView({ sku, limit = 8, className = '' }: RelatedProductsByViewProps) {
   const [products, setProducts] = useState<any[]>([]);
   const [source, setSource] = useState<string>('');
@@ -62,8 +79,12 @@ export function RelatedProductsByView({ sku, limit = 8, className = '' }: Relate
     return () => { cancelled = true; };
   }, [sku, limit]);
 
+  const visibleProducts = products
+    .filter((hit: any) => isRenderableRelatedProduct(hit))
+    .slice(0, limit);
+
   // Don't render anything if no products and not loading
-  if (!loading && products.length === 0) return null;
+  if (!loading && visibleProducts.length === 0) return null;
 
   if (loading) {
     return (
@@ -98,7 +119,7 @@ export function RelatedProductsByView({ sku, limit = 8, className = '' }: Relate
       <div className="flex items-center justify-between mb-6">
         <div>
           <h2 className="text-lg sm:text-xl font-bold text-foreground tracking-tight">
-            Voce tambem pode gostar
+            Você também pode gostar
           </h2>
           <div className="flex items-center gap-1.5 mt-1">
             <span className="text-muted-foreground">{sourceInfo.icon}</span>
@@ -109,10 +130,7 @@ export function RelatedProductsByView({ sku, limit = 8, className = '' }: Relate
 
       {/* Product Slider */}
       <ScrollSlider>
-        {products
-          .filter((hit: any) => hit.in_stock !== false && hit.qty !== 0)
-          .slice(0, limit)
-          .map((hit: any) => (
+        {visibleProducts.map((hit: any) => (
             <ProductCard
               key={hit.sku || hit.id}
               hit={hit as ProductCardHit}

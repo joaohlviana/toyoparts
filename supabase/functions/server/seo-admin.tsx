@@ -46,6 +46,15 @@ function slugify(text: any): string {
     || 'sem-nome';
 }
 
+function normalizeVehicleFacetValue(value: string | null | undefined): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 async function callOpenAI(messages: any[], temperature: number) {
   if (!OPENAI_API_KEY) throw new Error('OPENAI_API_KEY not configured');
   var res = await fetch('https://api.openai.com/v1/chat/completions', {
@@ -113,18 +122,40 @@ function getTopCategoryNodes(tree: any): any[] {
   return walk(tree);
 }
 
-function resolveSnapshotVehicleTargets(modelFacetCounts: Record<string, number>) {
+function resolveSnapshotVehicleTargets(
+  modelFacetCounts: Record<string, number>,
+  modelMeta?: Record<string, string>,
+) {
+  var facetEntries = Object.entries(modelFacetCounts).map(function(entry: any) {
+    return {
+      value: entry[0],
+      normalized: normalizeVehicleFacetValue(entry[0]),
+      count: Number(entry[1] || 0),
+    };
+  });
+  var metaEntries = Object.entries(modelMeta || {});
+
   return VEHICLE_SNAPSHOT_TARGETS
     .map(function(target: any) {
-      var matchingAlias = target.aliases.find(function(alias: string) {
-        return Number(modelFacetCounts[alias] || 0) > 0;
+      var dynamicAliases = metaEntries.flatMap(function(entry: any) {
+        var id = entry[0];
+        var name = entry[1];
+        if (normalizeVehicleFacetValue(name) !== normalizeVehicleFacetValue(target.name)) return [];
+        return [id, String(name)];
       });
-      if (!matchingAlias) return null;
+      var candidateAliases = Array.from(new Set([].concat(target.aliases, dynamicAliases as any)));
+      var matchingFacet = facetEntries.find(function(entry: any) {
+        return candidateAliases.some(function(alias: string) {
+          return normalizeVehicleFacetValue(alias) === entry.normalized;
+        });
+      });
+      if (!matchingFacet) return null;
+
       return {
         slug: target.slug,
         name: target.name,
-        facetValue: matchingAlias,
-        productCount: Number(modelFacetCounts[matchingAlias] || 0),
+        facetValue: matchingFacet.value,
+        productCount: matchingFacet.count,
       };
     })
     .filter(Boolean);
@@ -434,6 +465,7 @@ seoAdmin.get('/health', async (c) => {
     var categorySnapshots = await kv.getByPrefix(SNAPSHOT_CATEGORY_PREFIX).catch(function() { return []; }) as any[];
     var sitemapStatus = await kv.get(SITEMAP_STATUS_KEY).catch(function() { return null; }) as any;
     var categoryTree = await kv.get(CATEGORY_TREE_CACHE_KEY).catch(function() { return null; }) as any;
+    var meiliMeta = await kv.get('meili:sync:meta').catch(function() { return null; }) as any;
 
     var facetCounts: Record<string, number> = {};
     var modelFacetCounts: Record<string, number> = {};
@@ -460,7 +492,7 @@ seoAdmin.get('/health', async (c) => {
 
     var eligibleVehicleRoutes = 0;
     var eligibleVehicleCategoryRoutes = 0;
-    var snapshotVehicleTargets = resolveSnapshotVehicleTargets(modelFacetCounts) as any[];
+    var snapshotVehicleTargets = resolveSnapshotVehicleTargets(modelFacetCounts, meiliMeta?.modelos || {}) as any[];
     for (var vehicleIdx = 0; vehicleIdx < snapshotVehicleTargets.length; vehicleIdx++) {
       var vehicle = snapshotVehicleTargets[vehicleIdx];
       if (!vehicle || vehicle.productCount <= 0) continue;

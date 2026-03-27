@@ -293,6 +293,15 @@ function deriveSnapshotAgeHours(generatedAt?: string | null): number | null {
   return Math.round((ageMs / 3600000) * 10) / 10;
 }
 
+function normalizeVehicleFacetValue(value: string | null | undefined): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-zA-Z0-9]+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
 function buildSnapshotStatus(generatedAt?: string | null): 'fresh' | 'stale' | 'missing' {
   const age = deriveSnapshotAgeHours(generatedAt);
   if (age == null) return 'missing';
@@ -325,15 +334,33 @@ async function getModelFacetCounts(): Promise<Record<string, number>> {
   }
 }
 
-function resolveSnapshotVehicleTargets(modelFacetCounts: Record<string, number>) {
+function resolveSnapshotVehicleTargets(
+  modelFacetCounts: Record<string, number>,
+  modelMeta?: Record<string, string>,
+) {
+  const facetEntries = Object.entries(modelFacetCounts).map(([value, count]) => ({
+    value,
+    normalized: normalizeVehicleFacetValue(value),
+    count: Number(count || 0),
+  }));
+  const metaEntries = Object.entries(modelMeta || {});
+
   return VEHICLE_SNAPSHOT_TARGETS
     .map((target) => {
-      const matchingAlias = target.aliases.find((alias) => Number(modelFacetCounts[alias] || 0) > 0);
-      if (!matchingAlias) return null;
+      const dynamicAliases = metaEntries.flatMap(([id, name]) => {
+        if (normalizeVehicleFacetValue(name) !== normalizeVehicleFacetValue(target.name)) return [];
+        return [id, String(name)];
+      });
+      const candidateAliases = [...new Set([...target.aliases, ...dynamicAliases])];
+      const matchingFacet = facetEntries.find((entry) =>
+        candidateAliases.some((alias) => normalizeVehicleFacetValue(alias) === entry.normalized),
+      );
+      if (!matchingFacet) return null;
+
       return {
         ...target,
-        facetValue: matchingAlias,
-        productCount: Number(modelFacetCounts[matchingAlias] || 0),
+        facetValue: matchingFacet.value,
+        productCount: matchingFacet.count,
       };
     })
     .filter(Boolean) as Array<VehicleSnapshotTarget & { facetValue: string; productCount: number }>;
@@ -373,6 +400,7 @@ async function discoverCategorySnapshotRoutes(options?: {
   const requestedPaths = new Set((options?.urls || []).map(normalizeRoutePath).filter(Boolean));
 
   const tree = await kv.get(CATEGORY_TREE_CACHE_KEY).catch(() => null);
+  const meta = await kv.get('meili:sync:meta').catch(() => null) as { modelos?: Record<string, string> } | null;
   const facetCounts = await getCategoryFacetCounts();
   const modelFacetCounts = await getModelFacetCounts();
   const snapshotMeta = await getSnapshotMetadataMap();
@@ -404,7 +432,7 @@ async function discoverCategorySnapshotRoutes(options?: {
     }
   }
 
-  const vehicleTargets = resolveSnapshotVehicleTargets(modelFacetCounts);
+  const vehicleTargets = resolveSnapshotVehicleTargets(modelFacetCounts, meta?.modelos);
   for (const vehicle of vehicleTargets) {
     if (vehicle.productCount < minProducts) continue;
 

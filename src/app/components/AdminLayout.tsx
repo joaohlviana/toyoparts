@@ -3,7 +3,7 @@
 // AdminDashboard is lazy-loaded since it pulls in 15+ admin sub-modules.
 
 import React, { Suspense, useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router';
+import { useLocation, useNavigate } from 'react-router';
 import { Toaster, toast } from 'sonner';
 import { Lock, Loader2, LogOut, Eye, EyeOff } from 'lucide-react';
 import { AdminDashboard } from '../pages/AdminDashboard';
@@ -139,7 +139,54 @@ function AdminLoginForm({ onSuccess }: { onSuccess: () => void }) {
 
 export function AdminLayout() {
   const navigate = useNavigate();
+  const location = useLocation();
   const [authState, setAuthState] = useState<'checking' | 'authenticated' | 'unauthenticated'>('checking');
+
+  const resolveAdminSection = useCallback((search: string): NonNullable<React.ComponentProps<typeof AdminDashboard>['initialSection']> => {
+    const page = new URLSearchParams(search).get('page');
+    const aliases: Record<string, NonNullable<React.ComponentProps<typeof AdminDashboard>['initialSection']>> = {
+      dashboard: 'dashboard',
+      products: 'products',
+      categories: 'categories',
+      images: 'images',
+      banners: 'banners',
+      newsletter: 'newsletter',
+      seo: 'seo_metadata',
+      seo_metadata: 'seo_metadata',
+      seo_redirects: 'seo_redirects',
+      snapshots: 'snapshots',
+      seo_sitemaps: 'seo_sitemaps',
+      ssg: 'ssg',
+      search_ops: 'search_ops_dashboard',
+      search_ops_dashboard: 'search_ops_dashboard',
+      payments: 'payments',
+      frenet: 'frenet',
+      carriers: 'carriers',
+      coupons: 'coupons',
+      orders: 'orders',
+      stored_orders: 'stored_orders',
+      stored_customers: 'stored_customers',
+      rede_pecas: 'rede_pecas',
+      price_update: 'price_update',
+      enrichment: 'enriquecimento',
+      enriquecimento: 'enriquecimento',
+      operations: 'operations',
+      magento_migration: 'magento_migration',
+      search_intelligence: 'search_intelligence',
+      resend: 'resend',
+      audit_log: 'audit_log',
+      integration_health: 'integration_health',
+      stripe_test: 'stripe_test',
+      growth_plan: 'growth_plan',
+      dados: 'dados',
+      customers_loja: 'customers_loja',
+    };
+
+    if (!page) return 'dashboard';
+    return aliases[page] || 'dashboard';
+  }, []);
+
+  const initialSection = resolveAdminSection(location.search);
 
   // Check existing token on mount
   useEffect(() => {
@@ -205,8 +252,24 @@ export function AdminLayout() {
 
       <Suspense fallback={<AdminLoader />}>
         <AdminDashboard
-          initialSection="dashboard"
+          initialSection={initialSection}
           onBackToStore={() => navigate('/')}
+          onSectionChange={(section) => {
+            const params = new URLSearchParams(location.search);
+            if (section === 'dashboard') {
+              params.delete('page');
+            } else {
+              params.set('page', section);
+            }
+            const search = params.toString();
+            navigate(
+              {
+                pathname: location.pathname,
+                search: search ? `?${search}` : '',
+              },
+              { replace: true }
+            );
+          }}
         />
       </Suspense>
     </div>

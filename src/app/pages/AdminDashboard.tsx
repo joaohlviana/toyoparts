@@ -28,6 +28,8 @@ import { CouponsAdminPage } from './admin/CouponsAdminPage';
 import { PriceUpdatePage }  from './admin/PriceUpdatePage';
 import { StripeTestPage } from './admin/StripeTestPage';
 import { SSGAdminPage } from './admin/SSGAdminPage';
+import { SnapshotAdminPage } from './SnapshotAdminPage';
+import { LegacyRedirectsPage } from './admin/LegacyRedirectsPage';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 
@@ -55,6 +57,8 @@ type SectionId =
   | 'seo'
   | 'seo_metadata'
   | 'seo_sitemaps'
+  | 'seo_redirects'
+  | 'snapshots'
   | 'banners' 
   | 'frenet'
   | 'carriers'
@@ -73,17 +77,24 @@ type SectionId =
 interface AdminDashboardProps {
   initialSection?: SectionId;
   onBackToStore?: () => void;
+  onSectionChange?: (section: SectionId) => void;
 }
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 
-export function AdminDashboard({ initialSection = 'dashboard', onBackToStore }: AdminDashboardProps) {
+export function AdminDashboard({ initialSection = 'dashboard', onBackToStore, onSectionChange }: AdminDashboardProps) {
   const [activeSection, setActiveSection] = useState<SectionId>(initialSection);
 
   // Stable callback — não recriado a cada render, evita cascade de re-renders no AdminShell/Sidebar
   const handleNavigate = useCallback((id: string) => {
-    setActiveSection(id as SectionId);
-  }, []);
+    const nextSection = id as SectionId;
+    setActiveSection(nextSection);
+    onSectionChange?.(nextSection);
+  }, [onSectionChange]);
+
+  React.useEffect(() => {
+    setActiveSection(initialSection);
+  }, [initialSection]);
 
   const isSearchOps = activeSection === 'search_ops' || activeSection.startsWith('search_ops_');
   const isSeo = activeSection === 'seo' || activeSection === 'seo_metadata';
@@ -187,9 +198,21 @@ export function AdminDashboard({ initialSection = 'dashboard', onBackToStore }: 
             </div>
         )}
 
+        {activeSection === 'snapshots' && (
+            <div className="h-full min-h-0 overflow-y-auto">
+                <SnapshotAdminPage />
+            </div>
+        )}
+
         {activeSection === 'seo_sitemaps' && (
             <div className="h-full min-h-0">
                 <SEOAdmin />
+            </div>
+        )}
+
+        {activeSection === 'seo_redirects' && (
+            <div className="h-full min-h-0 overflow-y-auto">
+                <LegacyRedirectsPage />
             </div>
         )}
 

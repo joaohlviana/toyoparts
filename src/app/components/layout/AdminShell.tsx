@@ -34,6 +34,7 @@ import {
   RefreshCcw,
   FlaskConical,
   FileCode2,
+  Route,
 } from 'lucide-react';
 import { Sidebar, NavigationGroup } from './Sidebar';
 
@@ -102,7 +103,9 @@ export function AdminShell({ children, activeSection, onNavigate, onBackToStore 
           icon: Globe,
           items: [
             { id: 'seo_metadata', label: 'Metadados', icon: FileText },
+            { id: 'snapshots', label: 'Snapshots', icon: Database },
             { id: 'seo_sitemaps', label: 'Sitemaps', icon: Map },
+            { id: 'seo_redirects', label: 'Redirects 301', icon: Route },
             { id: 'ssg', label: 'SSG (HTML Estático)', icon: FileCode2 },
           ],
         },

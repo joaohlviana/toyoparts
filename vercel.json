@@ -9,5 +9,602 @@
       "src": "/(.*)",
       "dest": "/index.html"
     }
+  ],
+  "redirects": [
+    {
+      "source": "/adesivo-4x4-turbo-cod-75998044ti",
+      "destination": "/produto/75998044TI/adesivo-4x4-turbo-cod-75998044ti-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/admissao-filtro-ar-cod-1775121150",
+      "destination": "/produto/1775121150/admissao-filtro-ar-cod-1775121150",
+      "permanent": true
+    },
+    {
+      "source": "/aerofolio-traseiro-7689102070",
+      "destination": "/produto/7689102070/aerofolio-traseiro",
+      "permanent": true
+    },
+    {
+      "source": "/alavanca-do-cambio-cod-335300k094-original-toyota",
+      "destination": "/produto/335300K094/alavanca-do-cambio-cod-335300k094-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/amortecedor-dianteiro-etios-485100de90",
+      "destination": "/produto/485100DE90/amortecedor-dianteiro-etios-2016-a-2021-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/amortecedor-dianteiro-yaris-485100de30-original-toyota",
+      "destination": "/produto/485100DE30/amortecedor-dianteiro-yaris-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/amortecedor-direito-porta-malas-sw4-6891071050-original-toyota",
+      "destination": "/produto/6891071050/amortecedor-do-lado-direito-do-porta-malas-sw4-2022-em-diante-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/amortecedor-traseiro-direito-etios-2012-a-2016-original-toyota-485300d410",
+      "destination": "/produto/485300D410/amortecedor-traseiro-direito-etios-2012-a-2015-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/amortecedor-traseiro-yaris-485300de70-original",
+      "destination": "/produto/485300DE70/amortecedor-traseiro-direito-ou-esquerdo-yaris-hatch-sedan-2018-2025",
+      "permanent": true
+    },
+    {
+      "source": "/antena-cod-863090k090",
+      "destination": "/produto/863090K090/antena-cod-863090k090",
+      "permanent": true
+    },
+    {
+      "source": "/aplique-azul-retrovisor-pv4030a010j0",
+      "destination": "/produto/PV4030A010J0/aplique-azul-do-retrovisor-corolla-cross-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/aplique-cromado-da-grade-pv4010d010",
+      "destination": "/produto/PV4010D010/aplique-cromado-da-grade-yaris-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/aplique-cromado-macaneta-pv40302010-original-toyota",
+      "destination": "/produto/PV40302010/aplique-cromado-da-macaneta-corolla-e-corolla-cross-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/aplique-cromado-para-chqoue-traseiro-yaris-pv4050d050-original",
+      "destination": "/produto/PV4050D050/aplique-cromado-do-para-choque-traseiro-yaris-hatch-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/aplique-cromado-porta-malas-yaris-hatch-pv4050d070",
+      "destination": "/produto/PV4050D070/aplique-cromado-da-tampa-do-porta-malas-yaris-hatch-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/aplique-cromado-traseiro-pv40502010-original-toyota",
+      "destination": "/produto/PV40502010/aplique-cromado-do-para-choque-traseiro-corolla-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/aplique-tampa-portamalas-sw4-pc4070k001",
+      "destination": "/produto/PC4070K001/aplique-cromado-da-tampa-do-porta-malas-sw4-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/assistente-abertura-pc3b20k001-original-toyota",
+      "destination": "/produto/PC3B20K001/assistente-de-abertura-da-cacamba-hilux-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/bandeja-porta-malas-corolla-pv24102030-original-toyota",
+      "destination": "/produto/PV24102030/bandeja-do-porta-malas-corolla-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/bico-injetor-etios-yaris-2320949265-original-toyota",
+      "destination": "/produto/2320949265/bico-injetor-yaris-e-etios-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/bico-injetor-hilux-2008-a-2010-040000210l-original-toyota",
+      "destination": "/produto/040000210L/bico-injetor-hilux-e-sw4-3-0-td-2008-a-2010",
+      "permanent": true
+    },
+    {
+      "source": "/bico-injetor-hilux-2012-2015-2367039475-original-toyota",
+      "destination": "/produto/2367039475/bico-injetor-hilux-e-sw4-2012-a-2015-3-0-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/bico-injetor-hilux-2367019035-original-toyota",
+      "destination": "/produto/2367019035/bico-injetor-hilux-2015-a-2020-2-8-td-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/biela-motor-ignicao-cod-1320129177",
+      "destination": "/produto/1320129177/biela-motor-ignicao-cod-1320129177",
+      "permanent": true
+    },
+    {
+      "source": "/calota-corolla-original-toyota-4260312640",
+      "destination": "/produto/4260312640/calota-corolla-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/canaleta-vidro-porta-cod-6814102440-original-toyota",
+      "destination": "/produto/6814102440/canaleta-vidro-porta-cod-6814102440-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/capa-do-aerofolio-di-7685202300",
+      "destination": "/produto/7685202300/capa-do-aerofolio-di",
+      "permanent": true
+    },
+    {
+      "source": "/capota-maritima-hilux-ph3b10ka11",
+      "destination": "/produto/PH3B10KA11/capota-maritima-hilux-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/cilindro-chave-cod-690510k011",
+      "destination": "/produto/690510K011/cilindro-chave-cod-690510k011",
+      "permanent": true
+    },
+    {
+      "source": "/cobertura-para-choqu-cod-521280k330",
+      "destination": "/produto/521280K330/cobertura-para-choqu-cod-521280k330",
+      "permanent": true
+    },
+    {
+      "source": "/compressor-ar-condic-883200d050",
+      "destination": "/produto/883200D050/compressor-ar-condic-etios-2012-2016",
+      "permanent": true
+    },
+    {
+      "source": "/conector-terminal-n-cod-9098206022-original-toyota",
+      "destination": "/produto/9098206022/conector-terminal-bateria-negativo",
+      "permanent": true
+    },
+    {
+      "source": "/conjunto-elemento-fi-cod-233900l050",
+      "destination": "/produto/233900L050/filtro-de-combustivel-hilux-e-sw4-2011-a-2015-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/coxim-amortecedor-tr-cod-9094801101-original-toyota",
+      "destination": "/produto/9094801101/coxim-amortecedor-tr-cod-9094801101-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/coxim-borracha-mot-cod-123720d051",
+      "destination": "/produto/123720D051/isolador-montagem-motor-esquerdo-motor-transversal",
+      "permanent": true
+    },
+    {
+      "source": "/coxim-motor-corolla-dianteiro-1230537070-original-toyota",
+      "destination": "/produto/1230537070/coxim-do-motor-corolla-dianteiro-2011-a-2014-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/cruzeta-eixo-cardan-cod-043710k082",
+      "destination": "/produto/043710K082/cruzeta-do-eixo-cardan-hilux-e-sw4-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/cruzeta-eixo-cardan-cod-043750k012",
+      "destination": "/produto/043750K012/cruzeta-do-eixo-cardan-hilux-e-sw4-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/cubo-do-eixo-dianteiro-do-corolla-4355012030-original-toyota",
+      "destination": "/produto/4355012030/cubo-do-eixo-dianteiro-do-corolla-2019-em-diante-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/disco-de-freio-diant-cod-4351202290",
+      "destination": "/produto/4351202290/disco-de-freio-dianteiro-corolla-2008-a-2014-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/disco-freio-dianteiro-eitos-yaris-435120d170",
+      "destination": "/produto/435120D170/disco-de-freio-dianteiro-etios-2013",
+      "permanent": true
+    },
+    {
+      "source": "/dobradica-capo-para-cod-5342002660-original-toyota",
+      "destination": "/produto/5342002660/dobradica-capo-para-cod-5342002660-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/encosto-cabeca-banco-cod-7196048700a4-original-toyota",
+      "destination": "/produto/7196048700A4/encosto-cabeca-banco-cod-7196048700a4-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/espelho-retrovisor-cod-879311a820",
+      "destination": "/produto/879311A820/espelho-retrovisor-cod-879311a820",
+      "permanent": true
+    },
+    {
+      "source": "/espelho-retrovisor-externo-cod-879100a110",
+      "destination": "/produto/879100A110/espelho-retrovisor-externo-corolla-cross-2021-2025",
+      "permanent": true
+    },
+    {
+      "source": "/espuma-encosto-banco-cod-7155102f10-original-toyota",
+      "destination": "/produto/7155102F10/espuma-encosto-banco-cod-7155102f10-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/estribo-lateral-hilux-ph7000km10do",
+      "destination": "/produto/PH7000KM10DO/estribo-lateral-hilux-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/filtro-combustivel-233000d100-original-toyota",
+      "destination": "/produto/233000D100/filtro-de-combustivel-corolla-yaris-etios-fielder-hilux-e-sw4",
+      "permanent": true
+    },
+    {
+      "source": "/filtro-combustivel-23300f2030",
+      "destination": "/produto/23300F2030/filtro-de-combustivel-corolla-e-corolla-cross",
+      "permanent": true
+    },
+    {
+      "source": "/filtro-de-oleo-para-cod-90915yzzd2",
+      "destination": "/produto/90915YZZD2/filtro-de-oleo-para-hilux-e-sw4-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/friso-cromado-para-choque-pc4110k001-sw4-original-toyota",
+      "destination": "/produto/PC4110K001/friso-cromado-do-para-choque-traseiro-sw4-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/friso-de-porta-super-cod-pv17002040-original-toyota",
+      "destination": "/produto/PV17002040/frisos-de-porta-superior-cromado-corolla-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/friso-etios-seda-pzv8114210-original-toyota",
+      "destination": "/produto/PZV8114210/friso-lateral-etios-seda-sem-pintura-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/friso-lateral-corolla-pv17002010-original0-toyota",
+      "destination": "/produto/PV17002010/frisos-laterais-corolla-sem-pintura-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/friso-lateral-cromado-pv1700d030-original-toyota",
+      "destination": "/produto/PV1700D030/friso-lateral-inferior-cromado-yaris-sedan-sem-pintura-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/friso-lateral-yaris-pv1700d02010-original-toyota",
+      "destination": "/produto/PV1700D02010/friso-lateral-yaris-sem-pintura-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/grade-do-radiador-d-cod-539110c070-original-toyota",
+      "destination": "/produto/539110C070/grade-do-radiador-d-cod-539110c070-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/grade-do-radiador-e-cod-5311102890-original-toyota",
+      "destination": "/produto/5311102890/grade-do-radiador-e-cod-5311102890-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/grade-radiador-super-cod-5311448110-original-toyota",
+      "destination": "/produto/5311448110/grade-radiador-super-cod-5311448110-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/guarnicao-interna-do-cod-6817402280-original-toyota",
+      "destination": "/produto/6817402280/guarnicao-interna-do-cod-6817402280-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/interruptor-cod-846600k030",
+      "destination": "/produto/846600K030/interruptor-cod-846600k030",
+      "permanent": true
+    },
+    {
+      "source": "/isolador-interno-do-cod-5521002750-original-toyota",
+      "destination": "/produto/5521002750/isolador-interno-do-cod-5521002750-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/jogo-de-junta-do-motor-automotivo-cod-041110y050",
+      "destination": "/produto/041110Y050/jogo-juntas-reparo-motor-yaris-sedan",
+      "permanent": true
+    },
+    {
+      "source": "/junta-metaloplastica-cod-9091706089",
+      "destination": "/produto/9091706089/junta-metaloplastica-cod-9091706089",
+      "permanent": true
+    },
+    {
+      "source": "/kit-farol-de-neblina-pc5931200z-corolla-original-toyota",
+      "destination": "/produto/PC5931200Z/kit-farol-de-neblina-em-led-corolla-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/kit-farol-neblina-hilux-cabine-simples-pc5930k003",
+      "destination": "/produto/PC5930K003/kit-farol-de-neblina-hilux-cabine-simples-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/kit-lampada-branca-yaris-corolla-pv58102001",
+      "destination": "/produto/PV58102001/kit-de-lampadas-de-luz-branca-para-farois-yaris-e-corolla-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/lampada-9098115021br-original",
+      "destination": "/produto/9098115021BR/lampada-seta-traseira",
+      "permanent": true
+    },
+    {
+      "source": "/lampada-9913212050br-original",
+      "destination": "/produto/9913212050BR/lampada-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/lampadas-farol-neblina-etios-pzv7014211-original-toyota",
+      "destination": "/produto/PZV7014211/kit-de-lampadas-para-farois-de-neblina-etios-original",
+      "permanent": true
+    },
+    {
+      "source": "/lanterna-direcional-cod-815510k180",
+      "destination": "/produto/815510K180/lanterna-direcional-cod-815510k180",
+      "permanent": true
+    },
+    {
+      "source": "/lanterna-sinaleira-cod-8173052100",
+      "destination": "/produto/8173052100/lanterna-sinaleira-cod-8173052100",
+      "permanent": true
+    },
+    {
+      "source": "/lanterna-traseira-di-cod-815810k030",
+      "destination": "/produto/815810K030/lanterna-traseira-direita-sw4-2011-2015",
+      "permanent": true
+    },
+    {
+      "source": "/lanterna-traseira-direita-corolla-8155102d70",
+      "destination": "/produto/8155102D70/lanterna-traseira-direita-corolla-2019-em-diante-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/lanterna-traseira-direita-hilux-815510k261",
+      "destination": "/produto/815510K261/lanterna-traseira-direita-hilux-2017-a-2020-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/lanterna-traseira-direita-yaris-hatch-815510da10",
+      "destination": "/produto/815510DA10/lanterna-traseira-direito-yaris-hatch-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/lanterna-traseira-esquerda-corolla-8156102d70",
+      "destination": "/produto/8156102D70/lanterna-traseira-esquerda-corolla-2019-em-diante-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/lente-lanterna-traseira-hilux-815610k271-original-toyota",
+      "destination": "/produto/815610K271/lanterna-traseira-esquerda-hilux-2017-a-2020-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/liame-barra-estabil-cod-4882035010",
+      "destination": "/produto/4882035010/liame-barra-estabil-cod-4882035010",
+      "permanent": true
+    },
+    {
+      "source": "/limitador-da-porta-t-cod-6863002400-original-toyota",
+      "destination": "/produto/6863002400/limitador-da-porta-t-cod-6863002400-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/modulo-ecu-controle-cod-8596750050-original-toyota",
+      "destination": "/produto/8596750050/modulo-ecu-controle-cod-8596750050-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/modulo-turbo-cod-8987871070",
+      "destination": "/produto/8987871070/modulo-turbo-hilux-e-sw4-2004-a-2010-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/moldura-da-grade-do-cod-531220k250",
+      "destination": "/produto/531220K250/moldura-da-grade-do-cod-531220k250",
+      "permanent": true
+    },
+    {
+      "source": "/moldura-painel-sport-pc2800d005",
+      "destination": "/produto/PC2800D005/moldura-de-painel-sport-yaris-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/moldura-superior-porta-malas-758010d020-original-toyota",
+      "destination": "/produto/758010D020/moldura-superior-do-porta-malas-etios-sedan-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/outlet/conjunto-retrovisor-cod-879100ke70",
+      "destination": "/produto/879100KE70/conjunto-retrovisor-cod-879100ke70",
+      "permanent": true
+    },
+    {
+      "source": "/palheta-limpador-dia-cod-8521242130",
+      "destination": "/produto/8521242130/palheta-limpador-do-para-brisa-direito-hilux-2015-a-2020-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/para-barro-plastico-cod-7662139425",
+      "destination": "/produto/7662139425/para-barro-dianteiro-direito-hilux",
+      "permanent": true
+    },
+    {
+      "source": "/paralama-dianteiro-d-cod-5380102320-original-toyota",
+      "destination": "/produto/5380102320/paralama-dianteiro-d-cod-5380102320-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/ponteira-cromada-corolla-pc41312001-original-toyota",
+      "destination": "/produto/PC41312001/ponteira-de-escapamento-cromada-corolla-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/protetor-inferior-dianteiro-sw4-pc4170k001-original-toyota",
+      "destination": "/produto/PC4170K001/protetor-inferior-dianteiro-sw4-2015-a-2020-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/protetor-inferior-do-5144202390",
+      "destination": "/produto/5144202390/protetor-inferior-do",
+      "permanent": true
+    },
+    {
+      "source": "/protetor-inferior-sw4-pc4150k001",
+      "destination": "/produto/PC4150K001/protetor-inferior-traseiro-sw4-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/protetor-para-choque-yaris-hatch-pv1770d030",
+      "destination": "/produto/PV1770D030/protetor-de-para-choque-yaris-hatch-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/rede-porta-malas-pc2460k001-sw4-original-toyota",
+      "destination": "/produto/PC2460K001/rede-de-porta-malas-sw4-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/refletor-reflexo-dir-cod-8191048060-original-toyota",
+      "destination": "/produto/8191048060/refletor-reflexo-dir-cod-8191048060-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/revestimento-do-para-538750d650",
+      "destination": "/produto/538750D650/parabarro-dianteiro-direito-yaris-2018-a-2019-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/roda-de-aluminio-pa-426110de40",
+      "destination": "/produto/426110DE40/roda-de-aluminio-pa",
+      "permanent": true
+    },
+    {
+      "source": "/roda-de-liga-de-aluminio-cod-pv45702040",
+      "destination": "/produto/PV45702040/roda-de-liga-de-aluminio-cod-pv45702040",
+      "permanent": true
+    },
+    {
+      "source": "/selo-ventilador-dia-cod-5581578012-original-toyota",
+      "destination": "/produto/5581578012/selo-ventilador-dia-cod-5581578012-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/sensor-estacionamento-traseiro-pv50102011-corolla-original-toyota",
+      "destination": "/produto/PV50102011/sensor-de-estacionamento-traseiro-corolla-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/sensor-temperatura-8945460010",
+      "destination": "/produto/8945460010/sensor-temperatura",
+      "permanent": true
+    },
+    {
+      "source": "/soleira-corolla-pv38202010-original",
+      "destination": "/produto/PV38202010/soleira-corolla-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/soleira-iluminada-corolla-cross-p75310a001",
+      "destination": "/produto/P75310A001/soleira-iluminada-corolla-cross-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/soleira-iluminada-p753112001-original-toyota",
+      "destination": "/produto/P753112001/soleira-iluminada-corolla-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/suporte-cabo-control-cod-3382348100-original-toyota",
+      "destination": "/produto/3382348100/suporte-cabo-control-cod-3382348100-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/suporte-da-suspensao-corolla-4860902201-original-toyota",
+      "destination": "/produto/4860902201/suporte-da-suspensao-do-amortecedor-dianteiro-do-corolla-2017-em-diante-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/suporte-do-computado-cod-8957333070-original-toyota",
+      "destination": "/produto/8957333070/suporte-do-computado-cod-8957333070-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/suporte-do-parachoqu-5211502530",
+      "destination": "/produto/5211502530/suporte-do-parachoqu",
+      "permanent": true
+    },
+    {
+      "source": "/suporte-radiador-em-cod-5320102390",
+      "destination": "/produto/5320102390/suporte-radiador-em-cod-5320102390",
+      "permanent": true
+    },
+    {
+      "source": "/tapete-traseiro-etios-pv2130d011-original-toyota",
+      "destination": "/produto/PV2130D011/tapete-traseiro-etios-hatch-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/tapete-traseiro-etios-sedan-pv2130d012-original-toyota",
+      "destination": "/produto/PV2130D012/tapete-traseiro-etios-sedan-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/trava-eletrica-port-cod-6906060110-original-toyota",
+      "destination": "/produto/6906060110/trava-eletrica-port-cod-6906060110-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/tubo-distribuicao-combustivel-238100l040-original-toyota",
+      "destination": "/produto/238100L040/tubo-de-distribuicao-de-combustivel-hilux-e-sw4-2012-a-2015-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/vela-de-ignicao-9091901291-etios",
+      "destination": "/produto/9091901291/vela-ignicao-etios-2016-a-2018-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/vela-de-ignicao-par-cod-9091901299-original-toyota",
+      "destination": "/produto/9091901299/vela-de-ignicao-etios-corolla-corolla-cross-e-yaris-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/vidro-lateral-da-por-cod-6810102303",
+      "destination": "/produto/6810102303/subconjunto-vidro-porta-dianteira-direita",
+      "permanent": true
+    },
+    {
+      "source": "/vidro-temperado-da-porta-cod-6810202631-original-toyota",
+      "destination": "/produto/6810202631/vidro-temperado-da-p-cod-6810202631-original-toyota",
+      "permanent": true
+    },
+    {
+      "source": "/vidro-temperado-port-681140k340",
+      "destination": "/produto/681140K340/vidro-temperado-port",
+      "permanent": true
+    }
   ]
 }

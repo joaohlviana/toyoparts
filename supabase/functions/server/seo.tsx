@@ -31,6 +31,56 @@ function escapeXml(str: any): string {
     .replace(/'/g, '&apos;');
 }
 
+async function buildSnapshotSitemapEntries() {
+  const snapshotRows = await kv.getByPrefix('snapshot:category:').catch(() => []);
+  const seenSnapshotPaths = new Set<string>(['/', '/pecas']);
+
+  const entries = (snapshotRows || [])
+    .map((entry: any) => entry?.value || entry)
+    .filter((value: any) => value?.path)
+    .filter((value: any) => {
+      const path = String(value.path || '');
+      if (!path || seenSnapshotPaths.has(path)) return false;
+      seenSnapshotPaths.add(path);
+      return true;
+    })
+    .map((value: any) => {
+      const path = String(value.path || '');
+      const routeType = String(value.type || 'category');
+      const lastMod = value.generated_at
+        ? String(value.generated_at).split('T')[0]
+        : new Date().toISOString().split('T')[0];
+      const priority =
+        routeType === 'vehicle' ? '0.85'
+        : routeType === 'vehicle-category' ? '0.80'
+        : routeType === 'department' ? '0.80'
+        : routeType === 'subcategory' ? '0.75'
+        : routeType === 'leaf' ? '0.70'
+        : routeType === 'home' ? '1.0'
+        : '0.65';
+      const changefreq =
+        routeType === 'vehicle' || routeType === 'vehicle-category' || routeType === 'department'
+          ? 'daily'
+          : 'weekly';
+
+      return {
+        path,
+        xml: `
+  <url>
+    <loc>${SITE_URL}${escapeXml(path)}</loc>
+    <lastmod>${lastMod}</lastmod>
+    <changefreq>${changefreq}</changefreq>
+    <priority>${priority}</priority>
+  </url>`,
+      };
+    });
+
+  return {
+    count: entries.length,
+    xml: entries.map((entry) => entry.xml).join(''),
+  };
+}
+
 // ─── ROBOTS.TXT ──────────────────────────────────────────────────────────────
 app.get('/robots.txt', (c) => {
   const robots = `User-agent: *
@@ -42,6 +92,7 @@ Disallow: /acesso
 Disallow: /busca
 
 Sitemap: ${SITE_URL}/sitemap.xml
+Sitemap: ${SITE_URL}/snapshot-sitemap.xml
 Sitemap: ${SITE_URL}/fora_de_catalogo.xml
 `;
   return c.text(robots, 200, {
@@ -128,45 +179,8 @@ app.get('/sitemap.xml', async (c) => {
       }).join('');
 
     // 5. Gerar URLs publicas de snapshots de categoria/veiculo ja materializados
-    const snapshotRows = await kv.getByPrefix('snapshot:category:').catch(() => []);
-    const seenSnapshotPaths = new Set<string>(['/', '/pecas']);
-    const snapshotUrlsXml = (snapshotRows || [])
-      .map((entry: any) => entry?.value || entry)
-      .filter((value: any) => value?.path)
-      .filter((value: any) => {
-        const path = String(value.path || '');
-        if (!path || seenSnapshotPaths.has(path)) return false;
-        seenSnapshotPaths.add(path);
-        return true;
-      })
-      .map((value: any) => {
-        const path = String(value.path || '');
-        const routeType = String(value.type || 'category');
-        const lastMod = value.generated_at
-          ? String(value.generated_at).split('T')[0]
-          : new Date().toISOString().split('T')[0];
-        const priority =
-          routeType === 'vehicle' ? '0.85'
-          : routeType === 'vehicle-category' ? '0.80'
-          : routeType === 'department' ? '0.80'
-          : routeType === 'subcategory' ? '0.75'
-          : routeType === 'leaf' ? '0.70'
-          : routeType === 'home' ? '1.0'
-          : '0.65';
-        const changefreq =
-          routeType === 'vehicle' || routeType === 'vehicle-category' || routeType === 'department'
-            ? 'daily'
-            : 'weekly';
-
-        return `
-  <url>
-    <loc>${SITE_URL}${escapeXml(path)}</loc>
-    <lastmod>${lastMod}</lastmod>
-    <changefreq>${changefreq}</changefreq>
-    <priority>${priority}</priority>
-  </url>`;
-      })
-      .join('');
+    const snapshotEntries = await buildSnapshotSitemapEntries();
+    const snapshotUrlsXml = snapshotEntries.xml;
 
     const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
 <urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
@@ -192,6 +206,24 @@ ${productUrlsXml}
     });
   } catch (e: any) {
     return c.text(`Error generating sitemap: ${e.message}`, 500);
+  }
+});
+
+app.get('/snapshot-sitemap.xml', async (c) => {
+  try {
+    const snapshotEntries = await buildSnapshotSitemapEntries();
+    const sitemap = `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+${snapshotEntries.xml}
+</urlset>`;
+
+    return c.body(sitemap, 200, {
+      'Content-Type': 'application/xml',
+      'Cache-Control': 'public, max-age=3600',
+      'X-Snapshot-Urls': String(snapshotEntries.count),
+    });
+  } catch (e: any) {
+    return c.text(`Error generating snapshot sitemap: ${e.message}`, 500);
   }
 });
 

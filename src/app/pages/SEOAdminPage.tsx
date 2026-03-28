@@ -797,7 +797,7 @@ function SEOBatchTab() {
 
 // ─── Stats Tab ──────────────────────────────────────────────────────────────
 
-function SEOSnapshotsTab() {
+export function SEOSnapshotsTab({ standalone = false }: { standalone?: boolean } = {}) {
   const [discovering, setDiscovering] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [urlsText, setUrlsText] = useState(() => {
@@ -937,6 +937,49 @@ function SEOSnapshotsTab() {
 
   return (
     <div className="space-y-6">
+      {standalone && (
+        <div className="grid grid-cols-1 xl:grid-cols-[1.15fr_0.85fr] gap-4">
+          <Card className="p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <Database className="w-4 h-4 text-primary" />
+              <h2 className="text-sm font-semibold text-foreground">Sistema dedicado de snapshots</h2>
+            </div>
+            <p className="text-sm text-muted-foreground leading-relaxed">
+              Este modulo centraliza a descoberta, a geracao e a confirmacao de sitemap das landings SEO
+              mais importantes da loja, incluindo departamentos, subcategorias, veiculos e cruzamentos
+              de veiculo x categoria com produto real.
+            </p>
+            <div className="flex flex-wrap gap-2 mt-4">
+              <Badge variant="secondary" className="text-[10px]">Discovery automatico</Badge>
+              <Badge variant="secondary" className="text-[10px]">HTML cacheado</Badge>
+              <Badge variant="secondary" className="text-[10px]">Sitemap publico</Badge>
+            </div>
+          </Card>
+
+          <Card className="p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <Globe className="w-4 h-4 text-primary" />
+              <h2 className="text-sm font-semibold text-foreground">Fluxo recomendado</h2>
+            </div>
+            <div className="space-y-3">
+              {[
+                'Descobrir rotas elegiveis com base no catalogo real.',
+                'Cruzar URLs legadas para garantir cobertura das paginas prioritarias.',
+                'Gerar ou regerar snapshots das landings escolhidas.',
+                'Confirmar que as URLs publicas materializadas ja entram no snapshot-sitemap.xml.',
+              ].map((step, index) => (
+                <div key={step} className="flex items-start gap-3">
+                  <div className="w-6 h-6 rounded-full bg-primary/10 text-primary text-xs font-semibold flex items-center justify-center shrink-0">
+                    {index + 1}
+                  </div>
+                  <p className="text-sm text-muted-foreground leading-relaxed">{step}</p>
+                </div>
+              ))}
+            </div>
+          </Card>
+        </div>
+      )}
+
       <Card className="p-5 space-y-4">
         <div className="flex items-start justify-between gap-4">
           <div>
@@ -1048,17 +1091,17 @@ function SEOSnapshotsTab() {
                     <AlertTriangle className="w-4 h-4 text-amber-600" />
                   )}
                   <h3 className="text-sm font-semibold text-foreground">
-                    Sitemap publico dos snapshots
+                    Sitemap dedicado dos snapshots
                   </h3>
                 </div>
                 <p className="text-sm text-foreground/80 leading-relaxed max-w-3xl">
                   {snapshotRoutesReadyForSitemap > 0
-                    ? `${snapshotRoutesReadyForSitemap} URL${snapshotRoutesReadyForSitemap === 1 ? '' : 's'} publica${snapshotRoutesReadyForSitemap === 1 ? '' : 's'} com snapshot ja entram automaticamente no sitemap.xml. O sitemap lista as rotas canonicas, como /pecas/corolla/acessorios-internos, e nao endpoints internos de /snapshot/.`
-                    : 'Ainda nao ha rotas materializadas com snapshot suficiente para entrar no sitemap publico. Gere os snapshots para ativar essa cobertura de SEO.'}
+                    ? `${snapshotRoutesReadyForSitemap} URL${snapshotRoutesReadyForSitemap === 1 ? '' : 's'} publica${snapshotRoutesReadyForSitemap === 1 ? '' : 's'} com snapshot ja entram automaticamente no snapshot-sitemap.xml. Esse arquivo fica separado para auditoria no Google Search Console e lista as rotas canonicas, como /pecas/corolla/acessorios-internos, e nao endpoints internos de /snapshot/.`
+                    : 'Ainda nao ha rotas materializadas com snapshot suficiente para entrar no snapshot-sitemap.xml. Gere os snapshots para ativar essa cobertura de SEO.'}
                 </p>
                 <div className="flex flex-wrap gap-2 text-[11px] text-muted-foreground">
                   <Badge variant="secondary" className="text-[10px]">
-                    Cobertura no sitemap: {snapshotCoveragePct}%
+                    Cobertura no snapshot-sitemap: {snapshotCoveragePct}%
                   </Badge>
                   <Badge variant="outline" className="text-[10px]">
                     {snapshotRoutesReadyForSitemap} URLs prontas para indexacao
@@ -1068,11 +1111,19 @@ function SEOSnapshotsTab() {
               <div className="flex flex-wrap gap-2">
                 <Button
                   variant="outline"
+                  onClick={() => window.open(`${window.location.origin}/snapshot-sitemap.xml`, '_blank', 'noopener,noreferrer')}
+                  className="gap-1.5"
+                >
+                  <Globe className="w-4 h-4" />
+                  Abrir snapshot-sitemap.xml
+                </Button>
+                <Button
+                  variant="outline"
                   onClick={() => window.open(`${window.location.origin}/sitemap.xml`, '_blank', 'noopener,noreferrer')}
                   className="gap-1.5"
                 >
                   <Globe className="w-4 h-4" />
-                  Abrir sitemap.xml
+                  Abrir sitemap principal
                 </Button>
                 <Button
                   variant="outline"

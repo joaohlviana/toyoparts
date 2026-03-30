@@ -32,6 +32,7 @@ import {
   Target,
   Truck,
   Users,
+  Warehouse,
 } from 'lucide-react';
 import { Sidebar, NavigationGroup } from './Sidebar';
 

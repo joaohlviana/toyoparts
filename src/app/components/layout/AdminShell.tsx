@@ -137,6 +137,7 @@ export function AdminShell({ children, activeSection, onNavigate, onBackToStore 
       items: [
         { id: 'frenet', label: 'Frete (Frenet)', icon: Truck },
         { id: 'frete_gratis', label: 'Frete Gratis', icon: Gift },
+        { id: 'pronta_entrega', label: 'Pronta Entrega', icon: Warehouse },
         { id: 'carriers', label: 'Transportadoras', icon: Truck },
         { id: 'payments', label: 'Pagamentos', icon: CreditCard },
         { id: 'coupons', label: 'Cupons', icon: Tag },

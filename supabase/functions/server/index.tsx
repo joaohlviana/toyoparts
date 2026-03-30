@@ -38,6 +38,7 @@ import { adminAuth, adminMiddleware } from './admin-auth.tsx';
 import { seoAdmin } from './seo-admin.tsx';
 import { banners } from './banners.tsx';
 import { freeShippingAdmin } from './free-shipping.tsx';
+import { readyStockAdmin } from './ready-stock.tsx';
 
 import { sitemapGenerator } from './sitemap-generator.tsx';
 import { snapshotGenerator } from './snapshot-generator.tsx';
@@ -94,6 +95,7 @@ app.route('/make-server-1d6e33e0/admin/price-update', priceUpdate);
 app.route('/make-server-1d6e33e0/admin/seo', seoAdmin);
 app.route('/make-server-1d6e33e0/banners', banners);
 app.route('/make-server-1d6e33e0/admin/free-shipping', freeShippingAdmin);
+app.route('/make-server-1d6e33e0/admin/ready-stock', readyStockAdmin);
 
 // ─── Configurações ───────────────────────────────────────────────────────────
 const MAGENTO_TOKEN = (Deno.env.get('MAGENTO_TOKEN') || '').trim();

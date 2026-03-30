@@ -162,6 +162,7 @@ export function AdminLayout() {
       payments: 'payments',
       frenet: 'frenet',
       frete_gratis: 'frete_gratis',
+      pronta_entrega: 'pronta_entrega',
       carriers: 'carriers',
       coupons: 'coupons',
       orders: 'orders',

@@ -31,6 +31,7 @@ import { SSGAdminPage } from './admin/SSGAdminPage';
 import { SnapshotAdminPage } from './SnapshotAdminPage';
 import { LegacyRedirectsPage } from './admin/LegacyRedirectsPage';
 import { FreeShippingAdminPage } from './admin/FreeShippingAdminPage';
+import { ReadyStockAdminPage } from './admin/ReadyStockAdminPage';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 
@@ -63,6 +64,7 @@ type SectionId =
   | 'banners' 
   | 'frenet'
   | 'frete_gratis'
+  | 'pronta_entrega'
   | 'carriers'
   | 'payments'
   | 'coupons'
@@ -233,6 +235,12 @@ export function AdminDashboard({ initialSection = 'dashboard', onBackToStore, on
         {activeSection === 'frete_gratis' && (
             <div className="h-full min-h-0 overflow-y-auto">
                 <FreeShippingAdminPage />
+            </div>
+        )}
+
+        {activeSection === 'pronta_entrega' && (
+            <div className="h-full min-h-0 overflow-y-auto">
+                <ReadyStockAdminPage />
             </div>
         )}
 

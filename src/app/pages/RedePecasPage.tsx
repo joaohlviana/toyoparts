@@ -74,6 +74,65 @@ const PRIORITY = [
 
 const HIDDEN = new Set(['COMPATIBILIDADE', 'compatibilidade', 'id', 'created_at', 'updated_at']);
 const MEASURE_FIELDS: MeasureField[] = ['weight', 'dimensionLength', 'dimensionWidth', 'dimensionHeight'];
+const MEASURES_BACKEND_UNAVAILABLE_MESSAGE =
+  'Os endpoints de Conferencia de Medidas ainda nao estao publicados no backend.';
+
+type AdminJsonResult<T> = {
+  ok: boolean;
+  status: number;
+  data: T | null;
+  error: string | null;
+  missingRoute: boolean;
+};
+
+async function readAdminJson<T>(response: Response, fallbackMessage: string): Promise<AdminJsonResult<T>> {
+  const text = await response.text();
+  let data: any = null;
+
+  if (text.trim()) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      if (response.status === 404) {
+        return {
+          ok: false,
+          status: response.status,
+          data: null,
+          error: MEASURES_BACKEND_UNAVAILABLE_MESSAGE,
+          missingRoute: true,
+        };
+      }
+      return {
+        ok: false,
+        status: response.status,
+        data: null,
+        error: fallbackMessage,
+        missingRoute: false,
+      };
+    }
+  }
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      data,
+      error:
+        (data && typeof data === 'object' && 'error' in data && typeof data.error === 'string'
+          ? data.error
+          : null) || (response.status === 404 ? MEASURES_BACKEND_UNAVAILABLE_MESSAGE : fallbackMessage),
+      missingRoute: response.status === 404,
+    };
+  }
+
+  return {
+    ok: true,
+    status: response.status,
+    data,
+    error: null,
+    missingRoute: false,
+  };
+}
 
 function sortFields(product: Record<string, any>): [string, any][] {
   const entries = Object.entries(product).filter(([k]) => !HIDDEN.has(k));
@@ -600,7 +659,15 @@ function MeasureHistoryList({ history, loading }: { history: any[]; loading: boo
   );
 }
 
-function MeasuresManualPanel({ onApplied }: { onApplied: () => Promise<void> }) {
+function MeasuresManualPanel({
+  onApplied,
+  backendUnavailable = false,
+  backendMessage = MEASURES_BACKEND_UNAVAILABLE_MESSAGE,
+}: {
+  onApplied: () => Promise<void>;
+  backendUnavailable?: boolean;
+  backendMessage?: string;
+}) {
   const [sku, setSku] = useState('533010K020');
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
@@ -609,6 +676,10 @@ function MeasuresManualPanel({ onApplied }: { onApplied: () => Promise<void> }) 
   const autoLoaded = useRef(false);
 
   const handleCompare = useCallback(async () => {
+    if (backendUnavailable) {
+      toast.error(backendMessage);
+      return;
+    }
     const value = sku.trim();
     if (!value) {
       toast.error('Digite um SKU para comparar');
@@ -620,10 +691,10 @@ function MeasuresManualPanel({ onApplied }: { onApplied: () => Promise<void> }) 
         method: 'POST',
         body: JSON.stringify({ sku: value }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Falha ao comparar medidas');
-      setComparison(data.comparison);
-      setSelectedFields(defaultSelectedFields(data.comparison));
+      const result = await readAdminJson<any>(response, 'Falha ao comparar medidas');
+      if (!result.ok) throw new Error(result.error || 'Falha ao comparar medidas');
+      setComparison(result.data?.comparison || null);
+      setSelectedFields(defaultSelectedFields(result.data?.comparison));
     } catch (error: any) {
       toast.error(error.message);
       setComparison(null);
@@ -634,6 +705,10 @@ function MeasuresManualPanel({ onApplied }: { onApplied: () => Promise<void> }) 
   }, [sku]);
 
   const handleApply = useCallback(async () => {
+    if (backendUnavailable) {
+      toast.error(backendMessage);
+      return;
+    }
     if (!comparison?.sku) return;
     const fields = MEASURE_FIELDS.filter((field) => selectedFields[field]);
     if (!fields.length) {
@@ -646,10 +721,10 @@ function MeasuresManualPanel({ onApplied }: { onApplied: () => Promise<void> }) 
         method: 'POST',
         body: JSON.stringify({ sku: comparison.sku, fields }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Falha ao aplicar medidas');
-      setComparison(data.comparison);
-      setSelectedFields(defaultSelectedFields(data.comparison));
+      const result = await readAdminJson<any>(response, 'Falha ao aplicar medidas');
+      if (!result.ok) throw new Error(result.error || 'Falha ao aplicar medidas');
+      setComparison(result.data?.comparison || null);
+      setSelectedFields(defaultSelectedFields(result.data?.comparison));
       toast.success(`Medidas sincronizadas para ${comparison.sku}`);
       await onApplied();
     } catch (error: any) {
@@ -657,13 +732,13 @@ function MeasuresManualPanel({ onApplied }: { onApplied: () => Promise<void> }) 
     } finally {
       setApplying(false);
     }
-  }, [comparison, onApplied, selectedFields]);
+  }, [backendMessage, backendUnavailable, comparison, onApplied, selectedFields]);
 
   useEffect(() => {
-    if (autoLoaded.current) return;
+    if (autoLoaded.current || backendUnavailable) return;
     autoLoaded.current = true;
     void handleCompare();
-  }, [handleCompare]);
+  }, [backendUnavailable, handleCompare]);
 
   return (
     <div className="space-y-4">
@@ -685,6 +760,7 @@ function MeasuresManualPanel({ onApplied }: { onApplied: () => Promise<void> }) 
               size="md"
               onClick={handleCompare}
               isLoading={loading}
+              disabled={backendUnavailable}
               iconLeading={<RefreshCw className="w-4 h-4" />}
             >
               Comparar SKU
@@ -802,7 +878,7 @@ function MeasuresManualPanel({ onApplied }: { onApplied: () => Promise<void> }) 
               onClick={handleApply}
               isLoading={applying}
               iconLeading={<CheckCircle2 className="w-4 h-4" />}
-              disabled={!comparison.summary.canApply}
+              disabled={backendUnavailable || !comparison.summary.canApply}
             >
               Aplicar selecionados
             </Button>
@@ -813,7 +889,15 @@ function MeasuresManualPanel({ onApplied }: { onApplied: () => Promise<void> }) 
   );
 }
 
-function MeasuresBulkPanel({ onApplied }: { onApplied: () => Promise<void> }) {
+function MeasuresBulkPanel({
+  onApplied,
+  backendUnavailable = false,
+  backendMessage = MEASURES_BACKEND_UNAVAILABLE_MESSAGE,
+}: {
+  onApplied: () => Promise<void>;
+  backendUnavailable?: boolean;
+  backendMessage?: string;
+}) {
   const [rows, setRows] = useState<any[]>([]);
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(false);
@@ -833,6 +917,13 @@ function MeasuresBulkPanel({ onApplied }: { onApplied: () => Promise<void> }) {
   );
 
   const loadRows = useCallback(async (customOffset = offset) => {
+    if (backendUnavailable) {
+      setRows([]);
+      setStats(null);
+      setTotalRows(0);
+      setSelectedSkus([]);
+      return;
+    }
     setLoading(true);
     try {
       const response = await adminFetch(`${API}/comparar-medidas-lote`, {
@@ -846,11 +937,11 @@ function MeasuresBulkPanel({ onApplied }: { onApplied: () => Promise<void> }) {
           matchStatus,
         }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Falha ao carregar analise em massa');
-      setRows(data.rows || []);
-      setStats(data.stats || null);
-      setTotalRows(data.total_rows || 0);
+      const result = await readAdminJson<any>(response, 'Falha ao carregar analise em massa');
+      if (!result.ok) throw new Error(result.error || 'Falha ao carregar analise em massa');
+      setRows(result.data?.rows || []);
+      setStats(result.data?.stats || null);
+      setTotalRows(result.data?.total_rows || 0);
       setSelectedSkus([]);
     } catch (error: any) {
       toast.error(error.message);
@@ -860,7 +951,7 @@ function MeasuresBulkPanel({ onApplied }: { onApplied: () => Promise<void> }) {
     } finally {
       setLoading(false);
     }
-  }, [field, limit, matchStatus, onlyDivergent, q]);
+  }, [backendUnavailable, field, limit, matchStatus, onlyDivergent, q]);
 
   useEffect(() => {
     void loadRows(0);
@@ -868,6 +959,10 @@ function MeasuresBulkPanel({ onApplied }: { onApplied: () => Promise<void> }) {
   }, [field, matchStatus, onlyDivergent, q, loadRows]);
 
   const handleApplySelected = useCallback(async () => {
+    if (backendUnavailable) {
+      toast.error(backendMessage);
+      return;
+    }
     if (!selectedSkus.length) {
       toast.error('Selecione ao menos um SKU');
       return;
@@ -878,9 +973,9 @@ function MeasuresBulkPanel({ onApplied }: { onApplied: () => Promise<void> }) {
         method: 'POST',
         body: JSON.stringify({ skus: selectedSkus }),
       });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Falha ao aplicar medidas em massa');
-      toast.success(`${data.applied_count || 0} SKU(s) sincronizado(s)`);
+      const result = await readAdminJson<any>(response, 'Falha ao aplicar medidas em massa');
+      if (!result.ok) throw new Error(result.error || 'Falha ao aplicar medidas em massa');
+      toast.success(`${result.data?.applied_count || 0} SKU(s) sincronizado(s)`);
       await onApplied();
       await loadRows(offset);
     } catch (error: any) {
@@ -888,7 +983,7 @@ function MeasuresBulkPanel({ onApplied }: { onApplied: () => Promise<void> }) {
     } finally {
       setApplying(false);
     }
-  }, [loadRows, offset, onApplied, selectedSkus]);
+  }, [backendMessage, backendUnavailable, loadRows, offset, onApplied, selectedSkus]);
 
   return (
     <div className="space-y-4">
@@ -949,7 +1044,7 @@ function MeasuresBulkPanel({ onApplied }: { onApplied: () => Promise<void> }) {
                 size="sm"
                 onClick={handleApplySelected}
                 isLoading={applying}
-                disabled={!selectedSkus.length}
+                disabled={backendUnavailable || !selectedSkus.length}
                 iconLeading={<CheckCircle2 className="w-4 h-4" />}
               >
                 Aplicar soberano Toyota
@@ -1005,7 +1100,7 @@ function MeasuresBulkPanel({ onApplied }: { onApplied: () => Promise<void> }) {
                         type="checkbox"
                         className="h-4 w-4 rounded border-border"
                         checked={selectedSkus.includes(row.sku)}
-                        disabled={!row.canApply}
+                        disabled={backendUnavailable || !row.canApply}
                         onChange={(e) => {
                           setSelectedSkus((current) => (
                             e.target.checked
@@ -1067,7 +1162,7 @@ function MeasuresBulkPanel({ onApplied }: { onApplied: () => Promise<void> }) {
               setOffset(nextOffset);
               void loadRows(nextOffset);
             }}
-            disabled={offset === 0 || loading}
+            disabled={backendUnavailable || offset === 0 || loading}
           >
             Anterior
           </Button>
@@ -1079,7 +1174,7 @@ function MeasuresBulkPanel({ onApplied }: { onApplied: () => Promise<void> }) {
               setOffset(nextOffset);
               void loadRows(nextOffset);
             }}
-            disabled={loading || offset + limit >= totalRows}
+            disabled={backendUnavailable || loading || offset + limit >= totalRows}
           >
             Proxima
           </Button>
@@ -1093,15 +1188,28 @@ function MeasuresPanel() {
   const [mode, setMode] = useState<MeasuresMode>('manual');
   const [history, setHistory] = useState<any[]>([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [availability, setAvailability] = useState<'checking' | 'available' | 'missing'>('checking');
+  const [backendMessage, setBackendMessage] = useState<string | null>(null);
 
   const loadHistory = useCallback(async () => {
     setHistoryLoading(true);
     try {
       const response = await adminFetch(`${API}/historico-medidas?limit=12`);
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.error || 'Falha ao carregar historico');
-      setHistory(data.items || []);
+      const result = await readAdminJson<any>(response, 'Falha ao carregar historico');
+      if (!result.ok) {
+        if (result.missingRoute) {
+          setAvailability('missing');
+          setBackendMessage(result.error || MEASURES_BACKEND_UNAVAILABLE_MESSAGE);
+          setHistory([]);
+          return;
+        }
+        throw new Error(result.error || 'Falha ao carregar historico');
+      }
+      setAvailability('available');
+      setBackendMessage(null);
+      setHistory(result.data?.items || []);
     } catch (error: any) {
+      setAvailability('available');
       toast.error(error.message);
       setHistory([]);
     } finally {
@@ -1130,6 +1238,21 @@ function MeasuresPanel() {
           <SessionTabButton active={mode === 'massa'} label="Em Massa" onClick={() => setMode('massa')} />
         </div>
       </div>
+
+      {backendMessage && (
+        <Card.Root className="border-warning/30 bg-warning/5">
+          <Card.Content className="flex items-start gap-3 p-4">
+            <AlertTriangle className="mt-0.5 h-5 w-5 shrink-0 text-warning" />
+            <div className="space-y-1">
+              <p className="text-sm font-semibold text-foreground">Backend de medidas ainda nao publicado</p>
+              <p className="text-sm text-muted-foreground">
+                {backendMessage} A interface esta online, mas a comparacao e a aplicacao em massa vao funcionar
+                assim que a Edge Function for publicada.
+              </p>
+            </div>
+          </Card.Content>
+        </Card.Root>
+      )}
 
       <Card.Root className="border-primary/20 bg-primary/[0.02]">
         <Card.Content className="p-5">
@@ -1165,7 +1288,28 @@ function MeasuresPanel() {
         </Card.Content>
       </Card.Root>
 
-      {mode === 'manual' ? <MeasuresManualPanel onApplied={loadHistory} /> : <MeasuresBulkPanel onApplied={loadHistory} />}
+      {availability === 'checking' ? (
+        <Card.Root>
+          <Card.Content className="p-6">
+            <div className="flex items-center gap-3 text-sm text-muted-foreground">
+              <RefreshCw className="h-4 w-4 animate-spin" />
+              Verificando disponibilidade da Conferencia de Medidas...
+            </div>
+          </Card.Content>
+        </Card.Root>
+      ) : mode === 'manual' ? (
+        <MeasuresManualPanel
+          onApplied={loadHistory}
+          backendUnavailable={availability === 'missing'}
+          backendMessage={backendMessage || MEASURES_BACKEND_UNAVAILABLE_MESSAGE}
+        />
+      ) : (
+        <MeasuresBulkPanel
+          onApplied={loadHistory}
+          backendUnavailable={availability === 'missing'}
+          backendMessage={backendMessage || MEASURES_BACKEND_UNAVAILABLE_MESSAGE}
+        />
+      )}
 
       <MeasureHistoryList history={history} loading={historyLoading} />
     </div>

@@ -19,7 +19,7 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
 export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
   ({ className, color = 'primary', size = 'md', iconLeading, iconTrailing, isLoading, children, disabled, ...props }, ref) => {
     
-    const base = "inline-flex items-center justify-center font-semibold transition-all duration-150 focus-visible:outline-none focus:ring-4 disabled:opacity-50 disabled:pointer-events-none rounded-lg cursor-pointer";
+    const base = "inline-flex items-center justify-center whitespace-nowrap font-semibold transition-all duration-150 focus-visible:outline-none focus:ring-4 disabled:opacity-50 disabled:pointer-events-none rounded-lg cursor-pointer";
     
     const colors: Record<ButtonColor, string> = {
       primary: "bg-primary text-primary-foreground hover:bg-primary/90 focus:ring-primary/20 shadow-xs border border-primary",

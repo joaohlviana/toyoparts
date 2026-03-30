@@ -6,9 +6,26 @@ import { fetchMagento } from './magento.tsx';
 const app = new Hono();
 
 const PRODUCT_PREFIX = 'product:';
+const HISTORY_PREFIX = 'history:';
+const MEASURE_AUDIT_PREFIX = 'catalogo-medidas-audit:';
 const CAT_URL = () => (Deno.env.get('CATALOGO_DB_URL') || '').trim();
 const CAT_KEY = () => (Deno.env.get('CATALOGO_DB_API_KEY') || '').trim();
 const OPENAI_KEY = () => (Deno.env.get('OPENAI_API_KEY') || '').trim();
+
+const MEASURE_FIELDS = ['weight', 'dimensionLength', 'dimensionWidth', 'dimensionHeight'] as const;
+type MeasureField = typeof MEASURE_FIELDS[number];
+
+const MEASURE_META: Record<MeasureField, {
+  label: string;
+  toyotaKey: string;
+  toyopartsAttr?: string;
+  decimals: number;
+}> = {
+  weight: { label: 'Peso', toyotaKey: 'weight', decimals: 3 },
+  dimensionLength: { label: 'Comprimento', toyotaKey: 'dimensionLength', toyopartsAttr: 'volume_length', decimals: 1 },
+  dimensionWidth: { label: 'Largura', toyotaKey: 'dimensionWidth', toyopartsAttr: 'volume_width', decimals: 1 },
+  dimensionHeight: { label: 'Altura', toyotaKey: 'dimensionHeight', toyopartsAttr: 'volume_height', decimals: 1 },
+};
 
 // ── Fetch generico PostgREST ────────────────────────────────────────────────
 async function queryToyota(table: string, params: Record<string, string> = {}) {
@@ -19,6 +36,24 @@ async function queryToyota(table: string, params: Record<string, string> = {}) {
   });
   if (!res.ok) throw new Error(`${res.status}: ${await res.text()}`);
   return res.json();
+}
+
+async function queryToyotaPartnosExact(partnos: string[]) {
+  const unique = [...new Set(partnos.map((p) => String(p || '').trim()).filter(Boolean))];
+  if (!unique.length) return [];
+
+  const rows: any[] = [];
+  for (let i = 0; i < unique.length; i += 100) {
+    const chunk = unique.slice(i, i + 100);
+    const inList = chunk.map((c) => `"${c}"`).join(',');
+    const batch = await queryToyota('banco_toyoparts', {
+      select: '*',
+      partno: `in.(${inList})`,
+      limit: String(chunk.length),
+    });
+    if (Array.isArray(batch)) rows.push(...batch);
+  }
+  return rows;
 }
 
 // Lookup cods (column name has slash)
@@ -43,6 +78,352 @@ function processCompat(raw: string): string[] {
 // Magento custom attribute helper
 function getAttr(product: any, code: string): any {
   return product?.custom_attributes?.find((a: any) => a.attribute_code === code)?.value;
+}
+
+function normalizeSku(value: string): string {
+  return String(value || '').toUpperCase().replace(/[\s-]/g, '').trim();
+}
+
+function parseNumber(value: any): number | null {
+  if (value == null || value === '') return null;
+  const normalized = String(value).replace(',', '.').trim();
+  const num = Number(normalized);
+  return Number.isFinite(num) ? num : null;
+}
+
+function roundTo(value: number, decimals: number): number {
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
+
+function normalizeToyotaMetric(field: MeasureField, rawValue: any): number | null {
+  const num = parseNumber(rawValue);
+  if (num == null) return null;
+  if (field === 'weight') return roundTo(num / 1000, MEASURE_META[field].decimals);
+  return roundTo(num / 10, MEASURE_META[field].decimals);
+}
+
+function normalizeToyopartsMetric(field: MeasureField, rawValue: any): number | null {
+  const num = parseNumber(rawValue);
+  if (num == null) return null;
+  return roundTo(num, MEASURE_META[field].decimals);
+}
+
+function getToyopartsMetric(product: any, field: MeasureField): number | null {
+  if (field === 'weight') {
+    return normalizeToyopartsMetric(field, product?.weight);
+  }
+  const attrCode = MEASURE_META[field].toyopartsAttr!;
+  return normalizeToyopartsMetric(field, getAttr(product, attrCode));
+}
+
+function cloneCustomAttributes(product: any): any[] {
+  return Array.isArray(product?.custom_attributes)
+    ? product.custom_attributes.map((attr: any) => ({ ...attr }))
+    : [];
+}
+
+function upsertCustomAttribute(product: any, code: string, value: string) {
+  const attrs = cloneCustomAttributes(product);
+  const idx = attrs.findIndex((attr: any) => attr?.attribute_code === code);
+  if (idx >= 0) {
+    attrs[idx] = { ...attrs[idx], value };
+  } else {
+    attrs.push({ attribute_code: code, value });
+  }
+  return attrs;
+}
+
+function getToyotaMetricPayload(toyotaRecord: any) {
+  const raw: Record<MeasureField, any> = {
+    weight: toyotaRecord?.weight ?? null,
+    dimensionLength: toyotaRecord?.dimensionLength ?? null,
+    dimensionWidth: toyotaRecord?.dimensionWidth ?? null,
+    dimensionHeight: toyotaRecord?.dimensionHeight ?? null,
+  };
+
+  const normalized = {} as Record<MeasureField, number | null>;
+  for (const field of MEASURE_FIELDS) {
+    normalized[field] = normalizeToyotaMetric(field, raw[field]);
+  }
+
+  return { raw, normalized };
+}
+
+function getToyopartsMetricPayload(product: any) {
+  const current = {} as Record<MeasureField, number | null>;
+  for (const field of MEASURE_FIELDS) {
+    current[field] = getToyopartsMetric(product, field);
+  }
+  return { current };
+}
+
+function compareMeasureField(field: MeasureField, toyotaRaw: any, toyotaNormalized: number | null, toyopartsValue: number | null, matchEligible: boolean) {
+  let status: 'sincronizado' | 'faltando_no_toyoparts' | 'divergente' | 'sem_dado_toyota' = 'sem_dado_toyota';
+  let different = false;
+  let applyEligible = false;
+
+  if (toyotaNormalized == null) {
+    status = 'sem_dado_toyota';
+  } else if (toyopartsValue == null) {
+    status = 'faltando_no_toyoparts';
+    different = true;
+    applyEligible = matchEligible;
+  } else if (toyotaNormalized === toyopartsValue) {
+    status = 'sincronizado';
+  } else {
+    status = 'divergente';
+    different = true;
+    applyEligible = matchEligible;
+  }
+
+  return {
+    key: field,
+    label: MEASURE_META[field].label,
+    toyotaRaw,
+    toyotaNormalized,
+    toyopartsValue,
+    status,
+    different,
+    applyEligible,
+  };
+}
+
+async function findToyotaMatchInfo(sku: string) {
+  const requestedSku = String(sku || '').trim();
+  const normalizedSku = normalizeSku(requestedSku);
+  if (!normalizedSku) {
+    return {
+      found: false,
+      mode: 'none',
+      eligible: false,
+      requestedSku,
+      normalizedSku,
+      matchedPartno: null,
+      record: null,
+    };
+  }
+
+  const exactRows = await queryToyotaPartnosExact([requestedSku, normalizedSku]);
+  const normalizedExact = exactRows.find((row: any) => normalizeSku(row?.partno) === normalizedSku) || null;
+  if (normalizedExact) {
+    return {
+      found: true,
+      mode: normalizedExact.partno === requestedSku ? 'exact' : 'normalized',
+      eligible: true,
+      requestedSku,
+      normalizedSku,
+      matchedPartno: normalizedExact.partno,
+      record: normalizedExact,
+    };
+  }
+
+  const fallback = await findToyota(requestedSku);
+  if (!fallback) {
+    return {
+      found: false,
+      mode: 'none',
+      eligible: false,
+      requestedSku,
+      normalizedSku,
+      matchedPartno: null,
+      record: null,
+    };
+  }
+
+  const eligible = normalizeSku(fallback.partno) === normalizedSku;
+  return {
+    found: true,
+    mode: eligible ? 'normalized' : 'fuzzy',
+    eligible,
+    requestedSku,
+    normalizedSku,
+    matchedPartno: fallback.partno,
+    record: fallback,
+  };
+}
+
+function buildMeasureComparison(sku: string, product: any, toyotaMatch: any) {
+  const toyotaMetrics = getToyotaMetricPayload(toyotaMatch?.record);
+  const toyopartsMetrics = getToyopartsMetricPayload(product);
+  const fields = {} as Record<MeasureField, any>;
+
+  let divergentCount = 0;
+  let missingCount = 0;
+  let syncedCount = 0;
+  let noToyotaDataCount = 0;
+
+  for (const field of MEASURE_FIELDS) {
+    const fieldComparison = compareMeasureField(
+      field,
+      toyotaMetrics.raw[field],
+      toyotaMetrics.normalized[field],
+      toyopartsMetrics.current[field],
+      !!toyotaMatch?.eligible,
+    );
+    fields[field] = fieldComparison;
+
+    if (fieldComparison.status === 'divergente') divergentCount += 1;
+    if (fieldComparison.status === 'faltando_no_toyoparts') missingCount += 1;
+    if (fieldComparison.status === 'sincronizado') syncedCount += 1;
+    if (fieldComparison.status === 'sem_dado_toyota') noToyotaDataCount += 1;
+  }
+
+  const applicableFields = MEASURE_FIELDS.filter((field) => fields[field].applyEligible);
+  const diffFields = MEASURE_FIELDS.filter((field) => fields[field].status === 'divergente');
+  const missingFields = MEASURE_FIELDS.filter((field) => fields[field].status === 'faltando_no_toyoparts');
+
+  return {
+    sku,
+    productName: product?.name || '',
+    match: {
+      found: !!toyotaMatch?.found,
+      mode: toyotaMatch?.mode || 'none',
+      eligible: !!toyotaMatch?.eligible,
+      requestedSku: toyotaMatch?.requestedSku || sku,
+      matchedPartno: toyotaMatch?.matchedPartno || null,
+    },
+    toyota: toyotaMetrics,
+    toyoparts: toyopartsMetrics,
+    fields,
+    summary: {
+      divergentCount,
+      missingCount,
+      syncedCount,
+      noToyotaDataCount,
+      applicableFieldCount: applicableFields.length,
+      applicableFields,
+      diffFields,
+      missingFields,
+      hasDifferences: diffFields.length > 0 || missingFields.length > 0,
+      canApply: !!toyotaMatch?.eligible && applicableFields.length > 0,
+    },
+  };
+}
+
+function getDefaultFieldsToApply(comparison: any, requestedFields?: string[]) {
+  const validRequested = Array.isArray(requestedFields)
+    ? requestedFields.filter((field) => MEASURE_FIELDS.includes(field as MeasureField))
+    : [];
+
+  if (validRequested.length > 0) {
+    return validRequested.filter((field) => comparison?.fields?.[field]?.applyEligible);
+  }
+
+  return MEASURE_FIELDS.filter((field) => comparison?.fields?.[field]?.applyEligible);
+}
+
+async function persistMeasureUpdate(c: any, sku: string, product: any, comparison: any, requestedFields?: string[]) {
+  const fieldsToApply = getDefaultFieldsToApply(comparison, requestedFields);
+  if (!fieldsToApply.length) {
+    return {
+      success: false,
+      sku,
+      appliedFields: [],
+      skipped: true,
+      reason: 'Nenhum campo elegivel para aplicar',
+    };
+  }
+
+  const updatedProduct = {
+    ...product,
+    custom_attributes: cloneCustomAttributes(product),
+    updated_at: new Date().toISOString(),
+  };
+
+  const before: Record<string, number | null> = {} as Record<MeasureField, number | null>;
+  const after: Record<string, number | null> = {} as Record<MeasureField, number | null>;
+
+  for (const field of MEASURE_FIELDS) {
+    before[field] = comparison.toyoparts.current[field];
+    after[field] = comparison.toyoparts.current[field];
+  }
+
+  for (const field of fieldsToApply) {
+    const normalizedValue = comparison.fields[field].toyotaNormalized;
+    if (normalizedValue == null) continue;
+
+    after[field] = normalizedValue;
+    if (field === 'weight') {
+      updatedProduct.weight = normalizedValue;
+    } else {
+      const attrCode = MEASURE_META[field as MeasureField].toyopartsAttr!;
+      updatedProduct.custom_attributes = upsertCustomAttribute(updatedProduct, attrCode, String(normalizedValue));
+    }
+  }
+
+  const historyTimestamp = Date.now();
+  await kv.set(`${HISTORY_PREFIX}${sku}:${historyTimestamp}`, {
+    ...product,
+    snapshot_at: new Date().toISOString(),
+    change_type: 'catalogo_medidas',
+  });
+
+  await kv.set(`${PRODUCT_PREFIX}${sku}`, updatedProduct);
+
+  const auditEntry = {
+    id: crypto.randomUUID(),
+    sku,
+    applied_at: new Date().toISOString(),
+    applied_fields: fieldsToApply,
+    match: comparison.match,
+    before,
+    after,
+    toyota: {
+      raw: comparison.toyota.raw,
+      normalized: comparison.toyota.normalized,
+    },
+    admin_token_prefix: (c.req.header('X-Admin-Token') || '').slice(0, 8) || null,
+  };
+
+  await kv.set(`${MEASURE_AUDIT_PREFIX}${historyTimestamp}:${sku}`, auditEntry);
+
+  return {
+    success: true,
+    sku,
+    appliedFields: fieldsToApply,
+    before,
+    after,
+    product: updatedProduct,
+    audit: auditEntry,
+  };
+}
+
+async function buildToyotaExactMap(skus: string[]) {
+  const lookupCodes = new Set<string>();
+  for (const sku of skus) {
+    const trimmed = String(sku || '').trim();
+    const normalized = normalizeSku(trimmed);
+    if (trimmed) lookupCodes.add(trimmed);
+    if (normalized) lookupCodes.add(normalized);
+  }
+
+  const rows = await queryToyotaPartnosExact([...lookupCodes]);
+  const map = new Map<string, any>();
+  for (const row of rows) {
+    const normalized = normalizeSku(row?.partno);
+    if (normalized && !map.has(normalized)) {
+      map.set(normalized, row);
+    }
+  }
+  return map;
+}
+
+function buildBulkMeasureRow(product: any, comparison: any) {
+  return {
+    sku: product?.sku || '',
+    name: product?.name || '',
+    matchStatus: comparison.match.eligible ? 'elegivel' : (comparison.match.found ? 'fuzzy' : 'sem_match'),
+    matchedPartno: comparison.match.matchedPartno,
+    canApply: comparison.summary.canApply,
+    hasDifferences: comparison.summary.hasDifferences,
+    divergentFields: comparison.summary.diffFields,
+    missingFields: comparison.summary.missingFields,
+    applicableFields: comparison.summary.applicableFields,
+    current: comparison.toyoparts.current,
+    suggested: comparison.toyota.normalized,
+    fields: comparison.fields,
+  };
 }
 
 // Build category ID → name + path map from KV tree
@@ -519,6 +900,258 @@ app.post('/analise-lote', async (c) => {
 });
 
 // ── Helper: extract category IDs from Magento product ───────────────────────
+// ── POST /comparar-medidas ───────────────────────────────────────────────────
+app.post('/comparar-medidas', async (c) => {
+  try {
+    const { sku } = await c.req.json();
+    const requestedSku = String(sku || '').trim();
+    if (!requestedSku) return c.json({ error: 'SKU obrigatorio' }, 400);
+
+    const product = await kv.get(`${PRODUCT_PREFIX}${requestedSku}`);
+    if (!product) return c.json({ error: `SKU "${requestedSku}" nao encontrado no Toyoparts` }, 404);
+
+    const toyotaMatch = await findToyotaMatchInfo(requestedSku);
+    const comparison = buildMeasureComparison(requestedSku, product, toyotaMatch);
+
+    return c.json({ sku: requestedSku, comparison });
+  } catch (e: any) {
+    console.error('[comparar-medidas]', e.message);
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ── POST /comparar-medidas-lote ──────────────────────────────────────────────
+app.post('/comparar-medidas-lote', async (c) => {
+  try {
+    const {
+      offset = 0,
+      limit = 30,
+      q = '',
+      onlyDivergent = false,
+      field = 'all',
+      matchStatus = 'all',
+    } = await c.req.json();
+
+    const safeOffset = Math.max(0, Number(offset) || 0);
+    const safeLimit = Math.min(100, Math.max(1, Number(limit) || 30));
+    const query = String(q || '').trim().toLowerCase();
+
+    const allProducts = (await kv.getByPrefix(PRODUCT_PREFIX) || [])
+      .filter((product: any) => product?.sku)
+      .sort((a: any, b: any) => String(a.sku).localeCompare(String(b.sku)));
+
+    const searchedProducts = query
+      ? allProducts.filter((product: any) => {
+          const sku = String(product?.sku || '').toLowerCase();
+          const name = String(product?.name || '').toLowerCase();
+          return sku.includes(query) || name.includes(query);
+        })
+      : allProducts;
+
+    const toyotaMap = await buildToyotaExactMap(searchedProducts.map((product: any) => product.sku));
+
+    const rows = searchedProducts.map((product: any) => {
+      const normalizedSku = normalizeSku(product.sku);
+      const toyotaRecord = toyotaMap.get(normalizedSku) || null;
+      const comparison = buildMeasureComparison(product.sku, product, {
+        found: !!toyotaRecord,
+        mode: toyotaRecord ? (toyotaRecord.partno === product.sku ? 'exact' : 'normalized') : 'none',
+        eligible: !!toyotaRecord,
+        requestedSku: product.sku,
+        normalizedSku,
+        matchedPartno: toyotaRecord?.partno || null,
+        record: toyotaRecord,
+      });
+      return buildBulkMeasureRow(product, comparison);
+    });
+
+    const filteredRows = rows.filter((row: any) => {
+      if (onlyDivergent && !row.hasDifferences) return false;
+      if (field !== 'all' && ![...row.divergentFields, ...row.missingFields].includes(field)) return false;
+      if (matchStatus !== 'all' && row.matchStatus !== matchStatus) return false;
+      return true;
+    });
+
+    const pagedRows = filteredRows.slice(safeOffset, safeOffset + safeLimit);
+
+    const stats = {
+      total_analyzed: rows.length,
+      total_after_filters: filteredRows.length,
+      total_eligible_matches: rows.filter((row: any) => row.matchStatus === 'elegivel').length,
+      total_without_match: rows.filter((row: any) => row.matchStatus === 'sem_match').length,
+      total_with_differences: rows.filter((row: any) => row.hasDifferences).length,
+      total_eligible_to_apply: rows.filter((row: any) => row.canApply).length,
+      field_counts: {
+        weight: {
+          divergente: rows.filter((row: any) => row.fields.weight.status === 'divergente').length,
+          faltando_no_toyoparts: rows.filter((row: any) => row.fields.weight.status === 'faltando_no_toyoparts').length,
+          sincronizado: rows.filter((row: any) => row.fields.weight.status === 'sincronizado').length,
+          sem_dado_toyota: rows.filter((row: any) => row.fields.weight.status === 'sem_dado_toyota').length,
+        },
+        dimensionLength: {
+          divergente: rows.filter((row: any) => row.fields.dimensionLength.status === 'divergente').length,
+          faltando_no_toyoparts: rows.filter((row: any) => row.fields.dimensionLength.status === 'faltando_no_toyoparts').length,
+          sincronizado: rows.filter((row: any) => row.fields.dimensionLength.status === 'sincronizado').length,
+          sem_dado_toyota: rows.filter((row: any) => row.fields.dimensionLength.status === 'sem_dado_toyota').length,
+        },
+        dimensionWidth: {
+          divergente: rows.filter((row: any) => row.fields.dimensionWidth.status === 'divergente').length,
+          faltando_no_toyoparts: rows.filter((row: any) => row.fields.dimensionWidth.status === 'faltando_no_toyoparts').length,
+          sincronizado: rows.filter((row: any) => row.fields.dimensionWidth.status === 'sincronizado').length,
+          sem_dado_toyota: rows.filter((row: any) => row.fields.dimensionWidth.status === 'sem_dado_toyota').length,
+        },
+        dimensionHeight: {
+          divergente: rows.filter((row: any) => row.fields.dimensionHeight.status === 'divergente').length,
+          faltando_no_toyoparts: rows.filter((row: any) => row.fields.dimensionHeight.status === 'faltando_no_toyoparts').length,
+          sincronizado: rows.filter((row: any) => row.fields.dimensionHeight.status === 'sincronizado').length,
+          sem_dado_toyota: rows.filter((row: any) => row.fields.dimensionHeight.status === 'sem_dado_toyota').length,
+        },
+      },
+    };
+
+    return c.json({
+      rows: pagedRows,
+      total_rows: filteredRows.length,
+      total_source_rows: rows.length,
+      offset: safeOffset,
+      limit: safeLimit,
+      has_more: safeOffset + safeLimit < filteredRows.length,
+      stats,
+      filters: { q: query, onlyDivergent, field, matchStatus },
+    });
+  } catch (e: any) {
+    console.error('[comparar-medidas-lote]', e.message);
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ── POST /aplicar-medidas ────────────────────────────────────────────────────
+app.post('/aplicar-medidas', async (c) => {
+  try {
+    const { sku, fields } = await c.req.json();
+    const requestedSku = String(sku || '').trim();
+    if (!requestedSku) return c.json({ error: 'SKU obrigatorio' }, 400);
+
+    const product = await kv.get(`${PRODUCT_PREFIX}${requestedSku}`);
+    if (!product) return c.json({ error: `SKU "${requestedSku}" nao encontrado no Toyoparts` }, 404);
+
+    const toyotaMatch = await findToyotaMatchInfo(requestedSku);
+    const comparison = buildMeasureComparison(requestedSku, product, toyotaMatch);
+    if (!comparison.match.eligible) {
+      return c.json({ error: 'SKU sem match elegivel na Toyota para aplicacao', comparison }, 409);
+    }
+
+    const result = await persistMeasureUpdate(c, requestedSku, product, comparison, fields);
+    const refreshedComparison = buildMeasureComparison(requestedSku, result.product || product, toyotaMatch);
+
+    return c.json({
+      success: result.success,
+      result,
+      comparison: refreshedComparison,
+    });
+  } catch (e: any) {
+    console.error('[aplicar-medidas]', e.message);
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ── POST /aplicar-medidas-lote ───────────────────────────────────────────────
+app.post('/aplicar-medidas-lote', async (c) => {
+  try {
+    const { skus = [] } = await c.req.json();
+    const uniqueSkus = [...new Set((Array.isArray(skus) ? skus : []).map((sku: any) => String(sku || '').trim()).filter(Boolean))];
+    if (!uniqueSkus.length) return c.json({ error: 'Lista de SKUs obrigatoria' }, 400);
+
+    const products = await Promise.all(uniqueSkus.map((sku) => kv.get(`${PRODUCT_PREFIX}${sku}`)));
+    const productMap = new Map<string, any>();
+    uniqueSkus.forEach((sku, index) => {
+      if (products[index]) productMap.set(sku, products[index]);
+    });
+
+    const toyotaMap = await buildToyotaExactMap(uniqueSkus);
+
+    const applied: any[] = [];
+    const skipped: any[] = [];
+    const errors: any[] = [];
+
+    for (const sku of uniqueSkus) {
+      const product = productMap.get(sku);
+      if (!product) {
+        skipped.push({ sku, reason: 'Produto nao encontrado no Toyoparts' });
+        continue;
+      }
+
+      const normalizedSku = normalizeSku(sku);
+      const toyotaRecord = toyotaMap.get(normalizedSku) || null;
+      const comparison = buildMeasureComparison(sku, product, {
+        found: !!toyotaRecord,
+        mode: toyotaRecord ? (toyotaRecord.partno === sku ? 'exact' : 'normalized') : 'none',
+        eligible: !!toyotaRecord,
+        requestedSku: sku,
+        normalizedSku,
+        matchedPartno: toyotaRecord?.partno || null,
+        record: toyotaRecord,
+      });
+
+      if (!comparison.match.eligible) {
+        skipped.push({ sku, reason: 'Sem match elegivel na Toyota' });
+        continue;
+      }
+
+      if (!comparison.summary.canApply) {
+        skipped.push({ sku, reason: 'Sem divergencias aplicaveis' });
+        continue;
+      }
+
+      try {
+        const result = await persistMeasureUpdate(c, sku, product, comparison);
+        applied.push({
+          sku,
+          appliedFields: result.appliedFields,
+          before: result.before,
+          after: result.after,
+        });
+      } catch (err: any) {
+        errors.push({ sku, error: err.message });
+      }
+    }
+
+    return c.json({
+      success: errors.length === 0,
+      applied_count: applied.length,
+      skipped_count: skipped.length,
+      error_count: errors.length,
+      applied,
+      skipped,
+      errors,
+    });
+  } catch (e: any) {
+    console.error('[aplicar-medidas-lote]', e.message);
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ── GET /historico-medidas ───────────────────────────────────────────────────
+app.get('/historico-medidas', async (c) => {
+  try {
+    const limit = Math.min(200, Math.max(1, Number(c.req.query('limit') || 50)));
+    const sku = String(c.req.query('sku') || '').trim();
+    const history = await kv.getByPrefix(MEASURE_AUDIT_PREFIX) || [];
+    const filtered = sku ? history.filter((entry: any) => entry?.sku === sku) : history;
+    const sorted = filtered.sort((a: any, b: any) =>
+      new Date(b?.applied_at || 0).getTime() - new Date(a?.applied_at || 0).getTime()
+    );
+
+    return c.json({
+      items: sorted.slice(0, limit),
+      total: filtered.length,
+    });
+  } catch (e: any) {
+    console.error('[historico-medidas]', e.message);
+    return c.json({ error: e.message }, 500);
+  }
+});
+
 function extractCategoryIds(product: any): string[] {
   const catSet = new Set<string>();
   const customAttrs = product?.custom_attributes || [];

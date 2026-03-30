@@ -151,12 +151,19 @@ export const frenetShippingCalculator: ShippingCalculator = {
       sku: i.sku,
       quantity: i.qty,
       weight: i.weight || 0.5,
+      name: i.name,
       height: i.height,
       length: i.length,
       width: i.width,
     }));
 
-    const result = await fetchShippingQuote({ recipientCep, invoiceValue, items });
+    const result = await fetchShippingQuote({
+      recipientCep,
+      recipientUf: input.recipientUf,
+      paymentMethodIntent: input.paymentMethodIntent,
+      invoiceValue,
+      items,
+    });
 
     return result.quotes.map(q => ({
       id: q.serviceCode || q.serviceDescription,
@@ -166,6 +173,7 @@ export const frenetShippingCalculator: ShippingCalculator = {
       originalPrice: q.originalPrice,
       estimatedDays: q.deliveryDays,
       freeShipping: q.freeShipping,
+      message: q.message,
     }));
   },
 };

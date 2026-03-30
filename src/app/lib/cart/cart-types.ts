@@ -23,6 +23,9 @@ export interface ShippingOption {
   carrier: string;
   price: number;
   estimatedDays: number;
+  originalPrice?: number;
+  freeShipping?: boolean;
+  message?: string | null;
 }
 
 export interface CartTotals {

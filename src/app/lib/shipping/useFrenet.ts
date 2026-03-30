@@ -4,7 +4,14 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { fetchCepAddress, fetchShippingQuote, FrenetError } from './frenet-api';
-import type { FrenetCepResponse, FrenetQuoteResponse, ShippingQuote } from './shipping-types';
+import type {
+  FrenetCepResponse,
+  FrenetQuoteResponse,
+  ShippingQuote,
+  FreeShippingEvaluationRuleSummary,
+  FreeShippingWhatsAppOffer,
+  PaymentMethodIntent,
+} from './shipping-types';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 // useCepAutofill
@@ -95,15 +102,24 @@ interface ShippingQuoteState {
   quotes: ShippingQuote[];
   errors: { serviceDescription: string; message: string | null }[];
   freeShippingThreshold: number;
+  evaluationMode: 'potential' | 'final';
+  appliedRule: FreeShippingEvaluationRuleSummary | null;
+  potentialRules: FreeShippingEvaluationRuleSummary[];
+  whatsappOffer: FreeShippingWhatsAppOffer | null;
+  eligibleFreeShippingServiceIds: string[];
+  legacyApplied: boolean;
 }
 
 interface QuoteInput {
   recipientCep: string;
+  recipientUf?: string;
+  paymentMethodIntent?: PaymentMethodIntent | null;
   items: {
     sku: string;
     qty: number;
     weight?: number | null;
     price: number;
+    name?: string;
     height?: number;
     length?: number;
     width?: number;
@@ -117,6 +133,12 @@ export function useShippingQuote(debounceMs = 500) {
     quotes: [],
     errors: [],
     freeShippingThreshold: 299,
+    evaluationMode: 'potential',
+    appliedRule: null,
+    potentialRules: [],
+    whatsappOffer: null,
+    eligibleFreeShippingServiceIds: [],
+    legacyApplied: false,
   });
   const abortRef = useRef<AbortController | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout>>();
@@ -127,7 +149,18 @@ export function useShippingQuote(debounceMs = 500) {
 
     const cep = input.recipientCep.replace(/\D/g, '');
     if (cep.length !== 8 || input.items.length === 0) {
-      setState(prev => ({ ...prev, isLoading: false, error: null, quotes: [], errors: [] }));
+      setState(prev => ({
+        ...prev,
+        isLoading: false,
+        error: null,
+        quotes: [],
+        errors: [],
+        appliedRule: null,
+        potentialRules: [],
+        whatsappOffer: null,
+        eligibleFreeShippingServiceIds: [],
+        legacyApplied: false,
+      }));
       return;
     }
 
@@ -142,11 +175,14 @@ export function useShippingQuote(debounceMs = 500) {
         const result: FrenetQuoteResponse = await fetchShippingQuote(
           {
             recipientCep: cep,
+            recipientUf: input.recipientUf,
+            paymentMethodIntent: input.paymentMethodIntent,
             invoiceValue,
             items: input.items.map(i => ({
               sku: i.sku,
               quantity: i.qty,
               weight: i.weight || 0.5,
+              name: i.name,
               height: i.height,
               length: i.length,
               width: i.width,
@@ -167,9 +203,16 @@ export function useShippingQuote(debounceMs = 500) {
               originalPrice: q.originalPrice,
               estimatedDays: q.deliveryDays,
               freeShipping: q.freeShipping,
+              message: q.message,
             })),
             errors: result.errors,
             freeShippingThreshold: result.config?.freeShippingThreshold ?? 299,
+            evaluationMode: result.evaluationMode ?? (input.paymentMethodIntent ? 'final' : 'potential'),
+            appliedRule: result.appliedRule ?? null,
+            potentialRules: result.potentialRules ?? [],
+            whatsappOffer: result.whatsappOffer ?? null,
+            eligibleFreeShippingServiceIds: result.eligibleFreeShippingServiceIds ?? [],
+            legacyApplied: result.legacyApplied === true,
           });
         }
       } catch (e: any) {
@@ -194,7 +237,19 @@ export function useShippingQuote(debounceMs = 500) {
   const reset = useCallback(() => {
     if (timerRef.current) clearTimeout(timerRef.current);
     if (abortRef.current) abortRef.current.abort();
-    setState({ isLoading: false, error: null, quotes: [], errors: [], freeShippingThreshold: 299 });
+    setState({
+      isLoading: false,
+      error: null,
+      quotes: [],
+      errors: [],
+      freeShippingThreshold: 299,
+      evaluationMode: 'potential',
+      appliedRule: null,
+      potentialRules: [],
+      whatsappOffer: null,
+      eligibleFreeShippingServiceIds: [],
+      legacyApplied: false,
+    });
   }, []);
 
   useEffect(() => {

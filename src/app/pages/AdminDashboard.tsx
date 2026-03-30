@@ -30,6 +30,7 @@ import { StripeTestPage } from './admin/StripeTestPage';
 import { SSGAdminPage } from './admin/SSGAdminPage';
 import { SnapshotAdminPage } from './SnapshotAdminPage';
 import { LegacyRedirectsPage } from './admin/LegacyRedirectsPage';
+import { FreeShippingAdminPage } from './admin/FreeShippingAdminPage';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 
@@ -61,6 +62,7 @@ type SectionId =
   | 'snapshots'
   | 'banners' 
   | 'frenet'
+  | 'frete_gratis'
   | 'carriers'
   | 'payments'
   | 'coupons'
@@ -225,6 +227,12 @@ export function AdminDashboard({ initialSection = 'dashboard', onBackToStore, on
         {activeSection === 'frenet' && (
             <div className="h-full min-h-0">
                 <FrenetAdmin />
+            </div>
+        )}
+
+        {activeSection === 'frete_gratis' && (
+            <div className="h-full min-h-0 overflow-y-auto">
+                <FreeShippingAdminPage />
             </div>
         )}
 

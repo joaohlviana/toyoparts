@@ -5,7 +5,7 @@ import React, { useState, useCallback } from 'react';
 import { useNavigate } from 'react-router';
 import {
   X, Minus, Plus, Trash2, ShoppingBag,
-  Truck, ArrowRight, Loader2, Zap,
+  Truck, ArrowRight, Loader2, Zap, MessageCircle, Sparkles,
 } from 'lucide-react';
 import { useCart } from '../../lib/cart/cart-store';
 import {
@@ -19,9 +19,13 @@ import { useIsMobile } from '../ui/use-mobile';
 import { Button } from '../ui/button';
 import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
-import { frenetShippingCalculator } from '../../lib/shipping/frenet-api';
+import { fetchShippingQuote } from '../../lib/shipping/frenet-api';
 import { maskCEP, isValidCEP } from '../../lib/checkout/checkout-validation';
-import type { ShippingQuote } from '../../lib/shipping/shipping-types';
+import type {
+  ShippingQuote,
+  FreeShippingEvaluationRuleSummary,
+  FreeShippingWhatsAppOffer,
+} from '../../lib/shipping/shipping-types';
 import { ToyotaPlaceholder } from '../ToyotaPlaceholder';
 
 function formatBRL(v: number | undefined | null) {
@@ -64,6 +68,10 @@ export function CartDrawer({ open, onClose }: CartDrawerProps) {
   const [shippingQuotes, setShippingQuotes] = useState<ShippingQuote[]>([]);
   const [loadingShipping, setLoadingShipping] = useState(false);
   const [shippingError, setShippingError] = useState('');
+  const [appliedRule, setAppliedRule] = useState<FreeShippingEvaluationRuleSummary | null>(null);
+  const [potentialRules, setPotentialRules] = useState<FreeShippingEvaluationRuleSummary[]>([]);
+  const [whatsAppOffer, setWhatsAppOffer] = useState<FreeShippingWhatsAppOffer | null>(null);
+  const [eligibleServiceIds, setEligibleServiceIds] = useState<string[]>([]);
   const [imgErrors, setImgErrors] = useState<Set<string>>(new Set());
 
   const bestShippingOptions = pickBestTwo(shippingQuotes);
@@ -77,17 +85,37 @@ export function CartDrawer({ open, onClose }: CartDrawerProps) {
     setLoadingShipping(true);
     setShippingError('');
     setShippingQuotes([]);
+    setAppliedRule(null);
+    setPotentialRules([]);
+    setWhatsAppOffer(null);
+    setEligibleServiceIds([]);
     try {
-      const quotes = await frenetShippingCalculator.calculate({
-        cep: cleanCep,
+      const invoiceValue = items.reduce((sum, item) => sum + item.unitPrice * item.qty, 0);
+      const result = await fetchShippingQuote({
+        recipientCep: cleanCep,
+        invoiceValue,
         items: items.map(i => ({
           sku: i.sku,
-          qty: i.qty,
-          weight: i.weight,
-          price: i.unitPrice,
+          quantity: i.qty,
+          weight: i.weight || 0.5,
+          name: i.name,
         })),
       });
+      const quotes = result.quotes.map((quote) => ({
+        id: quote.serviceCode || quote.serviceDescription,
+        carrier: quote.carrier,
+        name: quote.serviceDescription,
+        price: quote.price,
+        originalPrice: quote.originalPrice,
+        estimatedDays: quote.deliveryDays,
+        freeShipping: quote.freeShipping,
+        message: quote.message,
+      }));
       setShippingQuotes(quotes);
+      setAppliedRule(result.appliedRule ?? null);
+      setPotentialRules(result.potentialRules ?? []);
+      setWhatsAppOffer(result.whatsappOffer ?? null);
+      setEligibleServiceIds(result.eligibleFreeShippingServiceIds ?? []);
       // Auto-select cheapest
       if (quotes.length > 0) {
         const cheapest = quotes.reduce((a, b) => (a.price < b.price ? a : b));
@@ -96,6 +124,9 @@ export function CartDrawer({ open, onClose }: CartDrawerProps) {
           name: cheapest.name,
           carrier: cheapest.carrier,
           price: cheapest.price,
+          originalPrice: cheapest.originalPrice,
+          freeShipping: cheapest.freeShipping,
+          message: cheapest.message,
           estimatedDays: cheapest.estimatedDays,
         });
       }
@@ -112,6 +143,9 @@ export function CartDrawer({ open, onClose }: CartDrawerProps) {
       name: q.name,
       carrier: q.carrier,
       price: q.price,
+      originalPrice: q.originalPrice,
+      freeShipping: q.freeShipping,
+      message: q.message,
       estimatedDays: q.estimatedDays,
     });
   };
@@ -249,6 +283,47 @@ export function CartDrawer({ open, onClose }: CartDrawerProps) {
               </div>
               {shippingError && <p className="text-xs text-destructive mt-1.5">{shippingError}</p>}
 
+              {appliedRule && (
+                <div className="mt-2.5 rounded-xl border border-emerald-200 bg-emerald-50 px-3 py-3 text-left">
+                  <div className="flex items-start gap-2">
+                    <Sparkles className="mt-0.5 h-4 w-4 flex-shrink-0 text-emerald-600" />
+                    <div>
+                      <p className="text-xs font-bold text-emerald-800">{appliedRule.ruleName}</p>
+                      <p className="mt-1 text-[11px] text-emerald-700">{appliedRule.message}</p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {!appliedRule && potentialRules.length > 0 && (
+                <div className="mt-2.5 rounded-xl border border-blue-200 bg-blue-50 px-3 py-3 text-left">
+                  <div className="flex items-start gap-2">
+                    <Sparkles className="mt-0.5 h-4 w-4 flex-shrink-0 text-blue-600" />
+                    <div>
+                      <p className="text-xs font-bold text-blue-800">Beneficio potencial de frete gratis</p>
+                      <p className="mt-1 text-[11px] text-blue-700">
+                        {potentialRules[0]?.message} Escolha a forma de pagamento no checkout para confirmar.
+                      </p>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {whatsAppOffer && (
+                <a
+                  href={whatsAppOffer.url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-2.5 flex items-start gap-2 rounded-xl border border-[#25D366]/20 bg-[#25D366]/10 px-3 py-3 text-left transition-colors hover:bg-[#25D366]/15"
+                >
+                  <MessageCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-[#128C7E]" />
+                  <div>
+                    <p className="text-xs font-bold text-[#128C7E]">Fechar com frete gratis no WhatsApp</p>
+                    <p className="mt-1 text-[11px] text-[#128C7E]/90">{whatsAppOffer.message}</p>
+                  </div>
+                </a>
+              )}
+
               {/* Shipping options */}
               {bestShippingOptions.length > 0 && (
                 <div className="mt-2.5 space-y-1.5">
@@ -256,6 +331,7 @@ export function CartDrawer({ open, onClose }: CartDrawerProps) {
                     const isSelected = shipping?.id === q.id;
                     const isCheapest = q.tag === 'cheapest';
                     const isFastest = q.tag === 'fastest';
+                    const isRuleFree = eligibleServiceIds.includes(q.id) || q.freeShipping === true;
 
                     return (
                       <button
@@ -294,10 +370,20 @@ export function CartDrawer({ open, onClose }: CartDrawerProps) {
                                 Mais rápido
                               </span>
                             )}
+                            {isRuleFree && (
+                              <span className="inline-flex px-1 py-0.5 rounded text-[9px] font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 whitespace-nowrap">
+                                Gratis por regra
+                              </span>
+                            )}
                           </div>
                           <span className="text-xs text-muted-foreground">
                             {q.estimatedDays} dia{q.estimatedDays !== 1 ? 's' : ''} {q.estimatedDays === 1 ? 'útil' : 'úteis'}
                           </span>
+                          {q.message && (
+                            <p className="mt-0.5 text-[10px] text-emerald-700">
+                              {q.message}
+                            </p>
+                          )}
                         </div>
 
                         {/* Price — only final price, no strikethrough */}

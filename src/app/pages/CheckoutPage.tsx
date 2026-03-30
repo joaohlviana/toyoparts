@@ -11,7 +11,7 @@ import {
   ArrowLeft, ShoppingBag, Package, User, MapPin,
   CreditCard, Shield, Truck, ChevronDown,
   Loader2, AlertCircle, Lock, CheckCircle2,
-  Tag,
+  Tag, Sparkles, MessageCircle,
 } from 'lucide-react';
 import { useCart } from '../lib/cart/cart-store';
 import { useShippingQuote } from '../lib/shipping/useFrenet';
@@ -29,6 +29,7 @@ import { ToyotaPlaceholder } from '../components/ToyotaPlaceholder';
 import { SEOHead } from '../components/seo/SEOHead';
 import { ToyopartsLogo } from '../components/ToyopartsLogo';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
+import type { PaymentMethodIntent } from '../lib/shipping/shipping-types';
 
 function formatBRL(v: number | undefined | null) {
   if (v === undefined || v === null) return 'R$ 0,00';
@@ -47,7 +48,16 @@ export function CheckoutPage() {
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const { items, totals, shipping, setShipping, clearCart, addItem } = useCart();
-  const { calculate: calcShipping, quotes, isLoading: isLoadingShipping, error: shippingError } = useShippingQuote();
+  const {
+    calculate: calcShipping,
+    quotes,
+    isLoading: isLoadingShipping,
+    error: shippingError,
+    appliedRule: shippingAppliedRule,
+    potentialRules: shippingPotentialRules,
+    whatsappOffer: shippingWhatsAppOffer,
+    eligibleFreeShippingServiceIds,
+  } = useShippingQuote();
 
   const [imgErrors, setImgErrors] = useState<Set<string>>(new Set());
 
@@ -60,6 +70,7 @@ export function CheckoutPage() {
   // ── Address ──
   const [showAddress, setShowAddress] = useState(true);
   const [isEditingAddress, setIsEditingAddress] = useState(false);
+  const [paymentMethodIntent, setPaymentMethodIntent] = useState<PaymentMethodIntent>('pix');
   const [cep, setCep] = useState('');
   const [street, setStreet] = useState('');
   const [number, setNumber] = useState('');
@@ -167,16 +178,48 @@ export function CheckoutPage() {
       // Also calculate shipping
       calcShipping({
         recipientCep: cleanCep,
+        recipientUf: uf,
+        paymentMethodIntent,
         items: items.map(i => ({
           sku: i.sku,
           qty: i.qty,
-          price: i.unitPrice
+          price: i.unitPrice,
+          name: i.name,
         }))
       });
     } else {
       setShipping(null);
     }
-  }, [cep, items, calcShipping, setShipping]);
+  }, [cep, items, uf, paymentMethodIntent, calcShipping, setShipping]);
+
+  useEffect(() => {
+    if (!shipping) return;
+    if (quotes.length === 0) {
+      if (!isLoadingShipping) {
+        setShipping(null);
+      }
+      return;
+    }
+
+    const syncedQuote = quotes.find((quote) => quote.id === shipping.id);
+    if (!syncedQuote) {
+      if (!isLoadingShipping) {
+        setShipping(null);
+      }
+      return;
+    }
+
+    const sameSelection =
+      syncedQuote.price === shipping.price &&
+      syncedQuote.estimatedDays === shipping.estimatedDays &&
+      syncedQuote.originalPrice === shipping.originalPrice &&
+      syncedQuote.message === shipping.message &&
+      syncedQuote.freeShipping === shipping.freeShipping;
+
+    if (!sameSelection) {
+      setShipping(syncedQuote);
+    }
+  }, [quotes, shipping, isLoadingShipping, setShipping]);
 
   // ── Cart empty guard ──
   const isEmpty = items.length === 0 && !isSubmitting;
@@ -257,6 +300,7 @@ export function CheckoutPage() {
             estimatedDays: shipping.estimatedDays,
             price:         shipping.price,
           } : null,
+          paymentMethodIntent,
           // Stripe redirect URLs — frontend passes its own origin so the server
           // can construct correct redirect URLs without needing FRONTEND_URL env var.
           successUrl: `${window.location.origin}/pedido/obrigado?orderId=${orderId}`,
@@ -713,6 +757,88 @@ export function CheckoutPage() {
                             <Truck className="w-4 h-4 text-primary" /> Opções de frete
                           </h3>
                         </div>
+
+                        <div className="rounded-2xl border border-slate-200 bg-slate-50/70 p-4 mb-4">
+                          <div className="flex items-start gap-3">
+                            <CreditCard className="w-4 h-4 text-primary mt-0.5" />
+                            <div className="min-w-0 flex-1">
+                              <p className="text-[12px] font-bold text-slate-900 uppercase tracking-widest">
+                                Forma de pagamento desejada
+                              </p>
+                              <p className="text-[12px] text-slate-500 mt-1">
+                                Usamos esta intenção para validar benefícios promocionais de frete antes do redirecionamento ao provedor.
+                              </p>
+                              <div className="mt-3 flex flex-wrap gap-2">
+                                {[
+                                  { value: 'pix' as PaymentMethodIntent, label: 'PIX' },
+                                  { value: 'credit_card' as PaymentMethodIntent, label: 'Cartão' },
+                                  { value: 'boleto' as PaymentMethodIntent, label: 'Boleto' },
+                                ].map((option) => {
+                                  const active = paymentMethodIntent === option.value;
+                                  return (
+                                    <button
+                                      key={option.value}
+                                      type="button"
+                                      onClick={() => setPaymentMethodIntent(option.value)}
+                                      className={`rounded-full border px-4 py-2 text-xs font-bold transition-all ${
+                                        active
+                                          ? 'border-primary bg-primary text-white shadow-sm'
+                                          : 'border-slate-200 bg-white text-slate-600 hover:border-primary/30 hover:text-slate-900'
+                                      }`}
+                                    >
+                                      {option.label}
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            </div>
+                          </div>
+                        </div>
+
+                        {shippingAppliedRule && (
+                          <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
+                            <div className="flex items-start gap-3">
+                              <Sparkles className="w-4 h-4 text-emerald-600 mt-0.5" />
+                              <div>
+                                <p className="text-sm font-bold text-emerald-800">{shippingAppliedRule.ruleName}</p>
+                                <p className="text-[12px] text-emerald-700 mt-1">{shippingAppliedRule.message}</p>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {!shippingAppliedRule && shippingPotentialRules.length > 0 && (
+                          <div className="mb-4 rounded-2xl border border-blue-200 bg-blue-50 p-4">
+                            <div className="flex items-start gap-3">
+                              <Sparkles className="w-4 h-4 text-blue-600 mt-0.5" />
+                              <div>
+                                <p className="text-sm font-bold text-blue-800">Benefício potencial de frete grátis</p>
+                                <p className="text-[12px] text-blue-700 mt-1">
+                                  {shippingPotentialRules[0]?.message} A seleção acima confirma a regra antes do redirecionamento.
+                                </p>
+                              </div>
+                            </div>
+                          </div>
+                        )}
+
+                        {shippingWhatsAppOffer && (
+                          <a
+                            href={shippingWhatsAppOffer.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="mb-4 flex items-start gap-3 rounded-2xl border border-[#25D366]/25 bg-[#25D366]/10 p-4 transition-colors hover:bg-[#25D366]/15"
+                          >
+                            <MessageCircle className="w-4 h-4 text-[#128C7E] mt-0.5" />
+                            <div>
+                              <p className="text-sm font-bold text-[#128C7E]">Frete grátis exclusivo no WhatsApp</p>
+                              <p className="text-[12px] text-[#128C7E]/90 mt-1">{shippingWhatsAppOffer.message}</p>
+                            </div>
+                          </a>
+                        )}
+
+                        <p className="mb-4 text-[11px] font-medium text-slate-500">
+                          A forma de pagamento final ainda será confirmada na página segura do provedor.
+                        </p>
                         
                         {isLoadingShipping ? (
                           <div className="flex items-center justify-center gap-3 text-sm text-slate-500 p-8 bg-slate-50/50 rounded-2xl border border-dashed border-slate-200">
@@ -721,35 +847,54 @@ export function CheckoutPage() {
                           </div>
                         ) : quotes.length > 0 ? (
                           <div className="space-y-3">
-                            {quotes.map((opt, idx) => (
-                              <motion.button
-                                key={opt.id}
-                                initial={{ opacity: 0, y: 5 }}
-                                animate={{ opacity: 1, y: 0 }}
-                                transition={{ delay: idx * 0.05 }}
-                                onClick={() => setShipping(opt)}
-                                className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all text-left relative overflow-hidden group/opt ${
-                                  shipping?.id === opt.id 
-                                    ? 'border-primary bg-primary/[0.03] ring-2 ring-primary/20 shadow-sm' 
-                                    : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/50'
-                                }`}
-                              >
-                                <div className="flex items-center gap-4 relative z-10">
-                                  <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${shipping?.id === opt.id ? 'border-primary bg-primary' : 'border-slate-300 bg-white'}`}>
-                                    {shipping?.id === opt.id && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                            {quotes.map((opt, idx) => {
+                              const isFreeByRule = eligibleFreeShippingServiceIds.includes(opt.id) || opt.freeShipping === true;
+
+                              return (
+                                <motion.button
+                                  key={opt.id}
+                                  initial={{ opacity: 0, y: 5 }}
+                                  animate={{ opacity: 1, y: 0 }}
+                                  transition={{ delay: idx * 0.05 }}
+                                  onClick={() => setShipping(opt)}
+                                  className={`w-full flex items-center justify-between p-4 rounded-2xl border transition-all text-left relative overflow-hidden group/opt ${
+                                    shipping?.id === opt.id 
+                                      ? 'border-primary bg-primary/[0.03] ring-2 ring-primary/20 shadow-sm' 
+                                      : 'border-slate-200 bg-white hover:border-slate-300 hover:bg-slate-50/50'
+                                  }`}
+                                >
+                                  <div className="flex items-center gap-4 relative z-10">
+                                    <div className={`w-5 h-5 rounded-full border-2 flex items-center justify-center transition-all ${shipping?.id === opt.id ? 'border-primary bg-primary' : 'border-slate-300 bg-white'}`}>
+                                      {shipping?.id === opt.id && <div className="w-1.5 h-1.5 rounded-full bg-white" />}
+                                    </div>
+                                    <div>
+                                      <div className="flex flex-wrap items-center gap-2">
+                                        <p className="text-[14px] font-bold text-slate-900">{opt.name}</p>
+                                        {isFreeByRule && (
+                                          <span className="inline-flex rounded-full border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-[10px] font-bold text-emerald-700">
+                                            Grátis por regra
+                                          </span>
+                                        )}
+                                      </div>
+                                      <p className="text-[12px] text-slate-500 font-medium">Receba em {opt.estimatedDays} dias</p>
+                                      {opt.message && (
+                                        <p className="text-[11px] text-emerald-700 mt-1">{opt.message}</p>
+                                      )}
+                                    </div>
                                   </div>
-                                  <div>
-                                    <p className="text-[14px] font-bold text-slate-900">{opt.name}</p>
-                                    <p className="text-[12px] text-slate-500 font-medium">Receba em {opt.estimatedDays} dias</p>
+                                  <div className="text-right relative z-10">
+                                    {opt.originalPrice && opt.originalPrice > opt.price && (
+                                      <p className="text-[11px] text-slate-400 line-through">
+                                        {formatBRL(opt.originalPrice)}
+                                      </p>
+                                    )}
+                                    <p className={`text-[15px] font-black ${shipping?.id === opt.id ? 'text-primary' : 'text-slate-900'}`}>
+                                      {opt.price === 0 ? 'Grátis' : formatBRL(opt.price)}
+                                    </p>
                                   </div>
-                                </div>
-                                <div className="text-right relative z-10">
-                                  <p className={`text-[15px] font-black ${shipping?.id === opt.id ? 'text-primary' : 'text-slate-900'}`}>
-                                    {opt.price === 0 ? 'Grátis' : formatBRL(opt.price)}
-                                  </p>
-                                </div>
-                              </motion.button>
-                            ))}
+                                </motion.button>
+                              );
+                            })}
                           </div>
                         ) : (
                           <div className="p-5 bg-slate-50 border border-slate-200 rounded-2xl text-slate-500 text-sm flex items-center gap-3">

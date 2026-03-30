@@ -4,6 +4,7 @@
 
 import { Hono } from 'npm:hono';
 import * as kv from './kv_store.tsx';
+import { evaluateFreeShippingRules, type PaymentMethodIntent } from './free-shipping.tsx';
 
 const frenet = new Hono();
 
@@ -20,6 +21,8 @@ const CEP_TTL = 24 * 60 * 60 * 1000; // 24h
 
 const quoteCache = new Map<string, { data: any; ts: number }>();
 const QUOTE_TTL = 90_000; // 90s
+const ufCache = new Map<string, { uf: string | null; ts: number }>();
+const UF_TTL = 24 * 60 * 60 * 1000;
 
 // Simple rate-limit (in-memory, per-IP)
 const rateLimits = new Map<string, { count: number; resetAt: number }>();
@@ -54,6 +57,25 @@ async function frenetFetch(url: string, opts: RequestInit & { timeoutMs?: number
     return res;
   } finally {
     clearTimeout(timer);
+  }
+}
+
+async function resolveUf(recipientUf: string | null | undefined, recipientCep: string): Promise<string | null> {
+  const normalizedUf = String(recipientUf || '').toUpperCase();
+  if (/^[A-Z]{2}$/.test(normalizedUf)) return normalizedUf;
+
+  const cached = ufCache.get(recipientCep);
+  if (cached && Date.now() - cached.ts < UF_TTL) return cached.uf;
+
+  try {
+    const res = await fetch(`https://viacep.com.br/ws/${recipientCep}/json/`);
+    if (!res.ok) return null;
+    const data = await res.json();
+    const uf = /^[A-Z]{2}$/.test(String(data?.uf || '').toUpperCase()) ? String(data.uf).toUpperCase() : null;
+    ufCache.set(recipientCep, { uf, ts: Date.now() });
+    return uf;
+  } catch {
+    return null;
   }
 }
 
@@ -239,7 +261,18 @@ frenet.post('/quote', async (c) => {
   });
 
   // Check quote cache
-  const cacheKey = hashPayload({ sellerCep, recipientCep, invoiceValue, shippingItems });
+  const paymentMethodIntent = ['pix', 'credit_card', 'boleto'].includes(String(body.paymentMethodIntent))
+    ? String(body.paymentMethodIntent) as PaymentMethodIntent
+    : null;
+
+  const cacheKey = hashPayload({
+    sellerCep,
+    recipientCep,
+    recipientUf: body.recipientUf || '',
+    paymentMethodIntent: paymentMethodIntent || '',
+    invoiceValue,
+    shippingItems,
+  });
   const cachedQuote = quoteCache.get(cacheKey);
   if (cachedQuote && Date.now() - cachedQuote.ts < QUOTE_TTL) {
     c.header('x-cache', 'HIT');
@@ -291,10 +324,37 @@ frenet.post('/quote', async (c) => {
       message: svc.Msg || svc.ErrorMessage || null,
     }));
 
-    // Apply free shipping if eligible
-    if (config.freeShippingEnabled && invoiceValue >= config.freeShippingThreshold) {
+    const resolvedUf = await resolveUf(body.recipientUf, recipientCep);
+    const evaluation = await evaluateFreeShippingRules({
+      subtotal: invoiceValue,
+      recipientCep,
+      recipientUf: resolvedUf,
+      paymentMethodIntent,
+      evaluationMode: paymentMethodIntent ? 'final' : 'potential',
+      items: items.map((item: any, index: number) => ({
+        sku: item.sku || `item-${index}`,
+        quantity: Math.max(1, Number(item.quantity) || 1),
+        price: Number(invoiceValue) || 0,
+        name: item.name || item.productName || item.title || item.sku || `Item ${index + 1}`,
+      })),
+      services: quotes.map((q: any) => ({
+        serviceCode: q.serviceCode,
+        serviceDescription: q.serviceDescription,
+        carrier: q.carrier,
+        carrierCode: q.carrierCode,
+        price: q.price,
+        originalPrice: q.originalPrice,
+        deliveryDays: q.deliveryDays,
+        error: q.error,
+        message: q.message,
+      })),
+    });
+
+    if (Array.isArray(evaluation.eligibleFreeShippingServiceIds) && evaluation.eligibleFreeShippingServiceIds.length > 0) {
+      const freeServiceIds = new Set(evaluation.eligibleFreeShippingServiceIds);
       for (const q of quotes) {
-        if (!q.error && q.serviceDescription?.toUpperCase().includes('PAC')) {
+        const serviceId = q.serviceCode || q.serviceDescription;
+        if (!q.error && freeServiceIds.has(serviceId)) {
           q.originalPrice = q.price;
           q.price = 0;
           q.freeShipping = true;
@@ -317,6 +377,12 @@ frenet.post('/quote', async (c) => {
         freeShippingThreshold: config.freeShippingThreshold,
         freeShippingEnabled: config.freeShippingEnabled,
       },
+      evaluationMode: evaluation.evaluationMode,
+      appliedRule: evaluation.appliedRule ?? null,
+      potentialRules: evaluation.potentialRules ?? [],
+      whatsappOffer: evaluation.whatsappOffer ?? null,
+      eligibleFreeShippingServiceIds: evaluation.eligibleFreeShippingServiceIds ?? [],
+      legacyApplied: evaluation.legacyApplied === true,
     };
 
     // Cache

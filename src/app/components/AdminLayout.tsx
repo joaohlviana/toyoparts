@@ -161,6 +161,7 @@ export function AdminLayout() {
       search_ops_dashboard: 'search_ops_dashboard',
       payments: 'payments',
       frenet: 'frenet',
+      frete_gratis: 'frete_gratis',
       carriers: 'carriers',
       coupons: 'coupons',
       orders: 'orders',

@@ -343,8 +343,8 @@ export function FrenetAdmin() {
                 {/* Free shipping */}
                 <div className="flex items-center justify-between">
                   <div>
-                    <Label className="text-sm font-medium">Frete Gratis</Label>
-                    <p className="text-xs text-muted-foreground">Frete gratis para PAC acima do valor</p>
+                    <Label className="text-sm font-medium">Fallback legado de frete gratis</Label>
+                    <p className="text-xs text-muted-foreground">Use apenas como compatibilidade. As regras avancadas ficam em Frete Gratis.</p>
                   </div>
                   <Switch checked={config.freeShippingEnabled} onCheckedChange={(v) => update({ freeShippingEnabled: v })} />
                 </div>

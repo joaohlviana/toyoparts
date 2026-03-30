@@ -1,45 +1,39 @@
-import React, { useState, useMemo } from 'react';
-import { 
-  Zap, 
-  Package, 
-  FolderTree, 
-  ImageIcon,
-  Menu,
-  Car,
-  Brain,
-  Globe,
-  Megaphone,
-  Truck,
-  ShoppingBag,
-  Search,
-  BarChart3,
-  Sparkles,
-  Settings2,
-  Target,
+import React, { useMemo, useState } from 'react';
+import {
   Activity,
-  CreditCard,
-  Users,
-  Database,
   Archive,
-  FileText,
-  Map,
-  Rocket,
-  Mail,
-  LineChart,
-  Shield,
   ArrowLeftRight,
-  Store,
-  LayoutDashboard,
-  Tag,
-  RefreshCcw,
-  FlaskConical,
+  BarChart3,
+  Brain,
+  Car,
+  CreditCard,
+  Database,
   FileCode2,
+  FileText,
+  FolderTree,
+  Gift,
+  Globe,
+  ImageIcon,
+  LayoutDashboard,
+  LineChart,
+  Mail,
+  Megaphone,
+  Menu,
+  Package,
+  RefreshCcw,
+  Rocket,
   Route,
+  Search,
+  Settings2,
+  Shield,
+  ShoppingBag,
+  Sparkles,
+  Tag,
+  Target,
+  Truck,
+  Users,
 } from 'lucide-react';
 import { Sidebar, NavigationGroup } from './Sidebar';
-
-// ─── Untitled UI Admin Shell ─────────────────────────────────────────────────
-// Sidebar + content area layout using design tokens
 
 interface AdminShellProps {
   children: React.ReactNode;
@@ -51,16 +45,15 @@ interface AdminShellProps {
 export function AdminShell({ children, activeSection, onNavigate, onBackToStore }: AdminShellProps) {
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
 
-  // useMemo garante referência estável — evita re-run desnecessário do useEffect do Sidebar
   const navGroups: NavigationGroup[] = useMemo(() => [
     {
-      label: 'Visão Geral',
+      label: 'Visao Geral',
       items: [
         { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
       ],
     },
     {
-      label: 'Operação',
+      label: 'Operacao',
       items: [
         {
           id: 'pedidos',
@@ -83,16 +76,16 @@ export function AdminShell({ children, activeSection, onNavigate, onBackToStore 
       ],
     },
     {
-      label: 'Catálogo',
+      label: 'Catalogo',
       items: [
-        { id: 'products',     label: 'Produtos',                icon: Package  },
-        { id: 'categories',   label: 'Categorias',              icon: FolderTree },
-        { id: 'rede_pecas',   label: 'Rede de Peças Toyota',    icon: Car      },
-        { id: 'price_update', label: 'Atualização de Preços',   icon: RefreshCcw },
+        { id: 'products', label: 'Produtos', icon: Package },
+        { id: 'categories', label: 'Categorias', icon: FolderTree },
+        { id: 'rede_pecas', label: 'Rede de Pecas Toyota', icon: Car },
+        { id: 'price_update', label: 'Atualizacao de Precos', icon: RefreshCcw },
       ],
     },
     {
-      label: 'Marketing & Conteúdo',
+      label: 'Marketing e Conteudo',
       items: [
         { id: 'banners', label: 'Banners Hero', icon: Megaphone },
         { id: 'images', label: 'Imagens do Site', icon: ImageIcon },
@@ -104,27 +97,27 @@ export function AdminShell({ children, activeSection, onNavigate, onBackToStore 
           items: [
             { id: 'seo_metadata', label: 'Metadados', icon: FileText },
             { id: 'snapshots', label: 'Snapshots', icon: Database },
-            { id: 'seo_sitemaps', label: 'Sitemaps', icon: Map },
+            { id: 'seo_sitemaps', label: 'Sitemaps', icon: Route },
             { id: 'seo_redirects', label: 'Redirects 301', icon: Route },
-            { id: 'ssg', label: 'SSG (HTML Estático)', icon: FileCode2 },
+            { id: 'ssg', label: 'SSG (HTML Estatico)', icon: FileCode2 },
           ],
         },
       ],
     },
     {
-      label: 'IA & Inteligência',
+      label: 'IA e Inteligencia',
       items: [
         {
           id: 'search_ops',
-          label: 'Busca & IA (Meili)',
+          label: 'Busca e IA (Meili)',
           icon: Search,
           items: [
             { id: 'search_ops_dashboard', label: 'Dashboard', icon: BarChart3 },
             { id: 'search_ops_lab', label: 'Search Lab', icon: Search },
             { id: 'search_ops_ai', label: 'AI Ops', icon: Sparkles },
-            { id: 'search_ops_relevance', label: 'Relevância', icon: Settings2 },
+            { id: 'search_ops_relevance', label: 'Relevancia', icon: Settings2 },
             { id: 'search_ops_merch', label: 'Merchandising', icon: Target },
-            { id: 'search_ops_ops', label: 'Operações', icon: Activity },
+            { id: 'search_ops_ops', label: 'Operacoes', icon: Activity },
           ],
         },
         { id: 'enriquecimento', label: 'Enriquecimento IA', icon: Brain },
@@ -132,43 +125,42 @@ export function AdminShell({ children, activeSection, onNavigate, onBackToStore 
       ],
     },
     {
-      label: 'Plataforma & Dados',
+      label: 'Plataforma e Dados',
       items: [
-        { id: 'operations', label: 'Operações de Sync', icon: ArrowLeftRight },
+        { id: 'operations', label: 'Operacoes de Sync', icon: ArrowLeftRight },
         { id: 'dados', label: 'Dados', icon: Database },
-        { id: 'magento_migration', label: 'Sincronização / Backup', icon: Archive },
+        { id: 'magento_migration', label: 'Sincronizacao / Backup', icon: Archive },
       ],
     },
     {
-      label: 'Integrações',
+      label: 'Integracoes',
       items: [
         { id: 'frenet', label: 'Frete (Frenet)', icon: Truck },
+        { id: 'frete_gratis', label: 'Frete Gratis', icon: Gift },
         { id: 'carriers', label: 'Transportadoras', icon: Truck },
         { id: 'payments', label: 'Pagamentos', icon: CreditCard },
-        { id: 'stripe_test', label: 'Stripe Testes', icon: FlaskConical },
-        { id: 'coupons',  label: 'Cupons',      icon: Tag },
+        { id: 'coupons', label: 'Cupons', icon: Tag },
         { id: 'resend', label: 'E-mails (Resend)', icon: Mail },
       ],
     },
     {
-      label: 'Segurança & Compliance',
+      label: 'Seguranca e Compliance',
       items: [
         { id: 'audit_log', label: 'Trilha de Auditoria', icon: Shield },
-        { id: 'integration_health', label: 'Saúde das Integrações', icon: Activity },
+        { id: 'integration_health', label: 'Saude das Integracoes', icon: Activity },
       ],
     },
     {
-      label: 'Estratégia',
+      label: 'Estrategia',
       items: [
         { id: 'growth_plan', label: 'Plano Enterprise', icon: Rocket },
       ],
     },
-  ], []); // deps vazio — estrutura é estática
+  ], []);
 
   return (
-    <div className="flex h-screen w-full bg-background overflow-hidden font-sans">
-      
-      <Sidebar 
+    <div className="flex h-screen w-full overflow-hidden bg-background font-sans">
+      <Sidebar
         groups={navGroups}
         activeId={activeSection}
         onNavigate={onNavigate}
@@ -177,20 +169,18 @@ export function AdminShell({ children, activeSection, onNavigate, onBackToStore 
         onBackToStore={onBackToStore}
       />
 
-      <main className="flex-1 flex flex-col h-full overflow-hidden bg-background relative min-w-0">
-        {/* Mobile Header */}
-        <header className="lg:hidden sticky top-0 z-20 h-14 border-b border-border flex items-center justify-between px-4 bg-background/80 backdrop-blur-md shrink-0">
+      <main className="relative flex min-w-0 flex-1 flex-col overflow-hidden bg-background">
+        <header className="sticky top-0 z-20 flex h-14 shrink-0 items-center justify-between border-b border-border bg-background/80 px-4 backdrop-blur-md lg:hidden">
           <div className="flex items-center gap-3">
-            <button 
-              onClick={() => setMobileMenuOpen(true)} 
-              className="p-2 -ml-2 text-muted-foreground hover:bg-secondary rounded-md transition-colors"
+            <button
+              onClick={() => setMobileMenuOpen(true)}
+              className="-ml-2 rounded-md p-2 text-muted-foreground transition-colors hover:bg-secondary"
             >
-              <Menu className="w-5 h-5" />
+              <Menu className="h-5 w-5" />
             </button>
           </div>
         </header>
 
-        {/* Content */}
         <div className="flex-1 overflow-y-auto">
           {children}
         </div>

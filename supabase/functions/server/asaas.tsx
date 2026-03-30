@@ -16,19 +16,17 @@ const supabase = createClient(
 
 export const asaas = new Hono();
 
-// Helper to resolve Asaas URL dynamically based on KV config
+// Production lock: new checkouts and server calls always use Asaas live
 async function getAsaasBaseUrl() {
   try {
     const config = await kv.get(CONFIG_KEY);
-    // Default to sandbox if not configured or if explicitly set to true
-    const isSandbox = config?.asaas?.sandbox !== false; 
-    return isSandbox 
-      ? 'https://sandbox.asaas.com/api/v3' 
-      : 'https://api.asaas.com/v3';
+    if (config?.asaas?.sandbox !== false || config?.activeProvider !== 'asaas') {
+      console.warn('[Asaas] Live lock overriding stored payment config to production');
+    }
   } catch (err) {
-    console.error('[Asaas] Error reading config, defaulting to Sandbox:', err);
-    return 'https://sandbox.asaas.com/api/v3';
+    console.error('[Asaas] Error reading config while enforcing live mode:', err);
   }
+  return 'https://api.asaas.com/v3';
 }
 
 // Helper to call Asaas

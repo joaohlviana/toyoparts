@@ -5,6 +5,7 @@ import { logAuditEvent } from './audit.tsx';
 export const payments = new Hono();
 
 const CONFIG_KEY = 'meta:payment_config';
+const LOCKED_PROVIDER = 'asaas' as const;
 
 interface PaymentConfig {
   activeProvider: 'asaas' | 'vindi' | 'stripe';
@@ -27,22 +28,52 @@ interface PaymentConfig {
 }
 
 const DEFAULT_CONFIG: PaymentConfig = {
-  activeProvider: 'asaas',
-  asaas:  { enabled: true,  sandbox: true },
-  vindi:  { enabled: false, sandbox: true },
+  activeProvider: LOCKED_PROVIDER,
+  asaas: { enabled: true, sandbox: false },
+  vindi: { enabled: false, sandbox: true },
   stripe: { enabled: false, sandbox: true },
   version: 1,
 };
 
+function normalizeAsaasOnlyConfig(input: Partial<PaymentConfig> | null | undefined): PaymentConfig {
+  const source = (input && typeof input === 'object' ? input : {}) as Partial<PaymentConfig>;
+
+  return {
+    ...DEFAULT_CONFIG,
+    ...source,
+    activeProvider: LOCKED_PROVIDER,
+    asaas: {
+      ...DEFAULT_CONFIG.asaas,
+      ...(source.asaas || {}),
+      enabled: true,
+      sandbox: false,
+    },
+    vindi: {
+      ...DEFAULT_CONFIG.vindi,
+      ...(source.vindi || {}),
+      enabled: false,
+      sandbox: true,
+    },
+    stripe: {
+      ...DEFAULT_CONFIG.stripe,
+      ...(source.stripe || {}),
+      enabled: false,
+      sandbox: true,
+    },
+  };
+}
+
 // GET /config
 payments.get('/config', async (c) => {
   try {
-    const config = await kv.get(CONFIG_KEY) || DEFAULT_CONFIG;
+    const config = normalizeAsaasOnlyConfig(await kv.get(CONFIG_KEY));
     const status = {
-      asaasKeyConfigured:  !!Deno.env.get('ASAAS_API_KEY'),
-      vindiKeyConfigured:  !!(Deno.env.get('VINDI_API_KEY') || config.vindi?.apiKey),
+      asaasKeyConfigured: !!Deno.env.get('ASAAS_API_KEY'),
+      vindiKeyConfigured: !!(Deno.env.get('VINDI_API_KEY') || config.vindi?.apiKey),
       stripeKeyConfigured: !!Deno.env.get('STRIPE_SECRET_KEY'),
       stripePublishableKeyConfigured: !!Deno.env.get('STRIPE_PUBLISHABLE_KEY'),
+      lockedProvider: LOCKED_PROVIDER,
+      liveLocked: true,
     };
     return c.json({ config, status });
   } catch (err: any) {
@@ -50,25 +81,27 @@ payments.get('/config', async (c) => {
   }
 });
 
-// POST /config — raw config save (used by PaymentAdmin settings)
+// POST /config — admin saves are normalized so production stays Asaas-only
 payments.post('/config', async (c) => {
   try {
     const newConfig = await c.req.json();
-    const previous  = await kv.get(CONFIG_KEY) || DEFAULT_CONFIG;
+    const previous = normalizeAsaasOnlyConfig(await kv.get(CONFIG_KEY));
+    const locked = normalizeAsaasOnlyConfig(newConfig);
     const versioned = {
-      ...newConfig,
-      version:    ((previous as any).version || 1) + 1,
+      ...locked,
+      version: ((previous as any).version || 1) + 1,
       updated_at: new Date().toISOString(),
     };
     await kv.set(CONFIG_KEY, versioned);
 
     await logAuditEvent({
-      action:      'payments.config.update',
+      action: 'payments.config.update',
       entity_type: 'payment_config',
-      entity_id:   'payment_config',
-      before:      { activeProvider: (previous as any).activeProvider, version: (previous as any).version },
-      after:       { activeProvider: newConfig.activeProvider, version: versioned.version },
-      source:      'admin_ui',
+      entity_id: 'payment_config',
+      before: { activeProvider: (previous as any).activeProvider, version: (previous as any).version },
+      after: { activeProvider: versioned.activeProvider, version: versioned.version },
+      source: 'admin_ui',
+      meta: { lock: true },
     });
 
     return c.json({ success: true, config: versioned });
@@ -79,16 +112,22 @@ payments.post('/config', async (c) => {
 
 // GET /test/asaas
 payments.get('/test/asaas', async (c) => {
-  const ASAAS_API_KEY = Deno.env.get('ASAAS_API_KEY');
-  if (!ASAAS_API_KEY) return c.json({ ok: false, error: 'ASAAS_API_KEY não configurado no servidor' });
+  const asaasApiKey = Deno.env.get('ASAAS_API_KEY');
+  if (!asaasApiKey) return c.json({ ok: false, error: 'ASAAS_API_KEY nao configurado no servidor' });
 
-  const config    = await kv.get(CONFIG_KEY) || DEFAULT_CONFIG;
-  const isSandbox = (config as any).asaas?.sandbox !== false;
-  const baseUrl   = isSandbox ? 'https://sandbox.asaas.com/api/v3' : 'https://api.asaas.com/v3';
+  const config = normalizeAsaasOnlyConfig(await kv.get(CONFIG_KEY));
+  const isSandbox = config.asaas?.sandbox !== false;
+  const baseUrl = isSandbox ? 'https://sandbox.asaas.com/api/v3' : 'https://api.asaas.com/v3';
 
   try {
-    const res = await fetch(`${baseUrl}/myAccount`, { headers: { 'access_token': ASAAS_API_KEY } });
-    if (res.ok) return c.json({ ok: true });
+    const res = await fetch(`${baseUrl}/myAccount`, { headers: { access_token: asaasApiKey } });
+    if (res.ok) {
+      return c.json({
+        ok: true,
+        environment: isSandbox ? 'sandbox' : 'production',
+        provider: LOCKED_PROVIDER,
+      });
+    }
     const text = await res.text();
     return c.json({ ok: false, error: `Erro ${res.status}: ${text}` });
   } catch (err: any) {
@@ -98,57 +137,60 @@ payments.get('/test/asaas', async (c) => {
 
 // GET /test/vindi
 payments.get('/test/vindi', async (c) => {
-  const config       = await kv.get(CONFIG_KEY) || DEFAULT_CONFIG;
-  const VINDI_API_KEY = Deno.env.get('VINDI_API_KEY') || (config as any).vindi?.apiKey;
-  if (!VINDI_API_KEY) return c.json({ ok: false, error: 'VINDI_API_KEY não configurado' });
+  const config = normalizeAsaasOnlyConfig(await kv.get(CONFIG_KEY));
+  const vindiApiKey = Deno.env.get('VINDI_API_KEY') || config.vindi?.apiKey;
+  if (!vindiApiKey) return c.json({ ok: false, error: 'VINDI_API_KEY nao configurado' });
 
-  const isSandbox = (config as any).vindi?.sandbox !== false;
-  const cleanKey  = VINDI_API_KEY.trim();
+  const cleanKey = vindiApiKey.trim();
   let auth: string;
-  try { auth = btoa(`${cleanKey}:`); }
-  catch (e) { return c.json({ ok: false, error: 'Erro ao codificar chave da Vindi (verifique caracteres especiais)' }); }
-
-  const url = isSandbox ? 'https://sandbox-app.vindi.com.br/api/v1/merchants' : 'https://app.vindi.com.br/api/v1/merchants';
   try {
-    const res = await fetch(url, { headers: { 'Authorization': `Basic ${auth}` } });
-    if (res.ok) return c.json({ ok: true });
+    auth = btoa(`${cleanKey}:`);
+  } catch {
+    return c.json({ ok: false, error: 'Erro ao codificar chave da Vindi (verifique caracteres especiais)' });
+  }
+
+  try {
+    const res = await fetch('https://sandbox-app.vindi.com.br/api/v1/merchants', {
+      headers: { Authorization: `Basic ${auth}` },
+    });
+    if (res.ok) return c.json({ ok: true, legacyOnly: true });
     const text = await res.text();
-    return c.json({ ok: false, error: `Erro ${res.status}: ${text}` });
+    return c.json({ ok: false, error: `Erro ${res.status}: ${text}`, legacyOnly: true });
   } catch (err: any) {
-    return c.json({ ok: false, error: err.message });
+    return c.json({ ok: false, error: err.message, legacyOnly: true });
   }
 });
 
 // GET /test/stripe
 payments.get('/test/stripe', async (c) => {
-  const SECRET_KEY = Deno.env.get('STRIPE_SECRET_KEY');
-  if (!SECRET_KEY) return c.json({ ok: false, error: 'STRIPE_SECRET_KEY não configurado no servidor' });
+  const secretKey = Deno.env.get('STRIPE_SECRET_KEY');
+  if (!secretKey) return c.json({ ok: false, error: 'STRIPE_SECRET_KEY nao configurado no servidor' });
 
   try {
     const res = await fetch('https://api.stripe.com/v1/balance', {
       headers: {
-        Authorization: `Bearer ${SECRET_KEY}`,
+        Authorization: `Bearer ${secretKey}`,
         'Stripe-Version': '2024-06-20',
       },
     });
     if (res.ok) {
       const data = await res.json();
       const available = data.available?.[0];
-      const env = SECRET_KEY.startsWith('sk_live_') ? 'production' : 'sandbox';
-      return c.json({ ok: true, environment: env, currency: available?.currency?.toUpperCase() });
+      const env = secretKey.startsWith('sk_live_') ? 'production' : 'sandbox';
+      return c.json({ ok: true, environment: env, currency: available?.currency?.toUpperCase(), legacyOnly: true });
     }
     const text = await res.text();
-    return c.json({ ok: false, error: `Erro ${res.status}: ${text}` });
+    return c.json({ ok: false, error: `Erro ${res.status}: ${text}`, legacyOnly: true });
   } catch (err: any) {
-    return c.json({ ok: false, error: err.message });
+    return c.json({ ok: false, error: err.message, legacyOnly: true });
   }
 });
 
-// GET /switch-preview — shows operational impact before switching
+// GET /switch-preview — legacy status overview for existing orders
 payments.get('/switch-preview', async (c) => {
   try {
     const allOrders = await kv.getByPrefix('order:');
-    const orders    = (allOrders || []).filter((o: any) => o && typeof o === 'object' && o.orderId);
+    const orders = (allOrders || []).filter((o: any) => o && typeof o === 'object' && o.orderId);
 
     const pending = orders.filter((o: any) =>
       ['waiting_payment', 'overdue'].includes(o.payment_status || o.status || '')
@@ -159,20 +201,21 @@ payments.get('/switch-preview', async (c) => {
     );
 
     const byProvider: Record<string, number> = {};
-    for (const o of pending) {
-      const p = (o.payment_provider || 'asaas') as string;
-      byProvider[p] = (byProvider[p] || 0) + 1;
+    for (const order of pending) {
+      const provider = (order.payment_provider || LOCKED_PROVIDER) as string;
+      byProvider[provider] = (byProvider[provider] || 0) + 1;
     }
 
-    const config = await kv.get(CONFIG_KEY) || DEFAULT_CONFIG;
+    const config = normalizeAsaasOnlyConfig(await kv.get(CONFIG_KEY));
 
     return c.json({
-      current_provider:    (config as any).activeProvider || 'asaas',
+      current_provider: config.activeProvider || LOCKED_PROVIDER,
+      locked_provider: LOCKED_PROVIDER,
       pending_by_provider: byProvider,
-      total_pending:       pending.length,
-      paid_not_shipped:    paidNotShipped.length,
+      total_pending: pending.length,
+      paid_not_shipped: paidNotShipped.length,
       warning: pending.length > 0
-        ? `${pending.length} pedido(s) aguardando pagamento. Continuarão sendo processados pelo gateway original após a troca.`
+        ? `${pending.length} pedido(s) aguardando pagamento. Continuarao sendo processados pelo gateway original apos a troca.`
         : null,
     });
   } catch (err: any) {
@@ -180,7 +223,7 @@ payments.get('/switch-preview', async (c) => {
   }
 });
 
-// POST /activate-provider — safe gateway switch with validation + audit
+// POST /activate-provider — production is permanently locked to Asaas for new orders
 payments.post('/activate-provider', async (c) => {
   try {
     const { provider, confirmed } = await c.req.json() as { provider: 'asaas' | 'vindi' | 'stripe'; confirmed?: boolean };
@@ -189,56 +232,54 @@ payments.post('/activate-provider', async (c) => {
       return c.json({ error: 'provider deve ser "asaas", "vindi" ou "stripe"' }, 400);
     }
     if (!confirmed) {
-      return c.json({ error: 'Confirmação necessária (confirmed: true)' }, 400);
+      return c.json({ error: 'Confirmacao necessaria (confirmed: true)' }, 400);
+    }
+    if (provider !== LOCKED_PROVIDER) {
+      return c.json({
+        error: `Producao travada em ${LOCKED_PROVIDER}. Stripe e Vindi permanecem apenas para pedidos legados.`,
+        active_provider: LOCKED_PROVIDER,
+        locked: true,
+      }, 423);
+    }
+    if (!Deno.env.get('ASAAS_API_KEY')) {
+      return c.json({ error: 'ASAAS_API_KEY nao configurado. Configure antes de ativar.' }, 422);
     }
 
-    // 1. Validate credentials
-    if (provider === 'asaas' && !Deno.env.get('ASAAS_API_KEY')) {
-      return c.json({ error: 'ASAAS_API_KEY não configurado. Configure antes de ativar.' }, 422);
-    }
-    if (provider === 'vindi') {
-      const cfg = (await kv.get(CONFIG_KEY) as any) || {};
-      if (!Deno.env.get('VINDI_API_KEY') && !cfg.vindi?.apiKey) {
-        return c.json({ error: 'VINDI_API_KEY não configurado. Configure antes de ativar.' }, 422);
-      }
-    }
-    if (provider === 'stripe' && !Deno.env.get('STRIPE_SECRET_KEY')) {
-      return c.json({ error: 'STRIPE_SECRET_KEY não configurado. Configure antes de ativar.' }, 422);
+    const previous = normalizeAsaasOnlyConfig(await kv.get(CONFIG_KEY) as PaymentConfig | null);
+    if (previous.activeProvider === LOCKED_PROVIDER && previous.asaas.enabled && previous.asaas.sandbox === false) {
+      return c.json({
+        success: true,
+        message: 'Asaas ja esta ativo em producao e travado para novos pedidos.',
+        active_provider: LOCKED_PROVIDER,
+        no_change: true,
+      });
     }
 
-    // 2. Switch
-    const previous = (await kv.get(CONFIG_KEY) as PaymentConfig) || DEFAULT_CONFIG;
-    if (previous.activeProvider === provider) {
-      return c.json({ success: true, message: `${provider} já é o provider ativo`, no_change: true });
-    }
-
-    const newConfig: PaymentConfig = {
+    const newConfig: PaymentConfig = normalizeAsaasOnlyConfig({
       ...previous,
-      activeProvider: provider,
-      version:    ((previous.version || 1) + 1),
+      version: (previous.version || 1) + 1,
       updated_at: new Date().toISOString(),
-    };
+    });
     await kv.set(CONFIG_KEY, newConfig);
 
-    // 3. Audit
     await logAuditEvent({
-      action:      'payments.provider.switch',
+      action: 'payments.provider.switch',
       entity_type: 'payment_config',
-      entity_id:   'payment_config',
-      before:      { activeProvider: previous.activeProvider, version: previous.version },
-      after:       { activeProvider: provider, version: newConfig.version },
-      source:      'admin_ui',
-      meta:        { confirmed: true },
+      entity_id: 'payment_config',
+      before: { activeProvider: previous.activeProvider, version: previous.version },
+      after: { activeProvider: LOCKED_PROVIDER, version: newConfig.version },
+      source: 'admin_ui',
+      meta: { confirmed: true, lock: true },
     });
 
-    console.log(`[Payments] Provider switched: ${previous.activeProvider} → ${provider}`);
+    console.log(`[Payments] Production lock enforced: ${previous.activeProvider} -> ${LOCKED_PROVIDER}`);
 
     return c.json({
-      success:           true,
+      success: true,
       previous_provider: previous.activeProvider,
-      active_provider:   provider,
-      version:           newConfig.version,
-      message:           `Gateway ativado: ${provider}. Pedidos existentes continuam processados pelo gateway original.`,
+      active_provider: LOCKED_PROVIDER,
+      version: newConfig.version,
+      message: 'Asaas ativado em producao. Pedidos existentes continuam processados pelo gateway original.',
     });
   } catch (err: any) {
     console.error('[Payments] activate-provider error:', err);

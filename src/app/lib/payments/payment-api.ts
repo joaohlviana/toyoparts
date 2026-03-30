@@ -33,6 +33,8 @@ export interface PaymentStatus {
   vindiKeyConfigured:             boolean;
   stripeKeyConfigured:            boolean;
   stripePublishableKeyConfigured: boolean;
+  lockedProvider?:                'asaas' | 'vindi' | 'stripe';
+  liveLocked?:                    boolean;
 }
 
 export async function savePaymentConfig(config: PaymentConfig) {

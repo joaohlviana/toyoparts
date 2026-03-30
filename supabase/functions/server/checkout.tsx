@@ -49,7 +49,7 @@ checkout.post('/create', async (c) => {
     const body   = await c.req.json();
     const config = await kv.get(CONFIG_KEY) || { activeProvider: 'asaas' };
 
-    console.log(`[Checkout] Provider: ${config.activeProvider}, orderId: ${body.orderId}, total: ${body.totals?.total}, couponCode: ${body.couponCode || 'none'}`);
+    console.log(`[Checkout] Provider lock active: asaas (stored=${config.activeProvider || 'asaas'}), orderId: ${body.orderId}, total: ${body.totals?.total}, couponCode: ${body.couponCode || 'none'}`);
 
     // Server-side coupon re-validation before dispatching to any provider
     const couponResult = await revalidateCoupon(body);
@@ -57,13 +57,7 @@ checkout.post('/create', async (c) => {
 
     console.log(`[Checkout] After coupon re-validation: discountValue=${couponResult.discountValue}, shippingDiscount=${couponResult.shippingDiscount}, freeShipping=${couponResult.freeShipping}`);
 
-    if (config.activeProvider === 'vindi') {
-      return await createVindiCheckout(enrichedBody, config.vindi, c);
-    } else if (config.activeProvider === 'stripe') {
-      return await createStripeCheckout(enrichedBody, c);
-    } else {
-      return await createAsaasCheckout(enrichedBody, c);
-    }
+    return await createAsaasCheckout(enrichedBody, c);
   } catch (err: any) {
     console.error('[Checkout API Error]:', err);
     return c.json({ success: false, error: err.message }, 500);

@@ -4,6 +4,7 @@ import * as kv from './kv_store.tsx';
 import {
   CUSTOMER_ACCOUNT_ORDERS_URL,
   CUSTOMER_AUTH_CALLBACK_URL,
+  CUSTOMER_EMAIL_LOGO_URL,
   CUSTOMER_SUPPORT_EMAIL,
   CUSTOMER_WHATSAPP_URL,
   PRIMARY_CUSTOMER_URL,
@@ -29,11 +30,44 @@ type TemplateDefinition = {
 const COMMON_PLACEHOLDERS: Placeholder[] = [
   { key: '{{name}}', desc: 'Nome do cliente ou usuario' },
   { key: '{{email}}', desc: 'E-mail completo do destinatario' },
+  { key: '{{logo_url}}', desc: 'URL da logo oficial da Toyoparts para e-mails' },
   { key: '{{site_url}}', desc: 'URL principal da loja' },
   { key: '{{support_email}}', desc: 'E-mail oficial de suporte' },
   { key: '{{whatsapp_url}}', desc: 'Link oficial do WhatsApp' },
   { key: '{{account_orders_url}}', desc: 'URL da area de pedidos do cliente' },
 ];
+
+function brandHeaderRow() {
+  return `
+          <tr>
+            <td style="background:linear-gradient(180deg,#fff6f6 0%,#ffffff 100%);padding:24px 40px;border-bottom:1px solid #fee2e2;">
+              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
+                <tr>
+                  <td>
+                    <div style="display:inline-block;background:#ffffff;border:1px solid #fecaca;border-radius:16px;padding:12px 16px;">
+                      <img src="{{logo_url}}" alt="Toyoparts" width="186" style="display:block;width:186px;max-width:100%;height:auto;border:0;">
+                    </div>
+                  </td>
+                  <td align="right" style="vertical-align:middle;">
+                    <span style="font-size:12px;color:#991b1b;font-weight:700;letter-spacing:0.6px;">Pecas Toyota</span>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+  `;
+}
+
+function upgradeStoredTemplateBranding(html: string) {
+  if (!html || html.includes('{{logo_url}}')) {
+    return html;
+  }
+
+  return html.replace(
+    /<tr>\s*<td style="background:#EB0A1E;padding:26px 40px;">[\s\S]*?<\/td>\s*<\/tr>/,
+    brandHeaderRow(),
+  );
+}
 
 function mergePlaceholders(...groups: Placeholder[][]): Placeholder[] {
   const map = new Map<string, string>();
@@ -124,20 +158,7 @@ function baseLayout(content: string, preheader = '') {
     <tr>
       <td align="center">
         <table width="600" cellpadding="0" cellspacing="0" role="presentation" style="max-width:600px;width:100%;background:#ffffff;border-radius:22px;overflow:hidden;box-shadow:0 8px 40px rgba(15,23,42,0.08);">
-          <tr>
-            <td style="background:#EB0A1E;padding:26px 40px;">
-              <table width="100%" cellpadding="0" cellspacing="0" role="presentation">
-                <tr>
-                  <td>
-                    <span style="font-size:24px;font-weight:900;color:#ffffff;letter-spacing:-0.4px;">TOYOPARTS</span>
-                  </td>
-                  <td align="right">
-                    <span style="font-size:12px;color:rgba(255,255,255,0.76);font-weight:600;">Pecas Toyota</span>
-                  </td>
-                </tr>
-              </table>
-            </td>
-          </tr>
+          ${brandHeaderRow()}
           <tr>
             <td style="padding:40px 40px 34px;">
               ${content}
@@ -235,6 +256,7 @@ function buildCommonTemplateData(email: string, name?: string) {
   return {
     name: resolvedName,
     email: safeEmail,
+    logo_url: CUSTOMER_EMAIL_LOGO_URL,
     site_url: PRIMARY_CUSTOMER_URL,
     support_email: CUSTOMER_SUPPORT_EMAIL,
     whatsapp_url: CUSTOMER_WHATSAPP_URL,
@@ -402,6 +424,16 @@ function normalizeResendConfig(raw: any) {
 async function getStoredTemplate(id: string) {
   const stored = await kv.get(`${TEMPLATE_PREFIX}${id}`);
   if (stored) {
+    const upgradedHtml = upgradeStoredTemplateBranding(stored.html || '');
+    if (upgradedHtml !== (stored.html || '')) {
+      const upgraded = {
+        ...stored,
+        html: upgradedHtml,
+        updated_at: new Date().toISOString(),
+      };
+      await kv.set(`${TEMPLATE_PREFIX}${id}`, upgraded);
+      return upgraded;
+    }
     return stored;
   }
   return {

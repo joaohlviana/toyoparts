@@ -5,6 +5,7 @@ export const CUSTOMER_ACCESS_PATH = '/acesso';
 export const CUSTOMER_ORDERS_PATH = '/minha-conta/pedidos';
 export const CUSTOMER_SUPPORT_EMAIL = 'atendimento@toyoparts.com.br';
 export const CUSTOMER_WHATSAPP_URL = 'https://wa.me/554332941144';
+export const CUSTOMER_EMAIL_LOGO_URL = `${SECONDARY_CUSTOMER_URL}/brand/toyoparts-email-logo.png`;
 export const CUSTOMER_ALLOWED_REDIRECTS = [
   'https://www.toyoparts.com.br/auth/callback',
   'https://toyoparts.vercel.app/auth/callback',

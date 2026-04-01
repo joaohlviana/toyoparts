@@ -1,8 +1,9 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" role="img" aria-labelledby="title">
-  <title>Toyoparts</title>
-  <rect width="64" height="64" rx="16" fill="#eb0a1e" />
-  <ellipse cx="32" cy="22" rx="16" ry="10" fill="none" stroke="#fff" stroke-width="3.2" />
-  <ellipse cx="24" cy="22" rx="5.5" ry="14" fill="none" stroke="#fff" stroke-width="3.2" />
-  <ellipse cx="40" cy="22" rx="5.5" ry="14" fill="none" stroke="#fff" stroke-width="3.2" />
-  <rect x="14" y="43" width="36" height="5" rx="2.5" fill="#fff" />
+  <title>Toyota</title>
+  <rect width="64" height="64" rx="16" fill="#ffffff" />
+  <g fill="none" stroke="#eb0a1e" stroke-linecap="round" stroke-linejoin="round">
+    <ellipse cx="32" cy="32" rx="18" ry="12.5" stroke-width="3.4" />
+    <ellipse cx="24.8" cy="32" rx="6.2" ry="18" stroke-width="3.4" />
+    <ellipse cx="39.2" cy="32" rx="6.2" ry="18" stroke-width="3.4" />
+  </g>
 </svg>

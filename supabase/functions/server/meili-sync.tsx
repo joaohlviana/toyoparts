@@ -9,6 +9,7 @@ export const meiliSync = new Hono();
 // ─── Tuning Constants ────────────────────────────────────────────────────────
 const SYNC_KEY = 'meili:sync:products';
 const SYNC_META_KEY = 'meili:sync:meta';
+const MEILI_DOC_PREFIX = 'meili_doc:';
 
 // v2 OPTIMIZED: 100 produtos por página Magento (era 10)
 // Magento REST API suporta pageSize até 300, mas 100 é safe para payload/timeout
@@ -84,7 +85,7 @@ function kvBackupAsync(documents: any[]) {
         const updates = batch
           .filter((doc: any) => doc.sku)
           .map((doc: any) => ({
-            key: `product:${doc.sku}`,
+            key: `${MEILI_DOC_PREFIX}${doc.sku}`,
             value: { ...doc }
           }));
         

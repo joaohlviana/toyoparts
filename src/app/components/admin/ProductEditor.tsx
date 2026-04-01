@@ -177,10 +177,128 @@ function createEmptyProductForm() {
     } as any,
     extension_attributes: {} as any,
     media_gallery_entries: [] as any[],
+    additional_attributes: [] as any[],
   };
 }
 
-function buildFormValues(product: any) {
+type AttributeFieldType = 'text' | 'number' | 'boolean' | 'textarea' | 'select' | 'multiselect';
+
+interface AttributeDefinitionOption {
+  label: string;
+  value: string;
+}
+
+interface AttributeDefinition {
+  attribute_code: string;
+  label: string;
+  group: string;
+  type: AttributeFieldType;
+  placeholder?: string;
+  visibility?: 'optional' | 'advanced';
+  options?: AttributeDefinitionOption[];
+}
+
+interface AdditionalAttributeField extends AttributeDefinition {
+  value: any;
+}
+
+interface EditorSchema {
+  categoryTree: CategoryNode[];
+  attributeDefinitions: AttributeDefinition[];
+  fixedAttributeCodes: string[];
+}
+
+interface StagedMediaItem {
+  id: string;
+  file: File;
+  preview_url: string;
+  status: 'staged' | 'uploading' | 'uploaded' | 'failed';
+  error?: string;
+}
+
+const FALLBACK_EDITOR_SCHEMA: EditorSchema = {
+  categoryTree: [],
+  attributeDefinitions: [],
+  fixedAttributeCodes: [],
+};
+
+function inferAdditionalAttributeType(value: any, definition?: AttributeDefinition): AttributeFieldType {
+  if (definition?.type) return definition.type;
+  if (Array.isArray(value)) return 'multiselect';
+  if (typeof value === 'boolean') return 'boolean';
+  if (value === '0' || value === '1') return 'boolean';
+  if (typeof value === 'number') return 'number';
+  if (value != null && value !== '' && !Number.isNaN(Number(value)) && String(value).trim() !== '') return 'number';
+  if (typeof value === 'string' && (value.includes('\n') || value.length > 140)) return 'textarea';
+  return 'text';
+}
+
+function normalizeAdditionalAttributeValue(value: any, type: AttributeFieldType) {
+  if (type === 'multiselect') {
+    if (Array.isArray(value)) return value.map(String);
+    return String(value || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+  }
+  if (type === 'boolean') {
+    return value === true || value === 1 || value === '1' || value === 'true';
+  }
+  if (type === 'number') {
+    if (value === '' || value == null) return '';
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : '';
+  }
+  return value ?? '';
+}
+
+function serializeAdditionalAttributeValue(value: any, type: AttributeFieldType) {
+  if (type === 'multiselect') {
+    return Array.isArray(value) ? value.map(String).filter(Boolean).join(',') : String(value || '');
+  }
+  if (type === 'boolean') {
+    return value ? '1' : '0';
+  }
+  if (type === 'number') {
+    return value === '' || value == null ? '' : String(value);
+  }
+  return value ?? '';
+}
+
+function humanizeAttributeCode(code: string) {
+  return String(code || '')
+    .replace(/_/g, ' ')
+    .replace(/\b\w/g, (letter) => letter.toUpperCase())
+    .trim() || 'Atributo';
+}
+
+function buildAdditionalAttributes(
+  customMap: Record<string, any>,
+  schema: EditorSchema,
+): AdditionalAttributeField[] {
+  const fixedCodes = new Set(schema.fixedAttributeCodes || []);
+  const definitionMap = new Map((schema.attributeDefinitions || []).map((definition) => [definition.attribute_code, definition]));
+
+  return Object.entries(customMap)
+    .filter(([code]) => !fixedCodes.has(code))
+    .map(([code, value]) => {
+      const definition = definitionMap.get(code);
+      const type = inferAdditionalAttributeType(value, definition);
+      return {
+        attribute_code: code,
+        label: definition?.label || humanizeAttributeCode(code),
+        group: definition?.group || 'Avançado',
+        type,
+        placeholder: definition?.placeholder,
+        visibility: definition?.visibility || 'advanced',
+        options: definition?.options || [],
+        value: normalizeAdditionalAttributeValue(value, type),
+      };
+    })
+    .sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'));
+}
+
+function buildFormValues(product: any, schema: EditorSchema = FALLBACK_EDITOR_SCHEMA) {
   const defaults = createEmptyProductForm();
   const customMap: Record<string, any> = {};
   (product?.custom_attributes || []).forEach((attr: any) => {
@@ -210,7 +328,18 @@ function buildFormValues(product: any) {
       ...(stockData || {}),
     },
     media_gallery_entries: buildEditorMediaEntries(product, customMap),
+    additional_attributes: buildAdditionalAttributes(customMap, schema),
   };
+}
+
+function hasAttributeValue(value: any, type: AttributeFieldType) {
+  if (type === 'multiselect') {
+    return Array.isArray(value) && value.length > 0;
+  }
+  if (type === 'boolean') {
+    return value === true || value === '1' || value === 1;
+  }
+  return value !== '' && value != null;
 }
 
 async function convertImageToWebp(file: File, productName: string, sku: string, index: number): Promise<File> {
@@ -270,25 +399,55 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
   const initialMode = mode === 'create' || !sku ? 'create' : 'edit';
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('principal');
-  const [metadata, setMetadata] = useState<any>({ categories: [], models: [], years: [], versions: [] });
-  const [categoryTree, setCategoryTree] = useState<CategoryNode[]>([]);
+  const [schema, setSchema] = useState<EditorSchema>(FALLBACK_EDITOR_SCHEMA);
   const [mediaUploading, setMediaUploading] = useState(false);
   const [mediaProgress, setMediaProgress] = useState('');
   const [editorMode, setEditorMode] = useState<'create' | 'edit'>(initialMode);
   const [currentSku, setCurrentSku] = useState(sku || '');
+  const [stagedMedia, setStagedMedia] = useState<StagedMediaItem[]>([]);
+  const [attributeSearch, setAttributeSearch] = useState('');
+  const [customAttributeCode, setCustomAttributeCode] = useState('');
+  const [customAttributeType, setCustomAttributeType] = useState<AttributeFieldType>('text');
   const mediaInputRef = useRef<HTMLInputElement>(null);
+  const stagedMediaRef = useRef<StagedMediaItem[]>([]);
 
-  const { control, register, handleSubmit, reset, watch, setValue, formState: { errors, isSubmitting } } = useForm({
+  const { control, register, handleSubmit, reset, watch, setValue, getValues, formState: { errors, isSubmitting } } = useForm({
     defaultValues: createEmptyProductForm()
+  });
+  const { fields: additionalAttributeFields, append: appendAdditionalAttribute, remove: removeAdditionalAttribute, replace: replaceAdditionalAttributes } = useFieldArray({
+    control,
+    name: 'additional_attributes',
   });
 
   const mediaEntries = watch('media_gallery_entries') || [];
+  const additionalAttributes = watch('additional_attributes') || [];
   const productName = watch('name') || currentSku || 'produto';
+  const watchedSku = watch('sku') || currentSku;
   const canUploadMedia = editorMode === 'edit' && !!currentSku;
+  const categoryTree = schema.categoryTree || [];
+  const selectedAdditionalCodes = new Set(
+    (Array.isArray(additionalAttributes) ? additionalAttributes : [])
+      .map((attribute: any) => String(attribute?.attribute_code || '').trim())
+      .filter(Boolean)
+  );
+  const availableAttributeDefinitions = (schema.attributeDefinitions || []).filter((definition) => {
+    const searchValue = attributeSearch.trim().toLowerCase();
+    if (selectedAdditionalCodes.has(definition.attribute_code)) return false;
+    if (!searchValue) return true;
+    return (
+      definition.label.toLowerCase().includes(searchValue) ||
+      definition.attribute_code.toLowerCase().includes(searchValue) ||
+      definition.group.toLowerCase().includes(searchValue)
+    );
+  });
 
   useEffect(() => {
     setEditorMode(mode === 'create' || !sku ? 'create' : 'edit');
     setCurrentSku(sku || '');
+    setStagedMedia((current) => {
+      releaseStagedMedia(current);
+      return [];
+    });
   }, [mode, sku]);
 
   useEffect(() => {
@@ -299,37 +458,61 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
     void loadData(editorMode === 'edit' ? currentSku : undefined);
   }, [currentSku, editorMode]);
 
+  useEffect(() => {
+    stagedMediaRef.current = stagedMedia;
+  }, [stagedMedia]);
+
+  useEffect(() => () => {
+    stagedMediaRef.current.forEach((item) => {
+      try {
+        URL.revokeObjectURL(item.preview_url);
+      } catch {
+        // noop
+      }
+    });
+  }, []);
+
+  const releaseStagedMedia = (items: StagedMediaItem[]) => {
+    items.forEach((item) => {
+      try {
+        URL.revokeObjectURL(item.preview_url);
+      } catch {
+        // noop
+      }
+    });
+  };
+
+  const clearStagedMedia = () => {
+    setStagedMedia((current) => {
+      releaseStagedMedia(current);
+      return [];
+    });
+  };
+
   const loadData = async (targetSku?: string) => {
     setLoading(true);
     try {
-      const [catsRes, modsRes, yrsRes, treeRes] = await Promise.all([
-        adminFetch(`${API}/admin/products/metadata/category_names`),
-        adminFetch(`${API}/admin/products/metadata/modelos`),
-        adminFetch(`${API}/admin/products/metadata/anos`),
-        adminFetch(`${API}/admin/products/metadata/structure/tree`),
-      ]);
-
-      const categories = await catsRes.json().catch(() => []);
-      const models = await modsRes.json().catch(() => []);
-      const years = await yrsRes.json().catch(() => []);
-      const tree = await treeRes.json().catch(() => []);
-
-      setMetadata({ 
-        categories: Array.isArray(categories) ? categories : [], 
-        models: Array.isArray(models) ? models : [], 
-        years: Array.isArray(years) ? years : [] 
+      const schemaRes = await adminFetch(`${API}/admin/products/schema`);
+      if (!schemaRes.ok) throw new Error('Falha ao carregar schema do editor');
+      const loadedSchema = await schemaRes.json().catch(() => FALLBACK_EDITOR_SCHEMA);
+      setSchema({
+        categoryTree: Array.isArray(loadedSchema?.categoryTree) ? loadedSchema.categoryTree : [],
+        attributeDefinitions: Array.isArray(loadedSchema?.attributeDefinitions) ? loadedSchema.attributeDefinitions : [],
+        fixedAttributeCodes: Array.isArray(loadedSchema?.fixedAttributeCodes) ? loadedSchema.fixedAttributeCodes : [],
       });
-      setCategoryTree(Array.isArray(tree) ? tree : []);
 
       if (!targetSku) {
         reset(createEmptyProductForm());
+        replaceAdditionalAttributes([]);
         return;
       }
 
-      const productRes = await adminFetch(`${API}/admin/products/${targetSku}`);
+      const productRes = await adminFetch(`${API}/admin/products/${targetSku}/detail`);
       if (!productRes.ok) throw new Error('Falha ao carregar produto');
       const product = await productRes.json();
-      reset(buildFormValues(product));
+      const formValues = buildFormValues(product, loadedSchema);
+      reset(formValues);
+      replaceAdditionalAttributes(formValues.additional_attributes || []);
 
     } catch (err: any) {
       toast.error(err.message);
@@ -341,12 +524,132 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
     }
   };
 
+  const updateStagedMediaStatus = (id: string, patch: Partial<StagedMediaItem>) => {
+    setStagedMedia((current) => current.map((item) => item.id === id ? { ...item, ...patch } : item));
+  };
+
+  const removeStagedMediaItem = (id: string) => {
+    setStagedMedia((current) => {
+      const next: StagedMediaItem[] = [];
+      for (const item of current) {
+        if (item.id === id) {
+          releaseStagedMedia([item]);
+          continue;
+        }
+        next.push(item);
+      }
+      return next;
+    });
+  };
+
+  const queueMediaFiles = (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+
+    const imageFiles = Array.from(files).filter((file) => file.type.startsWith('image/'));
+    if (imageFiles.length === 0) {
+      toast.error('Selecione pelo menos uma imagem valida');
+      return;
+    }
+
+    const nextItems = imageFiles.map((file, index) => ({
+      id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
+      file,
+      preview_url: URL.createObjectURL(file),
+      status: 'staged' as const,
+    }));
+
+    setStagedMedia((current) => [...current, ...nextItems]);
+    toast.success(`${nextItems.length} imagem(ns) preparada(s) para envio`);
+
+    if (mediaInputRef.current) {
+      mediaInputRef.current.value = '';
+    }
+  };
+
+  const uploadQueuedMedia = async (targetSku: string, targetName: string, targetItems?: StagedMediaItem[]) => {
+    const itemsToUpload = (targetItems || stagedMediaRef.current).filter((item) => item.status === 'staged' || item.status === 'failed');
+    if (itemsToUpload.length === 0) return;
+
+    setMediaUploading(true);
+    setMediaProgress('');
+
+    try {
+      const persistedEntries = Array.isArray(getValues('media_gallery_entries')) ? getValues('media_gallery_entries') : [];
+
+      for (let index = 0; index < itemsToUpload.length; index++) {
+        const currentItem = itemsToUpload[index];
+        updateStagedMediaStatus(currentItem.id, { status: 'uploading', error: undefined });
+        setMediaProgress(`Enviando ${index + 1} de ${itemsToUpload.length}`);
+
+        try {
+          const webpFile = await convertImageToWebp(
+            currentItem.file,
+            targetName || productName,
+            targetSku,
+            persistedEntries.length + index,
+          );
+
+          const formData = new FormData();
+          formData.append('file', webpFile);
+
+          const res = await adminFetch(`${API}/admin/products/${targetSku}/upload-image`, {
+            method: 'POST',
+            body: formData,
+          });
+
+          if (!res.ok) {
+            const errorData = await res.json().catch(() => ({}));
+            throw new Error(errorData.error || `Falha no upload da imagem ${index + 1}`);
+          }
+
+          const data = await res.json();
+          if (data?.product) {
+            setValue('media_gallery_entries', data.product.media_gallery_entries || data.product.media_gallery || [], { shouldDirty: true });
+          }
+
+          updateStagedMediaStatus(currentItem.id, { status: 'uploaded' });
+        } catch (error: any) {
+          updateStagedMediaStatus(currentItem.id, { status: 'failed', error: error.message || 'Falha ao enviar imagem' });
+        }
+      }
+
+      let failedCount = 0;
+      setStagedMedia((current) => {
+        const failed = current.filter((item) => item.status === 'failed');
+        const uploaded = current.filter((item) => item.status === 'uploaded');
+        releaseStagedMedia(uploaded);
+        failedCount = failed.length;
+        return failed;
+      });
+
+      if (failedCount > 0) {
+        toast.error(`${failedCount} imagem(ns) falharam e ficaram pendentes para retry`);
+      } else {
+        toast.success(`${itemsToUpload.length} imagem(ns) enviada(s) com sucesso`);
+      }
+    } finally {
+      setMediaUploading(false);
+      setMediaProgress('');
+    }
+  };
+
   const onSubmit = async (data: any) => {
     try {
-      // Transform Form data back to API structure
-      const customAttributesArray = Object.entries(data.custom_attributes_map).map(([code, value]) => ({
-        attribute_code: code,
-        value: value
+      const customAttributeMap = new Map<string, any>();
+      Object.entries(data.custom_attributes_map || {}).forEach(([code, value]) => {
+        customAttributeMap.set(code, value);
+      });
+
+      (Array.isArray(data.additional_attributes) ? data.additional_attributes : []).forEach((attribute: AdditionalAttributeField) => {
+        const attributeCode = String(attribute?.attribute_code || '').trim();
+        if (!attributeCode) return;
+        if (!hasAttributeValue(attribute.value, attribute.type)) return;
+        customAttributeMap.set(attributeCode, serializeAdditionalAttributeValue(attribute.value, attribute.type));
+      });
+
+      const customAttributesArray = Array.from(customAttributeMap.entries()).map(([attribute_code, value]) => ({
+        attribute_code,
+        value,
       }));
 
       // Serialize Stock
@@ -364,6 +667,7 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
       // Remove temp fields
       delete payload.custom_attributes_map;
       delete payload.stock_data;
+      delete payload.additional_attributes;
 
       const endpoint = editorMode === 'create'
         ? `${API}/admin/products`
@@ -381,15 +685,20 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
       }
       
       const updated = await res.json();
+      const savedSku = updated.product.sku;
+      const savedName = updated.product.name || data.name || productName;
       if (editorMode === 'create') {
-        toast.success('Produto criado com sucesso. Agora voce ja pode enviar imagens.');
+        toast.success('Produto criado com sucesso');
         setEditorMode('edit');
-        setCurrentSku(updated.product.sku);
+        setCurrentSku(savedSku);
       } else {
         toast.success('Produto salvo com sucesso');
       }
+      if (stagedMediaRef.current.length > 0) {
+        await uploadQueuedMedia(savedSku, savedName);
+      }
       if (onSave) onSave(updated.product);
-      await loadData(updated.product.sku);
+      await loadData(savedSku);
 
     } catch (err: any) {
       toast.error(err.message);
@@ -397,60 +706,46 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
   };
 
   const handleProductImageUpload = async (files: FileList | null) => {
+    queueMediaFiles(files);
+  };
+
+  const addAttributeDefinition = (definition: AttributeDefinition) => {
+    appendAdditionalAttribute({
+      ...definition,
+      value: normalizeAdditionalAttributeValue('', definition.type),
+    });
+  };
+
+  const addCustomAttribute = () => {
+    const attributeCode = customAttributeCode.trim().toLowerCase().replace(/\s+/g, '_');
+    if (!attributeCode) {
+      toast.error('Informe um codigo para o atributo adicional');
+      return;
+    }
+    if (selectedAdditionalCodes.has(attributeCode) || (schema.fixedAttributeCodes || []).includes(attributeCode)) {
+      toast.error('Esse atributo ja esta no cadastro');
+      return;
+    }
+    appendAdditionalAttribute({
+      attribute_code: attributeCode,
+      label: humanizeAttributeCode(attributeCode),
+      group: 'Avancado',
+      type: customAttributeType,
+      placeholder: '',
+      visibility: 'advanced',
+      options: [],
+      value: normalizeAdditionalAttributeValue('', customAttributeType),
+    });
+    setCustomAttributeCode('');
+  };
+
+  const uploadPendingStagedMedia = async () => {
     if (!canUploadMedia || !currentSku) {
-      toast.error('Salve o produto primeiro para liberar o upload de imagens');
+      toast.error('Salve o produto primeiro para enviar as imagens pendentes');
       return;
     }
-    if (!files || files.length === 0) return;
-
-    const imageFiles = Array.from(files).filter((file) => file.type.startsWith('image/'));
-    if (imageFiles.length === 0) {
-      toast.error('Selecione pelo menos uma imagem valida');
-      return;
-    }
-
-    setMediaUploading(true);
-    setMediaProgress('');
-
-    try {
-      const existingEntries = Array.isArray(mediaEntries) ? mediaEntries : [];
-
-      for (let index = 0; index < imageFiles.length; index++) {
-        const current = imageFiles[index];
-        setMediaProgress(`Processando ${index + 1} de ${imageFiles.length}`);
-
-        const webpFile = await convertImageToWebp(current, productName, currentSku, existingEntries.length + index);
-        const formData = new FormData();
-        formData.append('file', webpFile);
-
-        const res = await adminFetch(`${API}/admin/products/${currentSku}/upload-image`, {
-          method: 'POST',
-          body: formData,
-        });
-
-        if (!res.ok) {
-          const errorData = await res.json().catch(() => ({}));
-          throw new Error(errorData.error || `Falha no upload da imagem ${index + 1}`);
-        }
-
-        const data = await res.json();
-        if (data?.product) {
-          setValue('media_gallery_entries', data.product.media_gallery_entries || data.product.media_gallery || [], { shouldDirty: true });
-        }
-      }
-
-      toast.success(`${imageFiles.length} imagem(ns) processada(s) em WebP`);
-      await loadData(currentSku);
-    } catch (err: any) {
-      console.error('[ProductEditor] upload-image error:', err);
-      toast.error(err.message || 'Erro ao enviar imagens');
-    } finally {
-      setMediaUploading(false);
-      setMediaProgress('');
-      if (mediaInputRef.current) {
-        mediaInputRef.current.value = '';
-      }
-    }
+    await uploadQueuedMedia(currentSku, productName);
+    await loadData(currentSku);
   };
 
   if (loading) return (
@@ -971,6 +1266,275 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
                {/* Seção M - Outros */}
                <Card.Root>
                  <Card.Content className="p-6">
+                   <FormSection title="K. Atributos adicionais">
+                     <div className="grid gap-4 xl:grid-cols-[minmax(0,1fr)_320px]">
+                       <div className="space-y-4">
+                         {additionalAttributeFields.length > 0 ? (
+                           additionalAttributeFields.map((field, index) => {
+                             const currentField = additionalAttributes[index] || field;
+                             const fieldType = (currentField?.type || 'text') as AttributeFieldType;
+                             const fieldOptions = Array.isArray(currentField?.options) ? currentField.options : [];
+
+                             return (
+                               <div key={field.id} className="space-y-3 rounded-xl border border-border bg-card p-4">
+                                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                                   <div>
+                                     <div className="flex flex-wrap items-center gap-2">
+                                       <p className="text-sm font-semibold text-foreground">{currentField?.label || humanizeAttributeCode(currentField?.attribute_code)}</p>
+                                       <Badge variant="secondary" className="text-[10px] uppercase">{currentField?.group || 'Avancado'}</Badge>
+                                       <Badge variant="outline" className="text-[10px] font-mono">{currentField?.attribute_code}</Badge>
+                                     </div>
+                                     {currentField?.placeholder && (
+                                       <p className="mt-1 text-xs text-muted-foreground">{currentField.placeholder}</p>
+                                     )}
+                                   </div>
+                                   <Button
+                                     type="button"
+                                     size="sm"
+                                     variant="outline"
+                                     iconLeading={<Trash2 className="w-4 h-4" />}
+                                     onClick={() => removeAdditionalAttribute(index)}
+                                   >
+                                     Remover
+                                   </Button>
+                                 </div>
+
+                                 <div className="grid gap-3 md:grid-cols-[180px_minmax(0,1fr)]">
+                                   <FormField label="Tipo">
+                                     <Controller
+                                       name={`additional_attributes.${index}.type` as const}
+                                       control={control}
+                                       render={({ field: typeField }) => (
+                                         <select
+                                           className="w-full h-10 rounded-lg border border-border bg-card px-3 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+                                           value={typeField.value}
+                                           onChange={(event) => {
+                                             const nextType = event.target.value as AttributeFieldType;
+                                             typeField.onChange(nextType);
+                                             setValue(`additional_attributes.${index}.value`, normalizeAdditionalAttributeValue(currentField?.value, nextType), { shouldDirty: true });
+                                           }}
+                                         >
+                                           <option value="text">Texto</option>
+                                           <option value="number">Numero</option>
+                                           <option value="boolean">Booleano</option>
+                                           <option value="textarea">Textarea</option>
+                                           <option value="select">Select</option>
+                                           <option value="multiselect">Multiselect</option>
+                                         </select>
+                                       )}
+                                     />
+                                   </FormField>
+
+                                   <FormField label="Valor">
+                                     {fieldType === 'textarea' && (
+                                       <Controller
+                                         name={`additional_attributes.${index}.value` as const}
+                                         control={control}
+                                         render={({ field: valueField }) => (
+                                           <textarea
+                                             className="min-h-[96px] w-full rounded-lg border border-border bg-input-background p-3 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+                                             value={valueField.value || ''}
+                                             onChange={(event) => valueField.onChange(event.target.value)}
+                                             placeholder={currentField?.placeholder || 'Informe o valor'}
+                                           />
+                                         )}
+                                       />
+                                     )}
+
+                                     {fieldType === 'boolean' && (
+                                       <Controller
+                                         name={`additional_attributes.${index}.value` as const}
+                                         control={control}
+                                         render={({ field: valueField }) => (
+                                           <Toggle
+                                             label="Ativo"
+                                             value={valueField.value === true || valueField.value === '1' || valueField.value === 1}
+                                             onChange={(value: boolean) => valueField.onChange(value)}
+                                           />
+                                         )}
+                                       />
+                                     )}
+
+                                     {fieldType === 'number' && (
+                                       <Controller
+                                         name={`additional_attributes.${index}.value` as const}
+                                         control={control}
+                                         render={({ field: valueField }) => (
+                                           <Input
+                                             type="number"
+                                             value={valueField.value ?? ''}
+                                             onChange={(event) => valueField.onChange(event.target.value)}
+                                             placeholder={currentField?.placeholder || 'Informe um numero'}
+                                           />
+                                         )}
+                                       />
+                                     )}
+
+                                     {fieldType === 'select' && (
+                                       <Controller
+                                         name={`additional_attributes.${index}.value` as const}
+                                         control={control}
+                                         render={({ field: valueField }) => (
+                                           fieldOptions.length > 0 ? (
+                                             <select
+                                               className="w-full h-10 rounded-lg border border-border bg-card px-3 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+                                               value={valueField.value ?? ''}
+                                               onChange={(event) => valueField.onChange(event.target.value)}
+                                             >
+                                               <option value="">Selecione</option>
+                                               {fieldOptions.map((option: AttributeDefinitionOption) => (
+                                                 <option key={`${field.id}-${option.value}`} value={option.value}>{option.label}</option>
+                                               ))}
+                                             </select>
+                                           ) : (
+                                             <Input
+                                               value={valueField.value ?? ''}
+                                               onChange={(event) => valueField.onChange(event.target.value)}
+                                               placeholder={currentField?.placeholder || 'Informe o valor'}
+                                             />
+                                           )
+                                         )}
+                                       />
+                                     )}
+
+                                     {fieldType === 'multiselect' && (
+                                       <Controller
+                                         name={`additional_attributes.${index}.value` as const}
+                                         control={control}
+                                         render={({ field: valueField }) => (
+                                           fieldOptions.length > 0 ? (
+                                             <div className="grid gap-2 rounded-lg border border-border bg-secondary/10 p-3 sm:grid-cols-2">
+                                               {fieldOptions.map((option: AttributeDefinitionOption) => {
+                                                 const currentValue = Array.isArray(valueField.value) ? valueField.value : [];
+                                                 const checked = currentValue.includes(option.value);
+                                                 return (
+                                                   <label key={`${field.id}-${option.value}`} className="flex items-center gap-2 text-sm text-foreground/80">
+                                                     <input
+                                                       type="checkbox"
+                                                       checked={checked}
+                                                       onChange={(event) => {
+                                                         const nextValue = event.target.checked
+                                                           ? [...currentValue, option.value]
+                                                           : currentValue.filter((item: string) => item !== option.value);
+                                                         valueField.onChange(nextValue);
+                                                       }}
+                                                     />
+                                                     {option.label}
+                                                   </label>
+                                                 );
+                                               })}
+                                             </div>
+                                           ) : (
+                                             <Input
+                                               value={Array.isArray(valueField.value) ? valueField.value.join(', ') : valueField.value || ''}
+                                               onChange={(event) => valueField.onChange(event.target.value.split(',').map((item) => item.trim()).filter(Boolean))}
+                                               placeholder={currentField?.placeholder || 'Separe os valores por virgula'}
+                                             />
+                                           )
+                                         )}
+                                       />
+                                     )}
+
+                                     {fieldType === 'text' && (
+                                       <Controller
+                                         name={`additional_attributes.${index}.value` as const}
+                                         control={control}
+                                         render={({ field: valueField }) => (
+                                           <Input
+                                             value={valueField.value ?? ''}
+                                             onChange={(event) => valueField.onChange(event.target.value)}
+                                             placeholder={currentField?.placeholder || 'Informe o valor'}
+                                           />
+                                         )}
+                                       />
+                                     )}
+                                   </FormField>
+                                 </div>
+                               </div>
+                             );
+                           })
+                         ) : (
+                           <div className="rounded-xl border border-dashed border-border bg-secondary/10 p-5 text-sm text-muted-foreground">
+                             Nenhum atributo adicional selecionado. Adicione campos dinamicos ao lado para completar o cadastro sem perder a estrutura principal.
+                           </div>
+                         )}
+                       </div>
+
+                       <div className="space-y-4">
+                         <div className="space-y-3 rounded-xl border border-border bg-secondary/10 p-4">
+                           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Adicionar do catalogo</p>
+                           <div className="relative">
+                             <Search className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
+                             <Input
+                               value={attributeSearch}
+                               onChange={(event) => setAttributeSearch(event.target.value)}
+                               placeholder="Buscar atributo"
+                               className="pl-9"
+                             />
+                           </div>
+                           <div className="max-h-[260px] space-y-2 overflow-y-auto pr-1">
+                             {availableAttributeDefinitions.length > 0 ? (
+                               availableAttributeDefinitions.map((definition) => (
+                                 <button
+                                   key={definition.attribute_code}
+                                   type="button"
+                                   className="w-full rounded-lg border border-border bg-card px-3 py-2 text-left transition-colors hover:border-primary/40 hover:bg-primary/5"
+                                   onClick={() => addAttributeDefinition(definition)}
+                                 >
+                                   <div className="flex items-center justify-between gap-3">
+                                     <div>
+                                       <p className="text-sm font-medium text-foreground">{definition.label}</p>
+                                       <p className="text-xs font-mono text-muted-foreground">{definition.attribute_code}</p>
+                                     </div>
+                                     <Badge variant="secondary" className="text-[10px] uppercase">{definition.group}</Badge>
+                                   </div>
+                                 </button>
+                               ))
+                             ) : (
+                               <div className="rounded-lg border border-dashed border-border p-3 text-xs text-muted-foreground">
+                                 Nenhum atributo disponivel com esse filtro.
+                               </div>
+                             )}
+                           </div>
+                         </div>
+
+                         <div className="space-y-3 rounded-xl border border-border bg-secondary/10 p-4">
+                           <p className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">Criar atributo customizado</p>
+                           <FormField label="Codigo do atributo">
+                             <Input
+                               value={customAttributeCode}
+                               onChange={(event) => setCustomAttributeCode(event.target.value)}
+                               placeholder="ex.: referencia_fornecedor"
+                               className="font-mono"
+                             />
+                           </FormField>
+                           <FormField label="Tipo">
+                             <select
+                               className="w-full h-10 rounded-lg border border-border bg-card px-3 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+                               value={customAttributeType}
+                               onChange={(event) => setCustomAttributeType(event.target.value as AttributeFieldType)}
+                             >
+                               <option value="text">Texto</option>
+                               <option value="number">Numero</option>
+                               <option value="boolean">Booleano</option>
+                               <option value="textarea">Textarea</option>
+                               <option value="select">Select</option>
+                               <option value="multiselect">Multiselect</option>
+                             </select>
+                           </FormField>
+                           <Button type="button" iconLeading={<Plus className="w-4 h-4" />} onClick={addCustomAttribute}>
+                             Adicionar atributo customizado
+                           </Button>
+                         </div>
+                       </div>
+                     </div>
+                   </FormSection>
+                 </Card.Content>
+               </Card.Root>
+
+               {/* SeÃ§Ã£o K - Atributos adicionais */}
+               <Card.Root>
+                 <Card.Content className="p-6">
                    <FormSection title="M. Embalagem e Origem">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                         <FormField label="Tipo Embalagem">
@@ -1026,7 +1590,7 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
 
                        <div className="mt-8 pt-8 border-t border-border">
                          <h4 className="text-sm font-medium mb-4">Galeria (Media Gallery Entries)</h4>
-                         <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+                         <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 xl:grid-cols-4">
                             {mediaEntries.map((entry: any, idx: number) => (
                                <div key={idx} className="relative group aspect-square bg-secondary rounded-lg border border-border overflow-hidden">
                                   <img 
@@ -1045,21 +1609,48 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
                                   </div>
                                </div>
                             ))}
+
+                            {stagedMedia.map((item, idx) => (
+                              <div key={item.id} className="relative aspect-square overflow-hidden rounded-lg border border-dashed border-primary/40 bg-primary/5">
+                                <img
+                                  src={item.preview_url}
+                                  alt={item.file.name || `Preview ${idx + 1}`}
+                                  className="h-full w-full object-cover"
+                                />
+                                <div className="absolute inset-x-0 bottom-0 space-y-2 bg-gradient-to-t from-black/80 to-transparent p-3 text-white">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <Badge variant="secondary" className="text-[10px] uppercase">
+                                      {item.status === 'staged' && 'Staged'}
+                                      {item.status === 'uploading' && 'Enviando'}
+                                      {item.status === 'uploaded' && 'Enviado'}
+                                      {item.status === 'failed' && 'Falhou'}
+                                    </Badge>
+                                    <button
+                                      type="button"
+                                      className="rounded-full bg-black/40 p-1 transition-colors hover:bg-black/60"
+                                      onClick={() => removeStagedMediaItem(item.id)}
+                                      disabled={item.status === 'uploading'}
+                                    >
+                                      <Trash2 className="h-3.5 w-3.5" />
+                                    </button>
+                                  </div>
+                                  <p className="truncate text-[11px] font-medium">{item.file.name}</p>
+                                  {item.error && (
+                                    <p className="line-clamp-2 text-[10px] text-amber-200">{item.error}</p>
+                                  )}
+                                </div>
+                              </div>
+                            ))}
+
                             <button
                               type="button"
-                              onClick={() => {
-                                if (!canUploadMedia) {
-                                  toast.error('Salve o produto primeiro para liberar o upload de imagens');
-                                  return;
-                                }
-                                mediaInputRef.current?.click();
-                              }}
-                              disabled={mediaUploading || !canUploadMedia}
+                              onClick={() => mediaInputRef.current?.click()}
+                              disabled={mediaUploading}
                               className="aspect-square rounded-lg border-2 border-dashed border-border flex flex-col items-center justify-center text-muted-foreground hover:text-primary hover:border-primary transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                             >
                                <Plus className="w-8 h-8" />
                                <span className="text-xs font-medium mt-2">
-                                 {mediaUploading ? 'Convertendo...' : (canUploadMedia ? 'Adicionar' : 'Salve primeiro')}
+                                 {mediaUploading ? 'Processando...' : 'Selecionar imagens'}
                                </span>
                             </button>
                          </div>
@@ -1078,9 +1669,34 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
                            <p className="text-sm text-muted-foreground leading-relaxed">
                              As imagens selecionadas sao convertidas para WebP e renomeadas automaticamente com o nome do produto e o SKU antes do envio.
                            </p>
+                           <div className="flex flex-wrap gap-2">
+                             <Button type="button" variant="outline" onClick={() => mediaInputRef.current?.click()} disabled={mediaUploading}>
+                               Selecionar imagens
+                             </Button>
+                             <Button
+                               type="button"
+                               onClick={uploadPendingStagedMedia}
+                               disabled={!canUploadMedia || mediaUploading || stagedMedia.length === 0}
+                             >
+                               Enviar pendentes
+                             </Button>
+                             <Button
+                               type="button"
+                               variant="outline"
+                               onClick={clearStagedMedia}
+                               disabled={mediaUploading || stagedMedia.length === 0}
+                             >
+                               Limpar fila
+                             </Button>
+                           </div>
                            {!canUploadMedia && (
                              <p className="text-xs font-medium text-amber-600">
-                               Salve o produto uma vez para liberar upload, galeria e imagem principal.
+                               Voce pode selecionar as fotos agora. Depois do primeiro save, o sistema envia a fila automaticamente e libera retries.
+                             </p>
+                           )}
+                           {stagedMedia.length > 0 && (
+                             <p className="text-xs font-medium text-foreground">
+                               {stagedMedia.length} arquivo(s) preparado(s) para envio.
                              </p>
                            )}
                            {mediaProgress && (

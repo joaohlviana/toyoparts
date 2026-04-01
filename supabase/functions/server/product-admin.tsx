@@ -2,6 +2,7 @@ import { Hono } from 'npm:hono';
 import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
 import * as kv from './kv_store.tsx';
 import * as meili from './meilisearch.tsx';
+import { fetchMagento } from './magento.tsx';
 
 const OPENAI_API_KEY = (Deno.env.get('OPENAI_API_KEY') || '').trim();
 const PRODUCT_PREFIX = 'product:';
@@ -9,6 +10,7 @@ const HISTORY_PREFIX = 'history:';
 const BUCKET_NAME = 'make-1d6e33e0-products';
 const MAGENTO_TOKEN = (Deno.env.get('MAGENTO_TOKEN') || '').trim();
 const MAGENTO_BASE_URL = 'https://www.toyoparts.com.br';
+const CANONICAL_RECORD_VERSION = 2;
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -101,6 +103,256 @@ function normalizeMediaEntries(entries: any): any[] {
     }));
 }
 
+function normalizeCategoryTreePayload(raw: any): any[] {
+  const normalizeNode = (node: any): any | null => {
+    if (!node || typeof node !== 'object') return null;
+    const childrenSource = Array.isArray(node.children_data)
+      ? node.children_data
+      : Array.isArray(node.children)
+        ? node.children
+        : [];
+
+    return {
+      id: node.id,
+      name: String(node.name || '').trim(),
+      level: Number(node.level ?? 0) || 0,
+      is_active: node.is_active !== false,
+      children_data: childrenSource
+        .map((child: any) => normalizeNode(child))
+        .filter(Boolean),
+    };
+  };
+
+  const normalized = (Array.isArray(raw) ? raw : raw ? [raw] : [])
+    .map((node) => normalizeNode(node))
+    .filter(Boolean);
+
+  if (
+    normalized.length === 1 &&
+    Array.isArray(normalized[0]?.children_data) &&
+    normalized[0].children_data.length > 0 &&
+    (normalized[0].level <= 2 || ['root', 'default category', 'toyoparts'].includes(String(normalized[0].name || '').trim().toLowerCase()))
+  ) {
+    return normalized[0].children_data;
+  }
+
+  return normalized;
+}
+
+async function loadCategoryTree() {
+  let tree = await kv.get('meta:category_tree');
+
+  if (!tree || (Array.isArray(tree) && tree.length === 0)) {
+    console.log('Category tree cache miss, fetching from Magento...');
+    tree = await fetchMagentoCategories();
+    if (tree && (Array.isArray(tree) ? tree.length > 0 : true)) {
+      await kv.set('meta:category_tree', tree);
+    }
+  }
+
+  const normalized = normalizeCategoryTreePayload(tree);
+  return normalized.length > 0 ? normalized : normalizeCategoryTreePayload(fallbackCategories);
+}
+
+const FIXED_CUSTOM_ATTRIBUTE_CODES = [
+  'category_ids',
+  'description',
+  'short_description',
+  'url_key',
+  'meta_title',
+  'meta_keyword',
+  'meta_description',
+  'special_price',
+  'cost',
+  'volume_length',
+  'volume_width',
+  'volume_height',
+  'lead_time',
+  'fragile',
+  'frete_gratis',
+  'ordena_busca',
+  'modelo',
+  'ano',
+  'versao',
+  'compatibilidade',
+  'integra_anymarket',
+  'marca_anymarket',
+  'garantia_meses_any',
+  'garantia_texto_anymarket',
+  'ts_packaging_type',
+  'ts_country_of_origin',
+  'image',
+  'small_image',
+  'thumbnail',
+  'swatch_image',
+  'image_label',
+  'small_image_label',
+  'thumbnail_label',
+];
+
+const ATTRIBUTE_DEFINITIONS = [
+  {
+    attribute_code: 'ean',
+    label: 'EAN / GTIN',
+    group: 'Catalogo',
+    type: 'text',
+    placeholder: 'Codigo de barras do produto',
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'ncm',
+    label: 'NCM',
+    group: 'Catalogo',
+    type: 'text',
+    placeholder: 'Classificacao fiscal',
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'cest',
+    label: 'CEST',
+    group: 'Catalogo',
+    type: 'text',
+    placeholder: 'Codigo CEST',
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'manufacturer',
+    label: 'Fabricante',
+    group: 'Catalogo',
+    type: 'text',
+    placeholder: 'Ex.: Toyota',
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'brand',
+    label: 'Marca',
+    group: 'Catalogo',
+    type: 'text',
+    placeholder: 'Marca exibida no site',
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'oem_reference',
+    label: 'Referencia OEM',
+    group: 'Automotivo',
+    type: 'text',
+    placeholder: 'Codigo OEM adicional',
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'reference_code',
+    label: 'Codigo de Referencia',
+    group: 'Automotivo',
+    type: 'text',
+    placeholder: 'Referencia cruzada',
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'application_notes',
+    label: 'Notas de Aplicacao',
+    group: 'Automotivo',
+    type: 'textarea',
+    placeholder: 'Detalhes extras de aplicacao',
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'material',
+    label: 'Material',
+    group: 'Catalogo',
+    type: 'text',
+    placeholder: 'Ex.: Aco, plastico, borracha',
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'position',
+    label: 'Posicao',
+    group: 'Automotivo',
+    type: 'select',
+    options: [
+      { label: 'Dianteira', value: 'dianteira' },
+      { label: 'Traseira', value: 'traseira' },
+      { label: 'Superior', value: 'superior' },
+      { label: 'Inferior', value: 'inferior' },
+      { label: 'Interna', value: 'interna' },
+      { label: 'Externa', value: 'externa' },
+    ],
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'side',
+    label: 'Lado',
+    group: 'Automotivo',
+    type: 'select',
+    options: [
+      { label: 'Esquerdo', value: 'esquerdo' },
+      { label: 'Direito', value: 'direito' },
+      { label: 'Par', value: 'par' },
+      { label: 'Central', value: 'central' },
+    ],
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'unit',
+    label: 'Unidade de Venda',
+    group: 'Catalogo',
+    type: 'select',
+    options: [
+      { label: 'Unidade', value: 'unidade' },
+      { label: 'Par', value: 'par' },
+      { label: 'Kit', value: 'kit' },
+      { label: 'Jogo', value: 'jogo' },
+    ],
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'warranty_text',
+    label: 'Garantia',
+    group: 'Comercial',
+    type: 'textarea',
+    placeholder: 'Texto livre de garantia',
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'warranty_months',
+    label: 'Garantia (Meses)',
+    group: 'Comercial',
+    type: 'number',
+    placeholder: 'Ex.: 12',
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'requires_chassis_check',
+    label: 'Exige Chassi',
+    group: 'Automotivo',
+    type: 'boolean',
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'universal_fit',
+    label: 'Aplicacao Universal',
+    group: 'Automotivo',
+    type: 'boolean',
+    visibility: 'optional',
+  },
+  {
+    attribute_code: 'search_keywords',
+    label: 'Palavras-chave Extras',
+    group: 'SEO',
+    type: 'multiselect',
+    options: [],
+    placeholder: 'Informe uma lista separada por virgula',
+    visibility: 'advanced',
+  },
+];
+
+function buildEditorSchema(categoryTree: any[]) {
+  return {
+    categoryTree,
+    fixedAttributeCodes: FIXED_CUSTOM_ATTRIBUTE_CODES,
+    attributeDefinitions: ATTRIBUTE_DEFINITIONS,
+  };
+}
+
 function flattenCategoryTree(nodes: any[], map = new Map<string, string>()) {
   for (const node of Array.isArray(nodes) ? nodes : []) {
     if (!node) continue;
@@ -118,8 +370,8 @@ function flattenCategoryTree(nodes: any[], map = new Map<string, string>()) {
 }
 
 async function getCategoryNameMap() {
-  const tree = await kv.get('meta:category_tree');
-  return flattenCategoryTree(Array.isArray(tree) && tree.length > 0 ? tree : fallbackCategories);
+  const tree = await loadCategoryTree();
+  return flattenCategoryTree(tree);
 }
 
 function resolveImageUrl(file: string | null | undefined) {
@@ -139,12 +391,57 @@ function inferImageUrl(product: any, customMap: Record<string, any>) {
   return resolveImageUrl(customMap.image) || resolveImageUrl(product.image_url) || null;
 }
 
+function buildFallbackCustomAttributes(product: any): any[] {
+  const values = new Map<string, any>();
+  const setIfPresent = (attributeCode: string, value: any) => {
+    if (value == null) return;
+    if (Array.isArray(value) && value.length === 0) return;
+    if (value === '') return;
+    values.set(attributeCode, Array.isArray(value) ? value.join(',') : value);
+  };
+
+  setIfPresent('category_ids', normalizeCsvValues(product.category_ids));
+  setIfPresent('description', product.description);
+  setIfPresent('short_description', product.short_description);
+  setIfPresent('special_price', product.special_price);
+  setIfPresent('modelo', normalizeCsvValues(product.modelos));
+  setIfPresent('ano', normalizeCsvValues(product.anos));
+  setIfPresent('url_key', product.url_key);
+  setIfPresent('meta_title', product.meta_title);
+  setIfPresent('meta_keyword', product.meta_keyword);
+  setIfPresent('meta_description', product.meta_description);
+  setIfPresent('cost', product.cost);
+  setIfPresent('volume_length', product.volume_length);
+  setIfPresent('volume_width', product.volume_width);
+  setIfPresent('volume_height', product.volume_height);
+  setIfPresent('lead_time', product.lead_time);
+  setIfPresent('fragile', product.fragile);
+  setIfPresent('frete_gratis', product.frete_gratis);
+  setIfPresent('compatibilidade', product.compatibilidade);
+
+  return Array.from(values.entries()).map(([attribute_code, value]) => ({
+    attribute_code,
+    value,
+  }));
+}
+
+function isCanonicalProductRecord(product: any) {
+  if (!product || typeof product !== 'object') return false;
+  if (product._record_shape === 'canonical' && Number(product._record_version) >= CANONICAL_RECORD_VERSION) {
+    return true;
+  }
+  return Array.isArray(product.custom_attributes) && 'extension_attributes' in product;
+}
+
 async function normalizeProductRecord(input: any, existing: any = {}) {
   const merged = {
     ...existing,
     ...input,
   };
-  const custom_attributes = normalizeCustomAttributes(merged.custom_attributes);
+  const rawCustomAttributes = Array.isArray(merged.custom_attributes) && merged.custom_attributes.length > 0
+    ? merged.custom_attributes
+    : buildFallbackCustomAttributes(merged);
+  const custom_attributes = normalizeCustomAttributes(rawCustomAttributes);
   const customMap = customAttributesToMap(custom_attributes);
   const extension_attributes = {
     ...(existing.extension_attributes || {}),
@@ -187,6 +484,8 @@ async function normalizeProductRecord(input: any, existing: any = {}) {
     image_url,
     has_image: !!image_url,
     has_promotion: Number.isFinite(specialPrice as number) && Number(specialPrice) > 0,
+    _record_shape: 'canonical',
+    _record_version: CANONICAL_RECORD_VERSION,
     created_at: existing.created_at || merged.created_at || now,
     updated_at: now,
   };
@@ -195,6 +494,38 @@ async function normalizeProductRecord(input: any, existing: any = {}) {
   delete normalized.stock_data;
 
   return normalized;
+}
+
+async function fetchMagentoProductBySku(sku: string) {
+  try {
+    return await fetchMagento(`/V1/products/${encodeURIComponent(sku)}`);
+  } catch (error) {
+    console.warn(`[ProductAdmin] Magento read fallback failed for ${sku}:`, error);
+    return null;
+  }
+}
+
+async function getCanonicalProductDetail(sku: string) {
+  const normalizedSku = normalizeSku(sku);
+  if (!normalizedSku) return null;
+
+  const stored = await getProduct(normalizedSku);
+  if (stored && isCanonicalProductRecord(stored)) {
+    return stored;
+  }
+
+  const magentoProduct = await fetchMagentoProductBySku(normalizedSku);
+  if (magentoProduct) {
+    const canonical = await normalizeProductRecord(magentoProduct, stored || {});
+    await kv.set(`${PRODUCT_PREFIX}${normalizedSku}`, canonical);
+    return canonical;
+  }
+
+  if (!stored) return null;
+
+  const fallbackCanonical = await normalizeProductRecord(stored, stored);
+  await kv.set(`${PRODUCT_PREFIX}${normalizedSku}`, fallbackCanonical);
+  return fallbackCanonical;
 }
 
 async function syncProductIndex(product: any) {
@@ -341,7 +672,7 @@ async function getUniqueMetadata(field: string) {
 async function fetchMagentoCategories() {
   if (!MAGENTO_TOKEN) {
     console.warn('⚠️ MAGENTO_TOKEN missing, cannot fetch categories');
-    return [];
+    return normalizeCategoryTreePayload(fallbackCategories);
   }
 
   try {
@@ -364,18 +695,11 @@ async function fetchMagentoCategories() {
         : []
     });
 
-    // Often ID 1 is Root, ID 2 is Default Category (actual root for store)
-    // We usually want the children of Default Category
     const tree = transform(root);
-    
-    // If root has only one child "Default Category", verify if we should return that instead
-    // Usually for end users we want the store categories.
-    // Let's return the full tree structure for now, filtering inactive.
-    
-    return [tree];
+    return normalizeCategoryTreePayload(tree);
   } catch (error) {
     console.error('Failed to fetch Magento categories:', error);
-    return fallbackCategories;
+    return normalizeCategoryTreePayload(fallbackCategories);
   }
 }
 
@@ -550,25 +874,13 @@ productAdmin.get('/metadata/:field', async (c) => {
 
 // Get category tree
 productAdmin.get('/metadata/structure/tree', async (c) => {
-  let tree = await kv.get('meta:category_tree');
-  
-  if (!tree || (Array.isArray(tree) && tree.length === 0)) {
-    console.log('Category tree cache miss, fetching from Magento...');
-    tree = await fetchMagentoCategories();
-    
-    // Cache it for 1 hour
-    if (tree && tree.length > 0) {
-      await kv.set('meta:category_tree', tree);
-    }
-  }
-
-  // Double check if we still have nothing, use fallback
-  if (!tree || (Array.isArray(tree) && tree.length === 0)) {
-     console.warn('Returning fallback categories due to empty source');
-     tree = fallbackCategories;
-  }
-  
+  const tree = await loadCategoryTree();
   return c.json(tree || []);
+});
+
+productAdmin.get('/schema', async (c) => {
+  const categoryTree = await loadCategoryTree();
+  return c.json(buildEditorSchema(categoryTree));
 });
 
 // Create product
@@ -610,10 +922,17 @@ productAdmin.post('/', async (c) => {
   return c.json({ success: true, product: createdProduct }, 201);
 });
 
-// Get full product data (including raw)
+productAdmin.get('/:sku/detail', async (c) => {
+  const sku = c.req.param('sku');
+  const product = await getCanonicalProductDetail(sku);
+  if (!product) return c.json({ error: 'Product not found' }, 404);
+  return c.json(product);
+});
+
+// Get full product data (canonical)
 productAdmin.get('/:sku', async (c) => {
   const sku = c.req.param('sku');
-  const product = await getProduct(sku);
+  const product = await getCanonicalProductDetail(sku);
   if (!product) return c.json({ error: 'Product not found' }, 404);
   return c.json(product);
 });
@@ -622,7 +941,7 @@ productAdmin.get('/:sku', async (c) => {
 productAdmin.patch('/:sku', async (c) => {
   const sku = c.req.param('sku');
   const updates = await c.req.json();
-  const existing = await getProduct(sku);
+  const existing = await getCanonicalProductDetail(sku);
   
   if (!existing) return c.json({ error: 'Product not found' }, 404);
 
@@ -657,7 +976,7 @@ productAdmin.get('/:sku/history', async (c) => {
 // Upload product image
 productAdmin.post('/:sku/upload-image', async (c) => {
   const sku = c.req.param('sku');
-  const existing = await getProduct(sku);
+  const existing = await getCanonicalProductDetail(sku);
   if (!existing) return c.json({ error: 'Product not found' }, 404);
 
   try {

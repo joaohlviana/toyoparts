@@ -95,7 +95,7 @@ export function MagentoCustomersPage() {
       }
 
       const data = await res.json();
-      const fullLink = `${window.location.origin}${data.access_url_suffix}`;
+      const fullLink = data.access_url || data.access_url_suffix || '';
       setGeneratedLink(fullLink);
       toast.success('Link de acesso gerado com sucesso!');
     } catch (e: any) {

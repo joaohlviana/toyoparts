@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { useSearchParams, useNavigate } from 'react-router';
+import { useSearchParams } from 'react-router';
 import { motion } from 'motion/react';
 import { 
   ArrowRight, 
@@ -18,8 +18,12 @@ import { toast } from 'sonner';
 import { supabase } from '../../../lib/supabase';
 import { projectId, publicAnonKey } from '../../../../utils/supabase/info';
 import { ImageWithFallback } from '../../components/figma/ImageWithFallback';
+import {
+  CUSTOMER_AUTH_CALLBACK_URL,
+} from '../../lib/customer-auth';
 
 const LOGIN_SIDE_IMAGE = 'https://images.unsplash.com/photo-1631377875146-b10de5d7acb7?crop=entropy&cs=tinysrgb&fit=max&fm=jpg&ixid=M3w3Nzg4Nzd8MHwxfHNlYXJjaHwxfHx0b3lvdGElMjBoaWx1eCUyMGFkdmVudHVyZSUyMGxpZmVzdHlsZXxlbnwxfHx8fDE3NzE2NDE2NTl8MA&ixlib=rb-4.1.0&q=80&w=1080';
+const API_BASE = `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0`;
 
 export function MagicLoginPage() {
   const [searchParams] = useSearchParams();
@@ -41,7 +45,7 @@ export function MagicLoginPage() {
   const resolveToken = async (t: string) => {
     setStep('resolving');
     try {
-      const res = await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0/access-links/resolve`, {
+      const res = await fetch(`${API_BASE}/access-links/resolve`, {
         method: 'POST',
         body: JSON.stringify({ token: t }),
         headers: { 
@@ -72,36 +76,35 @@ export function MagicLoginPage() {
 
     setLoading(true);
     try {
-      // Tenta enviar via Resend (template customizado) se configurado
-      let sentViaResend = false;
-      try {
-        const resendRes = await fetch(
-          `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0/resend/magic-link`,
-          {
-            method: 'POST',
-            headers: { 
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${publicAnonKey}`,
-            },
-            body: JSON.stringify({ email: targetEmail }),
-          }
-        );
-        if (resendRes.ok) {
-          sentViaResend = true;
-        }
-      } catch {
-        // Silencioso — fallback para Supabase nativo
-      }
+      const resendRes = await fetch(`${API_BASE}/resend/magic-link`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${publicAnonKey}`,
+        },
+        body: JSON.stringify({ email: targetEmail }),
+      });
 
-      // Fallback: Supabase nativo signInWithOtp
-      if (!sentViaResend) {
+      if (!resendRes.ok) {
+        const resendData = await resendRes.json().catch(() => ({}));
+        const resendMessage =
+          resendData.error || 'Nao foi possivel enviar seu link de acesso agora.';
+
         const { error } = await supabase.auth.signInWithOtp({
           email: targetEmail,
           options: {
-            emailRedirectTo: `${window.location.origin}/auth/callback`
+            emailRedirectTo: CUSTOMER_AUTH_CALLBACK_URL,
+            shouldCreateUser: false,
           }
         });
-        if (error) throw error;
+        if (error) {
+          throw new Error(`${resendMessage} ${error.message}`.trim());
+        }
+      } else {
+        const resendData = await resendRes.json().catch(() => ({}));
+        if (!resendData?.ok) {
+          throw new Error('Nao foi possivel confirmar o envio do magic link.');
+        }
       }
       
       setStep('sent');

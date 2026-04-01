@@ -1,6 +1,7 @@
 import { Hono } from 'npm:hono';
 import * as kv from './kv_store.tsx';
 import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
+import { buildCustomerAccessUrl } from './customer-links.tsx';
 
 export const accessLinks = new Hono();
 
@@ -149,11 +150,13 @@ accessLinks.post('/generate', requireAdmin, async (c) => {
     // Store in KV
     await kv.set(key, payload);
 
-    // Return the token (frontend constructs the URL)
+    const accessUrl = buildCustomerAccessUrl(token);
+
     return c.json({ 
       token, 
       expires_at: expiresAt.toISOString(),
-      access_url_suffix: `/acesso?token=${token}`
+      access_url_suffix: `/acesso?token=${token}`,
+      access_url: accessUrl,
     });
 
   } catch (e: any) {

@@ -148,6 +148,71 @@ function buildEditorMediaEntries(product: any, customMap: Record<string, any>) {
   return entries;
 }
 
+function createEmptyProductForm() {
+  return {
+    id: '',
+    sku: '',
+    name: '',
+    type_id: 'simple',
+    attribute_set_id: 4,
+    created_at: '',
+    updated_at: '',
+    status: 1,
+    visibility: 4,
+    price: 0,
+    weight: '',
+    custom_attributes_map: {
+      category_ids: '',
+      fragile: '0',
+      frete_gratis: '0',
+      integra_anymarket: '0',
+    } as Record<string, any>,
+    stock_data: {
+      is_in_stock: 1,
+      manage_stock: 1,
+      qty: 0,
+      min_sale_qty: 1,
+      max_sale_qty: 1000,
+      notify_stock_qty: 0,
+    } as any,
+    extension_attributes: {} as any,
+    media_gallery_entries: [] as any[],
+  };
+}
+
+function buildFormValues(product: any) {
+  const defaults = createEmptyProductForm();
+  const customMap: Record<string, any> = {};
+  (product?.custom_attributes || []).forEach((attr: any) => {
+    customMap[attr.attribute_code] = attr.value;
+  });
+
+  let stockData = defaults.stock_data;
+  try {
+    if (product?.extension_attributes?.stock) {
+      stockData = typeof product.extension_attributes.stock === 'string'
+        ? JSON.parse(product.extension_attributes.stock)
+        : product.extension_attributes.stock;
+    }
+  } catch (e) {
+    console.error('Stock parse error', e);
+  }
+
+  return {
+    ...defaults,
+    ...product,
+    custom_attributes_map: {
+      ...defaults.custom_attributes_map,
+      ...customMap,
+    },
+    stock_data: {
+      ...defaults.stock_data,
+      ...(stockData || {}),
+    },
+    media_gallery_entries: buildEditorMediaEntries(product, customMap),
+  };
+}
+
 async function convertImageToWebp(file: File, productName: string, sku: string, index: number): Promise<File> {
   const objectUrl = URL.createObjectURL(file);
 
@@ -195,61 +260,55 @@ async function convertImageToWebp(file: File, productName: string, sku: string, 
 // --- Main Component ---
 
 interface ProductEditorProps {
-  sku: string;
+  sku?: string;
+  mode?: 'create' | 'edit';
   onClose: () => void;
   onSave?: (product: any) => void;
 }
 
-export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
+export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEditorProps) {
+  const initialMode = mode === 'create' || !sku ? 'create' : 'edit';
   const [loading, setLoading] = useState(true);
   const [activeTab, setActiveTab] = useState('principal');
   const [metadata, setMetadata] = useState<any>({ categories: [], models: [], years: [], versions: [] });
   const [categoryTree, setCategoryTree] = useState<CategoryNode[]>([]);
   const [mediaUploading, setMediaUploading] = useState(false);
   const [mediaProgress, setMediaProgress] = useState('');
+  const [editorMode, setEditorMode] = useState<'create' | 'edit'>(initialMode);
+  const [currentSku, setCurrentSku] = useState(sku || '');
   const mediaInputRef = useRef<HTMLInputElement>(null);
 
   const { control, register, handleSubmit, reset, watch, setValue, formState: { errors, isSubmitting } } = useForm({
-    defaultValues: {
-      // Identity
-      id: '', sku: '', name: '', type_id: 'simple', attribute_set_id: 4, created_at: '', updated_at: '',
-      // Publication
-      status: 0, visibility: 1,
-      // Price
-      price: 0,
-      custom_attributes_map: {} as Record<string, any>,
-      // Stock
-      stock_data: {} as any,
-      // Extension
-      extension_attributes: {} as any,
-      // Media
-      media_gallery_entries: [] as any[]
-    }
+    defaultValues: createEmptyProductForm()
   });
 
   const mediaEntries = watch('media_gallery_entries') || [];
-  const productName = watch('name') || sku;
+  const productName = watch('name') || currentSku || 'produto';
+  const canUploadMedia = editorMode === 'edit' && !!currentSku;
 
   useEffect(() => {
-    if (sku) {
-      loadData();
-    }
-  }, [sku]);
+    setEditorMode(mode === 'create' || !sku ? 'create' : 'edit');
+    setCurrentSku(sku || '');
+  }, [mode, sku]);
 
-  const loadData = async () => {
+  useEffect(() => {
+    setActiveTab('principal');
+  }, [mode, sku]);
+
+  useEffect(() => {
+    void loadData(editorMode === 'edit' ? currentSku : undefined);
+  }, [currentSku, editorMode]);
+
+  const loadData = async (targetSku?: string) => {
     setLoading(true);
     try {
-      const [productRes, catsRes, modsRes, yrsRes, treeRes] = await Promise.all([
-        adminFetch(`${API}/admin/products/${sku}`),
+      const [catsRes, modsRes, yrsRes, treeRes] = await Promise.all([
         adminFetch(`${API}/admin/products/metadata/category_names`),
         adminFetch(`${API}/admin/products/metadata/modelos`),
         adminFetch(`${API}/admin/products/metadata/anos`),
         adminFetch(`${API}/admin/products/metadata/structure/tree`),
       ]);
 
-      if (!productRes.ok) throw new Error('Falha ao carregar produto');
-      
-      const product = await productRes.json();
       const categories = await catsRes.json().catch(() => []);
       const models = await modsRes.json().catch(() => []);
       const years = await yrsRes.json().catch(() => []);
@@ -262,34 +321,21 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
       });
       setCategoryTree(Array.isArray(tree) ? tree : []);
 
-      // Transform API data to Form data
-      const customMap: Record<string, any> = {};
-      (product.custom_attributes || []).forEach((attr: any) => {
-        customMap[attr.attribute_code] = attr.value;
-      });
-
-      // Parse Stock JSON
-      let stockData = {};
-      try {
-        if (product.extension_attributes?.stock) {
-          stockData = typeof product.extension_attributes.stock === 'string' 
-            ? JSON.parse(product.extension_attributes.stock)
-            : product.extension_attributes.stock;
-        }
-      } catch (e) {
-        console.error('Stock parse error', e);
+      if (!targetSku) {
+        reset(createEmptyProductForm());
+        return;
       }
 
-      reset({
-        ...product,
-        custom_attributes_map: customMap,
-        stock_data: stockData,
-        media_gallery_entries: buildEditorMediaEntries(product, customMap),
-      });
+      const productRes = await adminFetch(`${API}/admin/products/${targetSku}`);
+      if (!productRes.ok) throw new Error('Falha ao carregar produto');
+      const product = await productRes.json();
+      reset(buildFormValues(product));
 
     } catch (err: any) {
       toast.error(err.message);
-      onClose();
+      if (targetSku) {
+        onClose();
+      }
     } finally {
       setLoading(false);
     }
@@ -319,18 +365,31 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
       delete payload.custom_attributes_map;
       delete payload.stock_data;
 
-      const res = await adminFetch(`${API}/admin/products/${sku}`, {
-        method: 'PATCH',
+      const endpoint = editorMode === 'create'
+        ? `${API}/admin/products`
+        : `${API}/admin/products/${currentSku}`;
+      const method = editorMode === 'create' ? 'POST' : 'PATCH';
+
+      const res = await adminFetch(endpoint, {
+        method,
         body: JSON.stringify(payload),
       });
 
-      if (!res.ok) throw new Error('Falha ao salvar produto');
+      if (!res.ok) {
+        const errorData = await res.json().catch(() => ({}));
+        throw new Error(errorData.error || (editorMode === 'create' ? 'Falha ao criar produto' : 'Falha ao salvar produto'));
+      }
       
       const updated = await res.json();
-      toast.success('Produto salvo com sucesso');
+      if (editorMode === 'create') {
+        toast.success('Produto criado com sucesso. Agora voce ja pode enviar imagens.');
+        setEditorMode('edit');
+        setCurrentSku(updated.product.sku);
+      } else {
+        toast.success('Produto salvo com sucesso');
+      }
       if (onSave) onSave(updated.product);
-      // Don't close, just refresh data or stay
-      loadData(); 
+      await loadData(updated.product.sku);
 
     } catch (err: any) {
       toast.error(err.message);
@@ -338,6 +397,10 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
   };
 
   const handleProductImageUpload = async (files: FileList | null) => {
+    if (!canUploadMedia || !currentSku) {
+      toast.error('Salve o produto primeiro para liberar o upload de imagens');
+      return;
+    }
     if (!files || files.length === 0) return;
 
     const imageFiles = Array.from(files).filter((file) => file.type.startsWith('image/'));
@@ -356,11 +419,11 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
         const current = imageFiles[index];
         setMediaProgress(`Processando ${index + 1} de ${imageFiles.length}`);
 
-        const webpFile = await convertImageToWebp(current, productName, sku, existingEntries.length + index);
+        const webpFile = await convertImageToWebp(current, productName, currentSku, existingEntries.length + index);
         const formData = new FormData();
         formData.append('file', webpFile);
 
-        const res = await adminFetch(`${API}/admin/products/${sku}/upload-image`, {
+        const res = await adminFetch(`${API}/admin/products/${currentSku}/upload-image`, {
           method: 'POST',
           body: formData,
         });
@@ -377,7 +440,7 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
       }
 
       toast.success(`${imageFiles.length} imagem(ns) processada(s) em WebP`);
-      await loadData();
+      await loadData(currentSku);
     } catch (err: any) {
       console.error('[ProductEditor] upload-image error:', err);
       toast.error(err.message || 'Erro ao enviar imagens');
@@ -493,8 +556,10 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
             <X className="w-5 h-5 text-muted-foreground" />
           </button>
           <div>
-            <h2 className="text-lg font-semibold text-foreground leading-tight">Editar Produto</h2>
-            <p className="text-sm text-muted-foreground font-mono">{sku}</p>
+            <h2 className="text-lg font-semibold text-foreground leading-tight">{editorMode === 'create' ? 'Novo Produto' : 'Editar Produto'}</h2>
+            <p className="text-sm text-muted-foreground font-mono">
+              {currentSku || 'Preencha os dados principais para criar o produto'}
+            </p>
           </div>
         </div>
         <Button 
@@ -502,7 +567,7 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
           isLoading={isSubmitting}
           iconLeading={<Save className="w-4 h-4" />}
         >
-          Salvar Alterações
+          {editorMode === 'create' ? 'Criar Produto' : 'Salvar Alterações'}
         </Button>
       </div>
 
@@ -542,7 +607,7 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
                         <Input {...register('id')} disabled className="bg-muted/50 font-mono" />
                       </FormField>
                       <FormField label="SKU">
-                        <Input {...register('sku', { required: true })} className="font-mono" />
+                        <Input {...register('sku', { required: true })} className="font-mono" disabled={editorMode === 'edit'} />
                       </FormField>
                       <div className="col-span-full">
                         <FormField label="Nome do Produto" required>
@@ -982,13 +1047,19 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
                             ))}
                             <button
                               type="button"
-                              onClick={() => mediaInputRef.current?.click()}
-                              disabled={mediaUploading}
-                              className="aspect-square rounded-lg border-2 border-dashed border-border flex flex-col items-center justify-center text-muted-foreground hover:text-primary hover:border-primary transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-wait"
+                              onClick={() => {
+                                if (!canUploadMedia) {
+                                  toast.error('Salve o produto primeiro para liberar o upload de imagens');
+                                  return;
+                                }
+                                mediaInputRef.current?.click();
+                              }}
+                              disabled={mediaUploading || !canUploadMedia}
+                              className="aspect-square rounded-lg border-2 border-dashed border-border flex flex-col items-center justify-center text-muted-foreground hover:text-primary hover:border-primary transition-colors cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed"
                             >
                                <Plus className="w-8 h-8" />
                                <span className="text-xs font-medium mt-2">
-                                 {mediaUploading ? 'Convertendo...' : 'Adicionar'}
+                                 {mediaUploading ? 'Convertendo...' : (canUploadMedia ? 'Adicionar' : 'Salve primeiro')}
                                </span>
                             </button>
                          </div>
@@ -1007,6 +1078,11 @@ export function ProductEditor({ sku, onClose, onSave }: ProductEditorProps) {
                            <p className="text-sm text-muted-foreground leading-relaxed">
                              As imagens selecionadas sao convertidas para WebP e renomeadas automaticamente com o nome do produto e o SKU antes do envio.
                            </p>
+                           {!canUploadMedia && (
+                             <p className="text-xs font-medium text-amber-600">
+                               Salve o produto uma vez para liberar upload, galeria e imagem principal.
+                             </p>
+                           )}
                            {mediaProgress && (
                              <p className="text-xs font-medium text-primary">{mediaProgress}</p>
                            )}

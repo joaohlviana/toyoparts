@@ -341,6 +341,7 @@ export function ProductsPage() {
   const [pageSize] = useState(50);
   const [selectedSkus, setSelectedSkus] = useState<Set<string>>(new Set());
   const [selectedProduct, setSelectedProduct] = useState<Product | null>(null);
+  const [editorMode, setEditorMode] = useState<'create' | 'edit'>('edit');
   const [detailOpen, setDetailOpen] = useState(false);
   const [showAdvancedFilters, setShowAdvancedFilters] = useState(false);
   const [visibleColumns, setVisibleColumns] = useState<Set<ColumnId>>(DEFAULT_VISIBLE);
@@ -574,6 +575,24 @@ export function ProductsPage() {
     );
   };
 
+  const handleOpenCreate = () => {
+    setEditorMode('create');
+    setSelectedProduct(null);
+    setDetailOpen(true);
+  };
+
+  const handleOpenEdit = (product: Product) => {
+    setEditorMode('edit');
+    setSelectedProduct(product);
+    setDetailOpen(true);
+  };
+
+  const handleCloseEditor = () => {
+    setDetailOpen(false);
+    setSelectedProduct(null);
+    setEditorMode('edit');
+  };
+
   // ─── Sort Icon ─────────────────────────────────────────────────────────────
 
   const SortIcon = ({ field }: { field: SortField }) => {
@@ -688,7 +707,7 @@ export function ProductsPage() {
             </div>
             <div className="flex items-center gap-3">
               <Button color="secondary" size="sm" iconLeading={<Download className="w-4 h-4" />}>Exportar</Button>
-              <Button color="primary" size="sm" iconLeading={<Plus className="w-4 h-4" />}>Novo produto</Button>
+              <Button color="primary" size="sm" iconLeading={<Plus className="w-4 h-4" />} onClick={handleOpenCreate}>Novo produto</Button>
             </div>
           </div>
         </div>
@@ -819,7 +838,7 @@ export function ProductsPage() {
                       <td key={col.id} className="px-4 py-3 text-sm whitespace-nowrap">{renderCell(col.id, product)}</td>
                     ))}
                     <td className="px-4 py-3 text-right">
-                      <button onClick={() => { setSelectedProduct(product); setDetailOpen(true); }}
+                      <button onClick={() => handleOpenEdit(product)}
                         className="w-8 h-8 inline-flex items-center justify-center rounded-lg text-muted-foreground hover:text-foreground hover:bg-secondary transition-colors opacity-0 group-hover:opacity-100">
                         <MoreHorizontal className="w-4 h-4" />
                       </button>
@@ -940,19 +959,40 @@ export function ProductsPage() {
       </AnimatePresence>
 
       {/* ═══ Product Detail Sheet ═══ */}
-      <Sheet open={detailOpen} onOpenChange={setDetailOpen}>
+      <Sheet open={detailOpen} onOpenChange={(open) => {
+        if (!open) {
+          handleCloseEditor();
+          return;
+        }
+        setDetailOpen(true);
+      }}>
         <SheetContent className="w-full sm:max-w-5xl p-0 border-none">
           <SheetHeader className="sr-only">
-            <SheetTitle>Editar Produto</SheetTitle>
-            <SheetDescription>Detalhes e edição do produto selecionado</SheetDescription>
+            <SheetTitle>{editorMode === 'create' ? 'Novo Produto' : 'Editar Produto'}</SheetTitle>
+            <SheetDescription>{editorMode === 'create' ? 'Cadastro completo de um novo produto' : 'Detalhes e edição do produto selecionado'}</SheetDescription>
           </SheetHeader>
-          {selectedProduct ? (
-            <ProductEditor 
-              sku={selectedProduct.sku} 
-              onClose={() => setDetailOpen(false)} 
-              onSave={() => {
+          {editorMode === 'create' ? (
+            <ProductEditor
+              mode="create"
+              onClose={handleCloseEditor}
+              onSave={(product) => {
                 fetchProducts();
-                setDetailOpen(false);
+                if (product?.sku) {
+                  setEditorMode('edit');
+                  setSelectedProduct(product);
+                }
+              }}
+            />
+          ) : selectedProduct ? (
+            <ProductEditor
+              sku={selectedProduct.sku}
+              mode="edit"
+              onClose={handleCloseEditor}
+              onSave={(product) => {
+                fetchProducts();
+                if (product?.sku) {
+                  setSelectedProduct(product);
+                }
               }}
             />
           ) : (

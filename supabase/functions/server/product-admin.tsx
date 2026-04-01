@@ -42,6 +42,176 @@ async function getProduct(sku: string) {
   return await kv.get(`${PRODUCT_PREFIX}${sku}`);
 }
 
+function normalizeSku(value: string | null | undefined) {
+  return String(value || '').trim();
+}
+
+function normalizeCustomAttributes(customAttributes: any): any[] {
+  if (!Array.isArray(customAttributes)) return [];
+  return customAttributes
+    .filter((attr) => attr?.attribute_code)
+    .map((attr) => ({
+      ...attr,
+      attribute_code: String(attr.attribute_code).trim(),
+      value: attr.value ?? '',
+    }));
+}
+
+function customAttributesToMap(customAttributes: any[]): Record<string, any> {
+  const map: Record<string, any> = {};
+  for (const attr of customAttributes) {
+    if (!attr?.attribute_code) continue;
+    map[String(attr.attribute_code)] = attr.value;
+  }
+  return map;
+}
+
+function parseStockData(raw: any) {
+  if (!raw) return {};
+  if (typeof raw === 'string') {
+    try {
+      return JSON.parse(raw);
+    } catch {
+      return {};
+    }
+  }
+  return typeof raw === 'object' ? raw : {};
+}
+
+function normalizeCsvValues(value: any): string[] {
+  if (Array.isArray(value)) {
+    return value.map((item) => String(item).trim()).filter(Boolean);
+  }
+  return String(value || '')
+    .split(',')
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function normalizeMediaEntries(entries: any): any[] {
+  if (!Array.isArray(entries)) return [];
+  return entries
+    .filter((entry) => entry?.file)
+    .map((entry, index) => ({
+      file: entry.file,
+      label: entry.label || '',
+      position: Number(entry.position ?? index + 1),
+      media_type: entry.media_type || 'image',
+      disabled: entry.disabled === true,
+    }));
+}
+
+function flattenCategoryTree(nodes: any[], map = new Map<string, string>()) {
+  for (const node of Array.isArray(nodes) ? nodes : []) {
+    if (!node) continue;
+    if (node.id != null && node.name) {
+      map.set(String(node.id), String(node.name));
+    }
+    const children = Array.isArray(node.children_data)
+      ? node.children_data
+      : Array.isArray(node.children)
+        ? node.children
+        : [];
+    flattenCategoryTree(children, map);
+  }
+  return map;
+}
+
+async function getCategoryNameMap() {
+  const tree = await kv.get('meta:category_tree');
+  return flattenCategoryTree(Array.isArray(tree) && tree.length > 0 ? tree : fallbackCategories);
+}
+
+function resolveImageUrl(file: string | null | undefined) {
+  if (!file) return null;
+  if (String(file).startsWith('http')) return String(file);
+  if (String(file).startsWith('/')) {
+    return `${MAGENTO_BASE_URL}/pub/media/catalog/product${file}`;
+  }
+  return String(file);
+}
+
+function inferImageUrl(product: any, customMap: Record<string, any>) {
+  const galleryEntries = normalizeMediaEntries(product.media_gallery_entries || product.media_gallery);
+  if (galleryEntries.length > 0) {
+    return resolveImageUrl(galleryEntries[0].file);
+  }
+  return resolveImageUrl(customMap.image) || resolveImageUrl(product.image_url) || null;
+}
+
+async function normalizeProductRecord(input: any, existing: any = {}) {
+  const merged = {
+    ...existing,
+    ...input,
+  };
+  const custom_attributes = normalizeCustomAttributes(merged.custom_attributes);
+  const customMap = customAttributesToMap(custom_attributes);
+  const extension_attributes = {
+    ...(existing.extension_attributes || {}),
+    ...(merged.extension_attributes || {}),
+    stock: parseStockData(merged.extension_attributes?.stock),
+  };
+  const categoryIds = normalizeCsvValues(customMap.category_ids);
+  const categoryMap = await getCategoryNameMap();
+  const specialPriceRaw = customMap.special_price;
+  const specialPrice = specialPriceRaw === '' || specialPriceRaw == null ? null : Number(specialPriceRaw);
+  const media_gallery_entries = normalizeMediaEntries(merged.media_gallery_entries || merged.media_gallery);
+  const image_url = inferImageUrl({ ...merged, media_gallery_entries }, customMap);
+  const now = new Date().toISOString();
+
+  const normalized = {
+    ...existing,
+    ...merged,
+    id: merged.id || normalizeSku(merged.sku) || existing.id,
+    sku: normalizeSku(merged.sku) || normalizeSku(existing.sku),
+    name: String(merged.name || existing.name || '').trim(),
+    type_id: merged.type_id || existing.type_id || 'simple',
+    attribute_set_id: Number(merged.attribute_set_id ?? existing.attribute_set_id ?? 4),
+    status: Number(merged.status ?? existing.status ?? 1),
+    visibility: Number(merged.visibility ?? existing.visibility ?? 4),
+    price: Number(merged.price ?? existing.price ?? 0),
+    weight: merged.weight === '' || merged.weight == null ? null : Number(merged.weight),
+    custom_attributes,
+    extension_attributes,
+    media_gallery_entries,
+    media_gallery: media_gallery_entries,
+    category_ids: categoryIds,
+    category_names: categoryIds
+      .map((id) => categoryMap.get(String(id)))
+      .filter((name): name is string => !!name),
+    modelos: normalizeCsvValues(customMap.modelo),
+    anos: normalizeCsvValues(customMap.ano),
+    description: customMap.description ?? merged.description ?? existing.description ?? '',
+    short_description: customMap.short_description ?? merged.short_description ?? existing.short_description ?? '',
+    special_price: Number.isFinite(specialPrice as number) ? specialPrice : null,
+    image_url,
+    has_image: !!image_url,
+    has_promotion: Number.isFinite(specialPrice as number) && Number(specialPrice) > 0,
+    created_at: existing.created_at || merged.created_at || now,
+    updated_at: now,
+  };
+
+  delete normalized.custom_attributes_map;
+  delete normalized.stock_data;
+
+  return normalized;
+}
+
+async function syncProductIndex(product: any) {
+  if (!meili.isConfigured()) return;
+  try {
+    await meili.setupIndexIfNeeded();
+    const doc = meili.transformProduct(product);
+    if (!doc?.id) {
+      console.warn('[ProductAdmin] Produto sem id valido para indexacao Meili:', product?.sku);
+      return;
+    }
+    await meili.indexDocuments([doc]);
+  } catch (error) {
+    console.error('[ProductAdmin] Falha ao sincronizar produto no MeiliSearch:', error);
+  }
+}
+
 // ─── AI Enrichment Logic ─────────────────────────────────────────────────────
 
 async function enrichProductData(product: any) {
@@ -401,6 +571,45 @@ productAdmin.get('/metadata/structure/tree', async (c) => {
   return c.json(tree || []);
 });
 
+// Create product
+productAdmin.post('/', async (c) => {
+  const payload = await c.req.json();
+  const sku = normalizeSku(payload?.sku);
+  const name = String(payload?.name || '').trim();
+
+  if (!sku) return c.json({ error: 'SKU obrigatorio' }, 400);
+  if (!name) return c.json({ error: 'Nome do produto obrigatorio' }, 400);
+
+  const existing = await getProduct(sku);
+  if (existing) return c.json({ error: 'Ja existe um produto com esse SKU' }, 409);
+
+  const createdProduct = await normalizeProductRecord({
+    ...payload,
+    id: payload?.id || sku,
+    sku,
+    name,
+    type_id: payload?.type_id || 'simple',
+    attribute_set_id: payload?.attribute_set_id ?? 4,
+    status: payload?.status ?? 1,
+    visibility: payload?.visibility ?? 4,
+    media_gallery_entries: payload?.media_gallery_entries || [],
+    media_gallery: payload?.media_gallery || [],
+    extension_attributes: {
+      ...(payload?.extension_attributes || {}),
+      stock: payload?.extension_attributes?.stock ?? {
+        is_in_stock: 1,
+        manage_stock: 1,
+        qty: 0,
+      },
+    },
+  });
+
+  await kv.set(`${PRODUCT_PREFIX}${sku}`, createdProduct);
+  await syncProductIndex(createdProduct);
+
+  return c.json({ success: true, product: createdProduct }, 201);
+});
+
 // Get full product data (including raw)
 productAdmin.get('/:sku', async (c) => {
   const sku = c.req.param('sku');
@@ -428,13 +637,10 @@ productAdmin.patch('/:sku', async (c) => {
   // Remove internal flags if they exist
   const { _is_revert, _is_ai, ...cleanUpdates } = updates;
 
-  const updatedProduct = {
-    ...existing,
-    ...cleanUpdates,
-    updated_at: new Date().toISOString()
-  };
+  const updatedProduct = await normalizeProductRecord(cleanUpdates, existing);
 
   await kv.set(`${PRODUCT_PREFIX}${sku}`, updatedProduct);
+  await syncProductIndex(updatedProduct);
   
   return c.json({ success: true, product: updatedProduct });
 });
@@ -492,15 +698,15 @@ productAdmin.post('/:sku/upload-image', async (c) => {
     const updatedMedia = [...(existing.media_gallery || []), mediaEntry];
     const updatedGalleryEntries = [...(existing.media_gallery_entries || []), mediaEntry];
 
-    const updatedProduct = {
+    const updatedProduct = await normalizeProductRecord({
       ...existing,
       image_url: existing.image_url || publicUrl,
       media_gallery: updatedMedia,
       media_gallery_entries: updatedGalleryEntries,
-      updated_at: new Date().toISOString()
-    };
+    }, existing);
 
     await kv.set(`${PRODUCT_PREFIX}${sku}`, updatedProduct);
+    await syncProductIndex(updatedProduct);
 
     return c.json({ success: true, url: publicUrl, product: updatedProduct });
   } catch (err: any) {

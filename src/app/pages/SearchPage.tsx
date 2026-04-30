@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import { useNavigate, Link } from 'react-router';
+import { useNavigate, useLocation } from 'react-router';
 import { toast } from 'sonner';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
 import {
@@ -21,7 +21,7 @@ import {
 import { Button } from '../components/ui/button';
 import { Badge } from '../components/ui/badge';
 import { ProductCard, ProductCardSkeleton } from '../components/ProductCard';
-import { CategoryTreeFilter, getCategoryNameById, preloadCategoryTree } from '../components/CategoryTreeFilter';
+import { CategoryTreeFilter, type CategoryFilterTreeNode } from '../components/CategoryTreeFilter';
 import {
   Drawer,
   DrawerContent,
@@ -40,7 +40,9 @@ import {
 } from '../components/ui/select';
 import { SEOHead } from '../components/seo/SEOHead';
 import { trackSearchDebounced, trackSearchClick } from '../lib/search-intelligence-api';
+import { getModelStorageIconUrl } from '../lib/media-urls';
 import { TrendingSearches } from '../components/TrendingSearches';
+import { CAR_MODELS_SEO, SITE_URL } from '../seo-config';
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0`;
 const HEADERS: HeadersInit = {
@@ -63,6 +65,8 @@ interface SearchHit {
   description?: string;
   short_description?: string;
   image_url?: string;
+  skuMatchType?: 'exact' | 'similar';
+  searchedSku?: string;
   _formatted?: { name?: string; sku?: string; description?: string };
   [key: string]: any;
 }
@@ -86,7 +90,7 @@ interface AIExpansion {
 }
 
 interface SearchResult {
-  engine: 'meilisearch' | 'kv_fallback';
+  engine: 'meilisearch' | 'kv_fallback' | 'kv_exact';
   mode: 'instant' | 'ai';
   query: string;
   originalQuery: string;
@@ -98,18 +102,80 @@ interface SearchResult {
   totalTimeMs: number;
   limit: number;
   offset: number;
+  queryIntent?: 'general' | 'sku_exact' | 'sku_similar';
+  exactSkuQuery?: string;
+  exactSkuMatched?: boolean;
+  categoryTree?: CategoryFilterTreeNode[];
+  categoryTreeStatus?: 'live' | 'cached' | 'degraded';
+  categoryTreeVersion?: string;
+  vehicleFacets?: Array<{ slug: string; label: string; count: number }>;
+  yearFacets?: Array<{ value: string; count: number }>;
+  appliedFilters?: {
+    q?: string;
+    category?: string[];
+    category_name?: string[];
+    modelo_slug?: string[];
+    anos?: string[];
+    inStock?: string | null;
+    minPrice?: number | null;
+    maxPrice?: number | null;
+  };
+  catalogVersion?: string;
   _debug?: any;
+}
+
+function areFacetSelectionsEqual(
+  left: Record<string, string[]>,
+  right: Record<string, string[]>,
+): boolean {
+  const leftKeys = Object.keys(left).sort();
+  const rightKeys = Object.keys(right).sort();
+  if (leftKeys.length !== rightKeys.length) return false;
+
+  for (let index = 0; index < leftKeys.length; index += 1) {
+    if (leftKeys[index] !== rightKeys[index]) return false;
+    const leftValues = [...(left[leftKeys[index]] || [])].sort();
+    const rightValues = [...(right[rightKeys[index]] || [])].sort();
+    if (leftValues.length !== rightValues.length) return false;
+    for (let valueIndex = 0; valueIndex < leftValues.length; valueIndex += 1) {
+      if (leftValues[valueIndex] !== rightValues[valueIndex]) return false;
+    }
+  }
+
+  return true;
 }
 
 // Maps our internal facet keys -> backend query param names
 const FACET_TO_PARAM: Record<string, string> = {
-  category_ids: 'categories',
-  category_names: 'category_names',
+  category_ids: 'category',
+  category_names: 'category_name',
   modelos: 'modelos',
+  modelo_slugs: 'modelo_slug',
   anos: 'anos',
   color: 'color',
   in_stock: 'inStock',
 };
+
+function buildSearchRequestKey(
+  q: string,
+  page: number,
+  ai: boolean,
+  sort: string,
+  facets: Record<string, string[]>,
+) {
+  const normalizedFacets = Object.entries(facets || {})
+    .filter(([, values]) => Array.isArray(values) && values.length > 0)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([key, values]) => [key, [...values].sort()]);
+
+  return JSON.stringify({
+    q: q || '',
+    page,
+    ai,
+    sort: sort || '',
+    facets: normalizedFacets,
+  });
+}
 
 // ─── Price range key → {min, max} decoder ──
 function decodePriceRange(key: string): { min: number; max: number } | null {
@@ -119,23 +185,20 @@ function decodePriceRange(key: string): { min: number; max: number } | null {
 
 // ─── Car Model Definitions (shared with MegaMenu) ───────────────────────────
 interface CarModelDef {
-  id: string;
+  slug: string;
   modeloIds: string[];
   name: string;
   imgSrc: string;
   storageKey: string;
 }
 
-const CAR_MODELS: CarModelDef[] = [
-  { id: 'hilux', modeloIds: ['Hilux', '35'], name: 'Hilux', storageKey: 'HILUX', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/HILUX.png?v=1' },
-  { id: 'corolla', modeloIds: ['Corolla', '38'], name: 'Corolla', storageKey: 'COROLLA', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/COROLLA.png?v=1' },
-  { id: 'corolla-cross', modeloIds: ['Corolla Cross', '206'], name: 'Corolla Cross', storageKey: 'COROLLA CROSS', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/COROLLA%20CROSS.png?v=1' },
-  { id: 'yaris', modeloIds: ['Yaris', '205'], name: 'Yaris', storageKey: 'YARIS', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/YARIS.png?v=1' },
-  { id: 'sw4', modeloIds: ['SW4', '204'], name: 'SW4', storageKey: 'SW4', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/SW4.png?v=1' },
-  { id: 'etios', modeloIds: ['Etios', '37', '207'], name: 'Etios', storageKey: 'ETIOS', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/ETIOS.png?v=1' },
-  { id: 'rav4', modeloIds: ['RAV4', 'Rav4', '36'], name: 'RAV4', storageKey: 'RAV4', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/RAV4.png?v=1' },
-  { id: 'prius', modeloIds: ['Prius', '40'], name: 'Prius', storageKey: 'PRIUS', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/PRIUS.png?v=1' },
-];
+const CAR_MODELS: CarModelDef[] = CAR_MODELS_SEO.map((model) => ({
+  slug: model.slug,
+  modeloIds: model.modeloIds,
+  name: model.name,
+  imgSrc: model.imgSrc || getModelStorageIconUrl(model.storageKey),
+  storageKey: model.storageKey,
+}));
 
 // ─── Price Ranges ────────────────────────────────────────────────────────────
 const PRICE_RANGES = [
@@ -186,7 +249,7 @@ function CarModelIcon({ model, size = 60, overrideUrl }: { model: CarModelDef; s
       src={overrideUrl || model.imgSrc}
       alt={model.name}
       style={{ width: size, height: size * 0.5 }}
-      className="object-contain"
+      className="object-contain brightness-0 opacity-70"
       loading="lazy"
     />
   );
@@ -289,22 +352,21 @@ function FilterItem({
 
 interface SearchPageProps {
   initialQuery?: string | null;
-  onClearInitialQuery?: () => void;
   initialCategory?: string | null;
   initialCategoryName?: string | null;
+  initialModeloSlug?: string | null;
   initialModelo?: string | null;
-  onClearInitialFilters?: () => void;
 }
 
 export function SearchPage({
   initialQuery,
-  onClearInitialQuery,
   initialCategory,
   initialCategoryName,
+  initialModeloSlug,
   initialModelo,
-  onClearInitialFilters,
 }: SearchPageProps = {}) {
   const navigate = useNavigate();
+  const location = useLocation();
   const [query, setQuery] = useState(initialQuery || '');
   const [results, setResults] = useState<SearchResult | null>(null);
   const [isSearching, setIsSearching] = useState(false);
@@ -315,7 +377,6 @@ export function SearchPage({
   const [selectedFacets, setSelectedFacets] = useState<Record<string, string[]>>({});
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
   const [isSearchFocused, setIsSearchFocused] = useState(false);
-  const [attributeMeta, setAttributeMeta] = useState<any>(null);
 
   const abortRef = useRef<AbortController | null>(null);
   const searchTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -324,67 +385,27 @@ export function SearchPage({
   // Ref to always hold the latest selectedFacets so the debounced search uses current values
   const selectedFacetsRef = useRef<Record<string, string[]>>({});
   selectedFacetsRef.current = selectedFacets;
+  const selectedCategoryLabelMemoryRef = useRef<Record<string, string>>({});
+  const inFlightSearchKeyRef = useRef<string | null>(null);
+  const lastCompletedSearchRef = useRef<{ key: string; at: number } | null>(null);
 
   const pageSize = 24;
+  const slugify = useCallback((text: string) => (
+    String(text || '')
+      .toLowerCase()
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/(^-|-$)/g, '')
+  ), []);
 
   // ─── Bidirectional lookup helpers for attribute display ──────────────────────
   // Meta stores { optionId: label }, but MeiliSearch facets may contain labels
   // (if transformProduct already resolved them) OR raw IDs (if mapping failed).
   // These helpers resolve EITHER direction: id→label or label→label (passthrough).
-  const resolveAno = useCallback((val: string): string => {
-    if (!attributeMeta?.anos) return val;
-    // Direct lookup: val is an optionId → return label
-    if (attributeMeta.anos[val]) return attributeMeta.anos[val];
-    // Reverse check: val might already be a label → return as-is
-    const allLabels = Object.values(attributeMeta.anos) as string[];
-    if (allLabels.includes(val)) return val;
-    return val; // raw fallback
-  }, [attributeMeta]);
+  const resolveAno = useCallback((val: string): string => String(val || '').trim(), []);
 
-  const resolveColor = useCallback((val: string): string => {
-    if (!attributeMeta?.colors) return val;
-    // Direct lookup: val is an optionId → return label
-    if (attributeMeta.colors[val]) return attributeMeta.colors[val];
-    // Reverse check: val might already be a label → return as-is
-    const allLabels = Object.values(attributeMeta.colors) as string[];
-    if (allLabels.includes(val)) return val;
-    return val; // raw fallback
-  }, [attributeMeta]);
-
-  // Fetch metadata for labels
-  useEffect(() => {
-    preloadCategoryTree().catch(() => null);
-
-    const fetchMeta = async (attempt = 1) => {
-      try {
-        const res = await fetch(`${API}/search/meta`, { headers: HEADERS });
-        if (!res.ok) {
-          console.warn(`[SEARCH] Meta fetch HTTP ${res.status} (attempt ${attempt})`);
-          if (attempt < 3) setTimeout(() => fetchMeta(attempt + 1), 1000 * attempt);
-          return;
-        }
-        const data = await res.json();
-        if (data && Object.keys(data).length > 0) {
-          console.log('[SEARCH] Meta loaded:', {
-            anos: Object.keys(data.anos || {}).length,
-            colors: Object.keys(data.colors || {}).length,
-            modelos: Object.keys(data.modelos || {}).length,
-            categories: Object.keys(data.categories || {}).length,
-            sampleAnos: Object.entries(data.anos || {}).slice(0, 3),
-            sampleColors: Object.entries(data.colors || {}).slice(0, 3),
-          });
-          setAttributeMeta(data);
-        } else {
-          console.warn('[SEARCH] Meta endpoint returned empty. Has sync been run?');
-          if (attempt < 3) setTimeout(() => fetchMeta(attempt + 1), 2000 * attempt);
-        }
-      } catch (e) {
-        console.warn(`[SEARCH] Meta fetch failed (attempt ${attempt}):`, e);
-        if (attempt < 3) setTimeout(() => fetchMeta(attempt + 1), 1000 * attempt);
-      }
-    };
-    fetchMeta();
-  }, []);
+  const resolveColor = useCallback((val: string): string => String(val || '').trim(), []);
 
   useEffect(() => {
     return () => {
@@ -395,43 +416,45 @@ export function SearchPage({
 
   // Apply initial filters from MegaMenu
   useEffect(() => {
-    let hasChanges = false;
-    const nextFacets: Record<string, string[]> = { ...selectedFacets };
-    if (initialQuery) { setQuery(initialQuery); onClearInitialQuery?.(); hasChanges = true; }
-    
-    // Initialize category_names if provided
-    if (initialCategoryName) {
-      nextFacets.category_names = [initialCategoryName];
-      hasChanges = true;
-    }
-    
-    // Initialize category_ids if provided (do NOT delete it even if name is present)
-    // This ensures UI fallback works if facetKey switches to IDs
+    const nextQuery = initialQuery || '';
+    const nextFacets: Record<string, string[]> = {};
+
     if (initialCategory) {
       nextFacets.category_ids = [initialCategory];
-      hasChanges = true;
+    } else if (initialCategoryName) {
+      nextFacets.category_names = [initialCategoryName];
     }
 
-    if (initialModelo) { nextFacets.modelos = [initialModelo]; hasChanges = true; }
-    if (hasChanges) {
-      setSelectedFacets(nextFacets);
-      setCurrentPage(1);
-      performSearch(initialQuery || query, 1, aiMode, sortBy, nextFacets);
-      onClearInitialFilters?.();
-    } else {
-      // No initial params (e.g. bare /pecas or /busca) — browse all products
-      performSearch('', 1, false, sortBy, {});
+    if (initialModeloSlug) {
+      nextFacets.modelo_slugs = [initialModeloSlug];
+    } else if (initialModelo) {
+      nextFacets.modelos = [initialModelo];
     }
-    // Mark initial search as done so debounced effect doesn't race
+
+    setQuery(nextQuery);
+    setSelectedFacets(nextFacets);
+    setCurrentPage(1);
+    performSearch(nextQuery, 1, false, '', nextFacets);
     initialSearchDoneRef.current = true;
-  }, [initialQuery, initialCategory, initialCategoryName, initialModelo]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [initialQuery, initialCategory, initialCategoryName, initialModeloSlug, initialModelo]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Search function (with retry for cold-start resilience)
   const performSearch = useCallback(
     async (q: string, page: number, ai: boolean, sort: string, facets: Record<string, string[]>) => {
+      const searchKey = buildSearchRequestKey(q, page, ai, sort, facets);
+      if (inFlightSearchKeyRef.current === searchKey) {
+        return;
+      }
+
+      const lastCompleted = lastCompletedSearchRef.current;
+      if (lastCompleted?.key === searchKey && Date.now() - lastCompleted.at < 2000) {
+        return;
+      }
+
       if (abortRef.current) abortRef.current.abort();
       const ac = new AbortController();
       abortRef.current = ac;
+      inFlightSearchKeyRef.current = searchKey;
       setIsSearching(true);
 
       const maxRetries = 2;
@@ -508,6 +531,41 @@ export function SearchPage({
         setResults(data);
         setIsFirstLoad(false);
 
+        const applied = data.appliedFilters;
+        if (applied) {
+          const nextCanonicalFacets: Record<string, string[]> = {};
+
+          if (Array.isArray(applied.category) && applied.category.length > 0) {
+            nextCanonicalFacets.category_ids = [...applied.category];
+          } else if (Array.isArray(applied.category_name) && applied.category_name.length > 0) {
+            nextCanonicalFacets.category_names = [...applied.category_name];
+          }
+
+          if (Array.isArray(applied.modelo_slug) && applied.modelo_slug.length > 0) {
+            nextCanonicalFacets.modelo_slugs = [...applied.modelo_slug];
+          }
+
+          if (Array.isArray(applied.anos) && applied.anos.length > 0) {
+            nextCanonicalFacets.anos = [...applied.anos];
+          }
+
+          if (applied.inStock) {
+            nextCanonicalFacets.in_stock = [applied.inStock];
+          }
+
+          for (const [key, values] of Object.entries(facets || {})) {
+            if (!Array.isArray(values) || values.length === 0) continue;
+            if (['category_ids', 'category_names', 'modelo_slugs', 'modelos', 'anos', 'in_stock'].includes(key)) continue;
+            nextCanonicalFacets[key] = [...values];
+          }
+
+          setSelectedFacets((current) => (
+            areFacetSelectionsEqual(current, nextCanonicalFacets)
+              ? current
+              : nextCanonicalFacets
+          ));
+        }
+
         console.log(`[SEARCH] "${q}" -> ${data.totalHits} hits, ${data.totalTimeMs}ms, engine=${data.engine}, mode=${data.mode}`);
         if (data.aiExpansion) {
           console.log(`[AI] confidence=${data.aiExpansion.confidence}, filters=${JSON.stringify(data.aiExpansion.filters)}`);
@@ -546,6 +604,12 @@ export function SearchPage({
         console.error('[SEARCH] error:', err);
         toast.error('Erro na busca. Tente novamente.');
       } finally {
+        if (inFlightSearchKeyRef.current === searchKey) {
+          inFlightSearchKeyRef.current = null;
+        }
+        if (!ac.signal.aborted) {
+          lastCompletedSearchRef.current = { key: searchKey, at: Date.now() };
+        }
         if (!ac.signal.aborted) setIsSearching(false);
       }
     },
@@ -564,52 +628,27 @@ export function SearchPage({
     return () => { if (searchTimerRef.current) clearTimeout(searchTimerRef.current); };
   }, [query, aiMode, sortBy]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  const toggleFacet = (facetKey: string, value: string, id?: string) => {
+  const toggleFacet = (facetKey: string, value: string) => {
     setSelectedFacets(prev => {
       const cur = prev[facetKey] || [];
       const isSelected = cur.includes(value);
       const updated = isSelected ? cur.filter(v => v !== value) : [...cur, value];
       const next = { ...prev, [facetKey]: updated };
 
-      // ── Sync category_names ↔ category_ids bidirectionally ─���
-      if (facetKey === 'category_names') {
-        if (isSelected) {
-          // Unchecking a name → also remove its ID from backup
-          if (next.category_ids) {
-            // Try using provided id, otherwise find by name from tree
-            const idToRemove = id || value; // fallback: value might be the name
-            next.category_ids = next.category_ids.filter(vid => vid !== idToRemove);
-            if (next.category_ids.length === 0) delete next.category_ids;
-          }
-        } else if (id) {
-          // Checking a name → add its ID to backup for robustness
-          const currentIds = next.category_ids || [];
-          if (!currentIds.includes(id)) {
-            next.category_ids = [...currentIds, id];
-          }
-        }
+      if (facetKey === 'category_ids') {
+        delete next.category_names;
       }
 
-      if (facetKey === 'category_ids') {
-        if (isSelected) {
-          // Unchecking an ID → also remove matching name from backup
-          if (next.category_names) {
-            const catName = getCategoryNameById(value);
-            if (catName) {
-              next.category_names = next.category_names.filter(n => n !== catName);
-              if (next.category_names.length === 0) delete next.category_names;
-            }
-          }
-        } else if (id) {
-          // Checking an ID → add name to backup
-          const catName = getCategoryNameById(value);
-          if (catName) {
-            const currentNames = next.category_names || [];
-            if (!currentNames.includes(catName)) {
-              next.category_names = [...currentNames, catName];
-            }
-          }
-        }
+      if (facetKey === 'category_names') {
+        delete next.category_ids;
+      }
+
+      if (facetKey === 'modelo_slugs') {
+        delete next.modelos;
+      }
+
+      if (facetKey === 'modelos') {
+        delete next.modelo_slugs;
       }
 
       // Clean up empty arrays
@@ -625,11 +664,42 @@ export function SearchPage({
     });
   };
 
+  const toggleCategory = (categoryId: string) => {
+    const resolvedLabel = categoryLabelMap.get(categoryId);
+    if (resolvedLabel) {
+      selectedCategoryLabelMemoryRef.current[categoryId] = resolvedLabel;
+    }
+    toggleFacet('category_ids', categoryId);
+  };
+
   const selectSingleFacet = (facetKey: string, value: string) => {
     setSelectedFacets(prev => {
       const cur = prev[facetKey] || [];
       const isSelected = cur.includes(value);
       const next = { ...prev, [facetKey]: isSelected ? [] : [value] };
+
+      if (facetKey === 'category_ids') {
+        delete next.category_names;
+      }
+
+      if (facetKey === 'category_names') {
+        delete next.category_ids;
+      }
+
+      if (facetKey === 'modelo_slugs') {
+        delete next.modelos;
+      }
+
+      if (facetKey === 'modelos') {
+        delete next.modelo_slugs;
+      }
+
+      for (const key of Object.keys(next)) {
+        if (Array.isArray(next[key]) && next[key].length === 0) {
+          delete next[key];
+        }
+      }
+
       setCurrentPage(1);
       performSearch(query, 1, aiMode, sortBy, next);
       return next;
@@ -653,36 +723,52 @@ export function SearchPage({
   const totalPages = results ? Math.ceil((results.totalHits ?? 0) / pageSize) : 0;
   const hits = results?.hits || [];
   const facets = results?.facetDistribution || {};
+  const categoryTree = results?.categoryTree || [];
+  const vehicleFacets = results?.vehicleFacets || [];
+  const yearFacets = results?.yearFacets || [];
   const ai = results?.aiExpansion;
+  const queryIntent = results?.queryIntent || 'general';
+  const exactSkuQuery = results?.exactSkuQuery || '';
+  const isSkuExact = queryIntent === 'sku_exact';
+  const isSkuSimilar = queryIntent === 'sku_similar';
 
-  // ─── Category facet key: prefer category_names (legible), fallback to category_ids ──
-  // CORRIGIDO: `{}` é truthy em JS, então `facets.category_names || facets.category_ids`
-  // curto-circuita incorretamente quando category_names existe mas é vazio.
-  // Agora checa Object.keys().length para determinar qual tem dados de verdade.
-  const categoryFacetKey = useMemo<'category_names' | 'category_ids'>(() => {
-    const namesCount = Object.keys(facets.category_names || {}).length;
-    const idsCount = Object.keys(facets.category_ids || {}).length;
-    if (namesCount > 0) return 'category_names';
-    if (idsCount > 0) return 'category_ids';
-    return 'category_ids'; // default fallback
-  }, [facets]);
+  const flattenCategoryTree = useCallback((nodes: CategoryFilterTreeNode[]): CategoryFilterTreeNode[] => {
+    const flat: CategoryFilterTreeNode[] = [];
+    const walk = (items: CategoryFilterTreeNode[]) => {
+      for (const item of items) {
+        flat.push(item);
+        walk(item.children || []);
+      }
+    };
+    walk(nodes);
+    return flat;
+  }, []);
 
-  // ─── Determine "backup" category key to exclude from counts/chips ──
-  // When both category_names AND category_ids are in selectedFacets,
-  // the backup key is the one NOT used as the primary facet key.
-  // This prevents double-counting and duplicate chips.
-  const backupCategoryKey = categoryFacetKey === 'category_names' ? 'category_ids' : 'category_names';
+  const categoryLabelMap = useMemo(() => {
+    return new Map(flattenCategoryTree(categoryTree).map((node) => [node.id, node.label]));
+  }, [categoryTree, flattenCategoryTree]);
+
+  const vehicleFacetMap = useMemo(() => {
+    return new Map(vehicleFacets.map((entry) => [entry.slug, entry.count]));
+  }, [vehicleFacets]);
+
+  const pathSegments = useMemo(
+    () => location.pathname.split('/').filter(Boolean),
+    [location.pathname],
+  );
+
+  const selectedCategoryIds = selectedFacets.category_ids || [];
+  const selectedLegacyCategoryNames = selectedFacets.category_names || [];
+  const selectedCategoryCount = selectedCategoryIds.length > 0
+    ? selectedCategoryIds.length
+    : selectedLegacyCategoryNames.length;
 
   const activeFacetCount = useMemo(() => {
     return Object.entries(selectedFacets).reduce((s, [key, a]) => {
-      if (key === backupCategoryKey) return s; // skip backup to avoid double-count
+      if (key === 'category_names' && (selectedFacets.category_ids || []).length > 0) return s;
       return s + a.length;
     }, 0);
-  }, [selectedFacets, backupCategoryKey]);
-
-  const categoryFacetCounts = useMemo(() => {
-    return facets[categoryFacetKey] || {};
-  }, [facets, categoryFacetKey]);
+  }, [selectedFacets]);
 
   // ─── Price range counts: aggregate raw price distribution into buckets ──
   const priceFacetCounts = useMemo(() => {
@@ -705,46 +791,283 @@ export function SearchPage({
   // Build context title from active filters
   const contextTitle = useMemo(() => {
     const parts: string[] = [];
-    const selectedModelos = selectedFacets.modelos || [];
-    if (selectedModelos.length > 0) {
-      const modelNames = selectedModelos.map(id => {
-        const model = CAR_MODELS.find(m => m.modeloIds.includes(id));
-        return model?.name || id;
+    const selectedModelSlugs = selectedFacets.modelo_slugs || [];
+    if (selectedModelSlugs.length > 0) {
+      const modelNames = selectedModelSlugs.map((slug) => {
+        const model = CAR_MODELS.find((entry) => entry.slug === slug);
+        return model?.name || slug;
       });
       parts.push(...modelNames);
+    } else {
+      const selectedModelos = selectedFacets.modelos || [];
+      if (selectedModelos.length > 0) {
+        const modelNames = selectedModelos.map((value) => {
+          const model = CAR_MODELS.find((entry) => entry.modeloIds.includes(value));
+          return model?.name || value;
+        });
+        parts.push(...modelNames);
+      }
     }
-    const selectedCats = selectedFacets[categoryFacetKey] || [];
-    if (selectedCats.length > 0) {
-      const catNames = selectedCats.slice(0, 2).map(val => {
-        if (categoryFacetKey === 'category_ids') {
-          return getCategoryNameById(val) || val;
-        }
-        return val;
-      });
-      parts.push(...catNames);
+    if (selectedCategoryIds.length > 0) {
+      parts.push(...selectedCategoryIds.slice(0, 2).map((val) => categoryLabelMap.get(val) || val));
+    } else if (selectedLegacyCategoryNames.length > 0) {
+      parts.push(...selectedLegacyCategoryNames.slice(0, 2));
     }
     if (query) parts.push(`"${query}"`);
     return parts.join(' > ') || 'Todos os Produtos';
-  }, [selectedFacets, query, categoryFacetKey]);
+  }, [selectedCategoryIds, selectedLegacyCategoryNames, selectedFacets.modelo_slugs, selectedFacets.modelos, query, categoryLabelMap]);
+
+  const activeModelSlug = useMemo(() => {
+    const selectedSlug = (selectedFacets.modelo_slugs || [])[0];
+    if (selectedSlug) return selectedSlug;
+    if (initialModeloSlug) return initialModeloSlug;
+    if (pathSegments[0] === 'pecas' && pathSegments[1]) return pathSegments[1];
+    return null;
+  }, [initialModeloSlug, pathSegments, selectedFacets.modelo_slugs]);
+
+  const activeModel = useMemo(
+    () => CAR_MODELS_SEO.find((model) => model.slug === activeModelSlug) || null,
+    [activeModelSlug],
+  );
+
+  const activeCategoryLabel = useMemo(() => {
+    if (selectedCategoryIds.length > 0) {
+      return categoryLabelMap.get(selectedCategoryIds[0])
+        || selectedCategoryLabelMemoryRef.current[selectedCategoryIds[0]]
+        || selectedCategoryIds[0];
+    }
+    if (selectedLegacyCategoryNames.length > 0) {
+      return selectedLegacyCategoryNames[0];
+    }
+    if (pathSegments[0] === 'pecas' && pathSegments[2]) {
+      return pathSegments[2].replace(/-/g, ' ');
+    }
+    return null;
+  }, [categoryLabelMap, pathSegments, selectedCategoryIds, selectedLegacyCategoryNames]);
+
+  const activeCategorySlug = useMemo(() => {
+    if (activeCategoryLabel) return slugify(activeCategoryLabel);
+    if (pathSegments[0] === 'pecas' && pathSegments[2]) return pathSegments[2];
+    return null;
+  }, [activeCategoryLabel, pathSegments]);
+
+  const canonicalCatalogUrl = useMemo(() => {
+    const params = new URLSearchParams();
+    const selectedModelSlugs = selectedFacets.modelo_slugs || [];
+    const selectedYears = selectedFacets.anos || [];
+    const selectedInStock = selectedFacets.in_stock || [];
+    const selectedPrices = selectedFacets.price || [];
+    const selectedColors = selectedFacets.color || [];
+    const transientFacetKeys = Object.keys(selectedFacets).filter((key) => ![
+      'category_ids',
+      'category_names',
+      'modelo_slugs',
+      'modelos',
+      'anos',
+      'in_stock',
+      'price',
+      'color',
+    ].includes(key));
+    const hasTransientFacets = Boolean(query.trim())
+      || Boolean(sortBy)
+      || selectedYears.length > 0
+      || selectedInStock.length > 0
+      || selectedPrices.length > 0
+      || selectedColors.length > 0
+      || selectedModelSlugs.length > 1
+      || selectedCategoryIds.length > 1
+      || transientFacetKeys.some((key) => (selectedFacets[key] || []).length > 0);
+
+    if (!hasTransientFacets && selectedModelSlugs.length === 1) {
+      if (selectedCategoryIds.length === 1) {
+        const resolvedCategorySlug = activeCategoryLabel
+          ? slugify(activeCategoryLabel)
+          : activeCategorySlug;
+        if (resolvedCategorySlug) {
+          return `/pecas/${selectedModelSlugs[0]}/${resolvedCategorySlug}`;
+        }
+      }
+      return `/pecas/${selectedModelSlugs[0]}`;
+    }
+
+    if (!hasTransientFacets && selectedModelSlugs.length === 0 && selectedCategoryIds.length === 0) {
+      return '/pecas';
+    }
+
+    if (query.trim()) params.set('q', query.trim());
+    if (sortBy) params.set('sort', sortBy);
+    if (selectedCategoryIds.length > 0) params.set('category', selectedCategoryIds.join(','));
+    if (selectedModelSlugs.length > 0) params.set('modelo_slug', selectedModelSlugs.join(','));
+    if (selectedYears.length > 0) params.set('anos', selectedYears.join(','));
+    if (selectedInStock.length === 1) params.set('inStock', selectedInStock[0]);
+    if (selectedColors.length > 0) params.set('color', selectedColors.join(','));
+
+    if (selectedPrices.length > 0) {
+      const decodedRange = decodePriceRange(selectedPrices[0]);
+      if (decodedRange) {
+        params.set('minPrice', String(decodedRange.min));
+        if (decodedRange.max !== Infinity) params.set('maxPrice', String(decodedRange.max));
+      }
+    }
+
+    for (const key of transientFacetKeys) {
+      const values = selectedFacets[key] || [];
+      if (!values.length) continue;
+      const paramName = FACET_TO_PARAM[key] || key;
+      params.set(paramName, values.join(','));
+    }
+
+    const queryString = params.toString();
+    return `/busca${queryString ? `?${queryString}` : ''}`;
+  }, [
+    activeCategoryLabel,
+    activeCategorySlug,
+    query,
+    selectedCategoryIds,
+    selectedFacets,
+    sortBy,
+    slugify,
+  ]);
+
+  const isSearchRoute = location.pathname.startsWith('/busca');
+  const isCatalogRootRoute = location.pathname === '/pecas';
+  const isModelRoute = pathSegments[0] === 'pecas' && Boolean(pathSegments[1]) && !pathSegments[2];
+  const isModelCategoryRoute = pathSegments[0] === 'pecas' && Boolean(pathSegments[1]) && Boolean(pathSegments[2]);
+  const hasTransientCatalogFilters = Boolean(query.trim())
+    || (selectedFacets.anos || []).length > 0
+    || (selectedFacets.in_stock || []).length > 0
+    || (selectedFacets.price || []).length > 0
+    || (selectedFacets.color || []).length > 0
+    || (selectedFacets.modelo_slugs || []).length > 1
+    || (selectedCategoryIds.length > 1);
+  const shouldIndexModelCategory = isModelCategoryRoute
+    && !hasTransientCatalogFilters
+    && (results?.totalHits ?? 0) >= 3;
+
+  const seoPayload = useMemo(() => {
+    let title = query ? `Busca: ${query}` : 'Busca de Peças';
+    let description = 'Encontre peças genuínas Toyota para seu veículo.';
+    let robots = 'noindex,follow';
+    let canonical = '/busca';
+    const breadcrumbItems = [
+      { '@type': 'ListItem', position: 1, name: 'Home', item: SITE_URL },
+    ];
+
+    if (isCatalogRootRoute) {
+      title = 'Peças Toyota';
+      description = 'Navegue por todas as peças e acessórios Toyota da Toyoparts com filtros por veículo, categoria e ano.';
+      robots = 'index,follow';
+      canonical = '/pecas';
+      breadcrumbItems.push({
+        '@type': 'ListItem',
+        position: 2,
+        name: 'Peças',
+        item: `${SITE_URL}/pecas`,
+      });
+    } else if (isModelRoute && activeModel) {
+      title = activeModel.seoTitle;
+      description = activeModel.seoDescription;
+      robots = results && results.totalHits > 0 ? 'index,follow' : 'noindex,follow';
+      canonical = `/pecas/${activeModel.slug}`;
+      breadcrumbItems.push(
+        {
+          '@type': 'ListItem',
+          position: 2,
+          name: 'Peças',
+          item: `${SITE_URL}/pecas`,
+        },
+        {
+          '@type': 'ListItem',
+          position: 3,
+          name: activeModel.name,
+          item: `${SITE_URL}/pecas/${activeModel.slug}`,
+        },
+      );
+    } else if (isModelCategoryRoute && activeModel && activeCategorySlug) {
+      title = activeCategoryLabel
+        ? `${activeCategoryLabel} para Toyota ${activeModel.name}`
+        : `Peças ${activeModel.name}`;
+      description = activeCategoryLabel
+        ? `Confira ${activeCategoryLabel.toLowerCase()} compatíveis com Toyota ${activeModel.name} na Toyoparts.`
+        : `Confira peças Toyota ${activeModel.name} na Toyoparts.`;
+      robots = shouldIndexModelCategory ? 'index,follow' : 'noindex,follow';
+      canonical = `/pecas/${activeModel.slug}/${activeCategorySlug}`;
+      breadcrumbItems.push(
+        {
+          '@type': 'ListItem',
+          position: 2,
+          name: 'Peças',
+          item: `${SITE_URL}/pecas`,
+        },
+        {
+          '@type': 'ListItem',
+          position: 3,
+          name: activeModel.name,
+          item: `${SITE_URL}/pecas/${activeModel.slug}`,
+        },
+        {
+          '@type': 'ListItem',
+          position: 4,
+          name: activeCategoryLabel || activeCategorySlug,
+          item: `${SITE_URL}/pecas/${activeModel.slug}/${activeCategorySlug}`,
+        },
+      );
+    }
+
+    return {
+      title,
+      description,
+      robots,
+      canonical,
+      jsonLd: [
+        {
+          '@context': 'https://schema.org',
+          '@type': 'CollectionPage',
+          name: title,
+          description,
+          url: `${SITE_URL}${canonical}`,
+        },
+        {
+          '@context': 'https://schema.org',
+          '@type': 'BreadcrumbList',
+          itemListElement: breadcrumbItems,
+        },
+      ],
+    };
+  }, [
+    activeCategoryLabel,
+    activeCategorySlug,
+    activeModel,
+    isCatalogRootRoute,
+    isModelCategoryRoute,
+    isModelRoute,
+    query,
+    results,
+    shouldIndexModelCategory,
+  ]);
+
+  useEffect(() => {
+    if (!results) return;
+    const currentUrl = `${location.pathname}${location.search}`;
+    if (canonicalCatalogUrl === currentUrl) return;
+    navigate(canonicalCatalogUrl, { replace: true });
+  }, [canonicalCatalogUrl, location.pathname, location.search, navigate, results]);
 
   // ─── Sidebar Content ──────────────────────────────────────────────────────
 
   const sidebarContent = (
     <div className="space-y-0">
       {/* ── Departamento (Categories — Tree View) ── */}
-      {(Object.keys(categoryFacetCounts).length > 0 || (selectedFacets[categoryFacetKey] || []).length > 0) && (
+      {(categoryTree.length > 0 || selectedCategoryCount > 0) && (
       <FilterSection
         title="Departamentos"
         defaultOpen={true}
-        count={(selectedFacets[categoryFacetKey] || []).length}
+        count={selectedCategoryCount}
       >
         <div className="max-h-[60vh] overflow-y-auto pr-1 custom-scrollbar">
           <CategoryTreeFilter
-            facetCounts={categoryFacetCounts}
-            facetKey={categoryFacetKey}
-            selectedValues={selectedFacets[categoryFacetKey] || []}
-            selectedIds={selectedFacets.category_ids || []}
-            onToggle={(val, id) => toggleFacet(categoryFacetKey, val, id)}
+            nodes={categoryTree}
+            onToggle={toggleCategory}
             isLoading={isFirstLoad}
           />
         </div>
@@ -755,18 +1078,16 @@ export function SearchPage({
       <FilterSection
         title="Modelo de Veículo"
         defaultOpen={true}
-        count={(selectedFacets.modelos || []).length}
+        count={(selectedFacets.modelo_slugs || []).length}
       >
         <div className="grid grid-cols-2 gap-2 max-h-[380px] overflow-y-auto pr-1 custom-scrollbar">
           {CAR_MODELS.map(model => {
-            const isSelected = model.modeloIds.some(mid => (selectedFacets.modelos || []).includes(mid));
-            const modelCount = facets.modelos
-              ? model.modeloIds.reduce((sum, mid) => sum + (facets.modelos?.[mid] || 0), 0)
-              : null;
+            const isSelected = (selectedFacets.modelo_slugs || []).includes(model.slug);
+            const modelCount = vehicleFacetMap.get(model.slug) ?? null;
             return (
               <button
-                key={model.id}
-                onClick={() => selectSingleFacet('modelos', model.modeloIds[0])}
+                key={model.slug}
+                onClick={() => selectSingleFacet('modelo_slugs', model.slug)}
                 className={`flex flex-col items-center gap-1.5 p-3 rounded-2xl border transition-all text-center ${
                   isSelected
                     ? 'border-primary bg-primary/[0.04] text-primary shadow-[inset_0_0_0_1px_rgba(var(--primary),0.1)]'
@@ -787,16 +1108,14 @@ export function SearchPage({
       </FilterSection>
 
       {/* ── Ano de veículo ── */}
-      {facets.anos && Object.keys(facets.anos).length > 0 && (
+      {yearFacets.length > 0 && (
         <FilterSection
           title="Ano do Veículo"
           defaultOpen={true}
           count={(selectedFacets.anos || []).length}
         >
           <div className="space-y-0.5 pr-1 max-h-[380px] overflow-y-auto custom-scrollbar">
-            {Object.entries(facets.anos)
-              .sort((a, b) => b[0].localeCompare(a[0]))
-              .map(([val, count]) => {
+            {yearFacets.map(({ value: val, count }) => {
                 const checked = (selectedFacets.anos || []).includes(val);
                 const displayVal = resolveAno(val);
                 return (
@@ -893,7 +1212,7 @@ export function SearchPage({
 
       {/* ── Other dynamic facets (exclude internal fields) ── */}
       {Object.entries(facets)
-        .filter(([key]) => !['category_names', 'category_ids', 'modelos', 'anos', 'in_stock', 'color', 'status', 'type_id', 'price'].includes(key))
+        .filter(([key]) => !['category_names', 'category_ids', 'modelos', 'modelo_slugs', 'anos', 'in_stock', 'color', 'status', 'type_id', 'price'].includes(key))
         .filter(([, valuesMap]) => Object.keys(valuesMap).length > 0)
         .map(([facetKey, valuesMap]) => (
           <FilterSection key={facetKey} title={facetKey} defaultOpen={false}>
@@ -970,12 +1289,6 @@ export function SearchPage({
 
   // ─── Render ────────────────────────────────────────────────────────────────
 
-  // Helper to slugify
-  const slugify = (text: string) =>
-    text.toLowerCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '');
 
   const goToProduct = (hit: SearchHit, index?: number) => {
     if (!hit.sku) return;
@@ -994,10 +1307,13 @@ export function SearchPage({
 
   return (
     <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-4 sm:pt-6 pb-10 sm:pb-16">
-      <SEOHead 
-        title={query ? `Busca: ${query} | Toyoparts` : 'Busca de Peças | Toyoparts'} 
-        robots="noindex,follow" 
-        description="Encontre peças genuínas Toyota para seu veículo."
+      <SEOHead
+        title={seoPayload.title}
+        robots={seoPayload.robots}
+        description={seoPayload.description}
+        canonical={seoPayload.canonical}
+        ogType="website"
+        jsonLd={seoPayload.jsonLd}
       />
       
       {/* ── Search Backdrop (Spotlight) ── */}
@@ -1047,9 +1363,14 @@ export function SearchPage({
                     <button 
                       onClick={() => {
                         const nextFacets = { ...selectedFacets };
-                        const facetKey = key === 'categories' ? categoryFacetKey : key;
+                        const facetKey = key === 'categories' ? 'category_names' : key;
+                        if (facetKey === 'category_names') {
+                          delete nextFacets.category_ids;
+                        }
                         nextFacets[facetKey] = conflict.ai;
                         setSelectedFacets(nextFacets);
+                        setCurrentPage(1);
+                        performSearch(query, 1, aiMode, sortBy, nextFacets);
                       }}
                       className="ml-1 text-[10px] font-bold text-primary hover:underline"
                     >
@@ -1239,11 +1560,15 @@ export function SearchPage({
           {activeFacetCount > 0 && (
             <div className="flex flex-wrap items-center gap-1.5 mb-5">
               {Object.entries(selectedFacets)
-                .filter(([key]) => key !== backupCategoryKey) // skip backup category to prevent duplicate chips
+                .filter(([key]) => !(key === 'category_names' && (selectedFacets.category_ids || []).length > 0))
                 .map(([key, values]) =>
                 values.map(val => {
                   let display = val;
                   if (key === 'in_stock') display = val === 'true' ? 'Em estoque' : 'Sem estoque';
+                  if (key === 'modelo_slugs') {
+                    const m = CAR_MODELS.find(cm => cm.slug === val);
+                    if (m) display = m.name;
+                  }
                   if (key === 'modelos') {
                     const m = CAR_MODELS.find(cm => cm.modeloIds.includes(val));
                     if (m) display = m.name;
@@ -1253,8 +1578,7 @@ export function SearchPage({
                     if (r) display = r.label;
                   }
                   if (key === 'category_ids') {
-                    const catName = getCategoryNameById(val);
-                    if (catName) display = catName;
+                    display = categoryLabelMap.get(val) || val;
                   }
                   if (key === 'anos') {
                     display = resolveAno(val);
@@ -1281,6 +1605,7 @@ export function SearchPage({
           )}
 
           {/* ── Loading State ── */}
+
           {isFirstLoad && (
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4 animate-in fade-in duration-300">
               {[...Array(8)].map((_, i) => <ProductCardSkeleton key={i} />)}
@@ -1291,8 +1616,14 @@ export function SearchPage({
           {!isFirstLoad && hits.length === 0 && (
             <div className="flex flex-col items-center justify-center py-20 animate-in fade-in duration-300">
               <Package className="w-10 h-10 text-muted-foreground/20 mb-4" />
-              <p className="text-sm font-medium text-foreground mb-1">Nenhum resultado</p>
-              <p className="text-xs text-muted-foreground mb-4">Tente ajustar os filtros ou termos de busca</p>
+              <p className="text-sm font-medium text-foreground mb-1">
+                {isSkuSimilar ? 'Nenhum SKU exato encontrado' : 'Nenhum resultado'}
+              </p>
+              <p className="text-xs text-muted-foreground mb-4">
+                {isSkuSimilar && exactSkuQuery
+                  ? `Nao encontramos o SKU exato ${exactSkuQuery} nem produtos similares com essa busca.`
+                  : 'Tente ajustar os filtros ou termos de busca'}
+              </p>
               <Button variant="outline" size="sm" onClick={clearAll}>Limpar filtros</Button>
               {/* Zero-result fallback: trending suggestions from real analytics */}
               <div className="mt-8 w-full max-w-lg">
@@ -1338,3 +1669,5 @@ export function SearchPage({
     </div>
   );
 }
+
+

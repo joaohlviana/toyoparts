@@ -11,6 +11,7 @@ import {
   Eye, Zap, CheckCircle2, Building2, CarFront,
 } from 'lucide-react';
 import { SEOHead } from '../components/seo/SEOHead';
+import { buildToyopartsWhatsAppUrl, TOYOPARTS_DEFAULT_WHATSAPP_URL } from '../lib/whatsapp';
 
 // ─── Animation helpers ────────────────────────────────────────────────────────
 function FadeIn({
@@ -146,7 +147,7 @@ const NUMEROS = [
 ];
 
 const CONTATOS = [
-  { icon: Phone,   label: 'Telefone / WhatsApp', value: '(43) 3294-1144', href: 'https://api.whatsapp.com/send?phone=554332941144' },
+  { icon: Phone,   label: 'Telefone / WhatsApp', value: '(43) 3294-1144', href: TOYOPARTS_DEFAULT_WHATSAPP_URL },
   { icon: Mail,    label: 'E-mail',              value: 'contato@toyoparts.com.br', href: 'mailto:contato@toyoparts.com.br' },
   { icon: MapPin,  label: 'Endereço',            value: 'Londrina, Paraná — Brasil', href: 'https://maps.google.com/?q=Londrina+PR' },
   { icon: Clock,   label: 'Horário',             value: 'Seg–Sex 8h–18h | Sáb 8h–12h', href: '#' },
@@ -223,7 +224,7 @@ export function SobrePage() {
                 Ver catálogo <ArrowRight className="w-4 h-4" />
               </Link>
               <a
-                href="https://api.whatsapp.com/send?phone=554332941144"
+                href={TOYOPARTS_DEFAULT_WHATSAPP_URL}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="inline-flex items-center gap-2 bg-white/10 backdrop-blur-sm border border-white/20 text-white px-6 py-3.5 rounded-2xl font-bold text-[15px] hover:bg-white/20 transition-all"
@@ -570,7 +571,7 @@ export function SobrePage() {
                   </div>
                   <div className="flex flex-col sm:flex-row gap-3">
                     <a
-                      href="https://api.whatsapp.com/send?phone=554332941144&text=Ol%C3%A1!%20Preciso%20de%20ajuda%20para%20encontrar%20uma%20pe%C3%A7a%20Toyota."
+                      href={buildToyopartsWhatsAppUrl('Preciso de ajuda para encontrar uma peça Toyota.')}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="flex-1 flex items-center justify-center gap-2 bg-white text-primary px-5 py-3.5 rounded-xl font-bold text-[14px] hover:bg-white/90 transition-all shadow-lg"

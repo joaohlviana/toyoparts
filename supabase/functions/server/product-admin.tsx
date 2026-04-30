@@ -3,6 +3,9 @@ import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
 import * as kv from './kv_store.tsx';
 import * as meili from './meilisearch.tsx';
 import { fetchMagento } from './magento.tsx';
+import { resolveProductMedia } from './media-utils.tsx';
+import { CANONICAL_VEHICLE_MODELS, resolveCanonicalVehicleSlugs } from '../../../shared/canonical-vehicle-models.ts';
+import { resolveProductCompatibility } from '../../../shared/product-compatibility.ts';
 
 const OPENAI_API_KEY = (Deno.env.get('OPENAI_API_KEY') || '').trim();
 const PRODUCT_PREFIX = 'product:';
@@ -10,7 +13,7 @@ const HISTORY_PREFIX = 'history:';
 const BUCKET_NAME = 'make-1d6e33e0-products';
 const MAGENTO_TOKEN = (Deno.env.get('MAGENTO_TOKEN') || '').trim();
 const MAGENTO_BASE_URL = 'https://www.toyoparts.com.br';
-const CANONICAL_RECORD_VERSION = 2;
+const CANONICAL_RECORD_VERSION = 4;
 
 const supabase = createClient(
   Deno.env.get("SUPABASE_URL")!,
@@ -39,9 +42,43 @@ function slugifyFilePart(value: string): string {
 
 export const productAdmin = new Hono();
 
+function withAdminTimeout<T>(promise: Promise<T>, label: string, ms = 3000): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) => {
+      setTimeout(() => reject(new Error(`[ProductAdmin] ${label} timed out after ${ms}ms`)), ms);
+    }),
+  ]);
+}
+
 // Helper to get product by SKU
 async function getProduct(sku: string) {
-  return await kv.get(`${PRODUCT_PREFIX}${sku}`);
+  const key = `${PRODUCT_PREFIX}${sku}`;
+
+  try {
+    return await kv.get(key);
+  } catch (error) {
+    console.warn(`[ProductAdmin] KV product read failed for ${sku}, trying direct DB fallback:`, error);
+    try {
+      const { data, error: dbError } = await withAdminTimeout(
+        supabase
+          .from('kv_store_1d6e33e0')
+          .select('value')
+          .eq('key', key)
+          .maybeSingle(),
+        `direct product DB fallback:${sku}`,
+      );
+
+      if (dbError) {
+        throw new Error(dbError.message);
+      }
+
+      return data?.value ?? null;
+    } catch (dbFallbackError) {
+      console.warn(`[ProductAdmin] Direct DB fallback failed for ${sku}:`, dbFallbackError);
+      return null;
+    }
+  }
 }
 
 function normalizeSku(value: string | null | undefined) {
@@ -140,18 +177,39 @@ function normalizeCategoryTreePayload(raw: any): any[] {
 }
 
 async function loadCategoryTree() {
-  let tree = await kv.get('meta:category_tree');
+  let tree: any = null;
+
+  try {
+    tree = await kv.get('meta:category_tree');
+  } catch (error) {
+    console.warn('[ProductAdmin] Category tree cache read failed, using fallback strategy:', error);
+    tree = null;
+  }
 
   if (!tree || (Array.isArray(tree) && tree.length === 0)) {
     console.log('Category tree cache miss, fetching from Magento...');
-    tree = await fetchMagentoCategories();
+    tree = await fetchMagentoCategories().catch((error) => {
+      console.warn('[ProductAdmin] Magento categories fallback failed:', error);
+      return null;
+    });
     if (tree && (Array.isArray(tree) ? tree.length > 0 : true)) {
-      await kv.set('meta:category_tree', tree);
+      await kv.set('meta:category_tree', tree).catch((error) => {
+        console.warn('[ProductAdmin] Category tree cache write skipped:', error);
+      });
     }
   }
 
   const normalized = normalizeCategoryTreePayload(tree);
   return normalized.length > 0 ? normalized : normalizeCategoryTreePayload(fallbackCategories);
+}
+
+async function safeLoadCategoryTree() {
+  try {
+    return await loadCategoryTree();
+  } catch (error) {
+    console.error('[ProductAdmin] safeLoadCategoryTree fallback activated:', error);
+    return normalizeCategoryTreePayload(fallbackCategories);
+  }
 }
 
 const FIXED_CUSTOM_ATTRIBUTE_CODES = [
@@ -345,11 +403,61 @@ const ATTRIBUTE_DEFINITIONS = [
   },
 ];
 
-function buildEditorSchema(categoryTree: any[]) {
+async function loadCompatibilityMetaContext() {
+  const meiliMeta = await kv.get('meili:sync:meta').catch(() => null) as {
+    modelos?: Record<string, string>;
+    anos?: Record<string, string>;
+    versions?: Record<string, string>;
+  } | null;
+
+  const modelIdToLabel =
+    await kv.get('meta:attr_modelos').catch(() => null)
+    || meiliMeta?.modelos
+    || {};
+  const yearIdToLabel =
+    await kv.get('meta:attr_anos').catch(() => null)
+    || meiliMeta?.anos
+    || {};
+  const versionIdToLabel =
+    await kv.get('meta:attr_versoes').catch(() => null)
+    || meiliMeta?.versions
+    || {};
+
+  return {
+    modelIdToLabel,
+    yearIdToLabel,
+    versionIdToLabel,
+  };
+}
+
+function buildCompatibilitySchemaOptions(meta: Awaited<ReturnType<typeof loadCompatibilityMetaContext>>) {
+  const modelEntries = Object.entries(meta.modelIdToLabel || {});
+  const models = CANONICAL_VEHICLE_MODELS.map((model) => {
+    const matchedId = modelEntries.find(([, label]) => resolveCanonicalVehicleSlugs([label]).includes(model.slug))?.[0] || '';
+    return {
+      slug: model.slug,
+      label: model.displayName,
+      modelId: matchedId,
+    };
+  });
+
+  const years = Object.entries(meta.yearIdToLabel || {})
+    .map(([id, label]) => ({
+      id: String(id),
+      label: String(label || '').trim(),
+    }))
+    .filter((item) => item.label)
+    .sort((a, b) => a.label.localeCompare(b.label, 'pt-BR'));
+
+  return { models, years };
+}
+
+function buildEditorSchema(categoryTree: any[], compatibilityOptions: { models: Array<{ slug: string; label: string; modelId: string }>; years: Array<{ id: string; label: string }> }) {
   return {
     categoryTree,
     fixedAttributeCodes: FIXED_CUSTOM_ATTRIBUTE_CODES,
     attributeDefinitions: ATTRIBUTE_DEFINITIONS,
+    compatibilityOptions,
   };
 }
 
@@ -370,25 +478,43 @@ function flattenCategoryTree(nodes: any[], map = new Map<string, string>()) {
 }
 
 async function getCategoryNameMap() {
-  const tree = await loadCategoryTree();
-  return flattenCategoryTree(tree);
-}
-
-function resolveImageUrl(file: string | null | undefined) {
-  if (!file) return null;
-  if (String(file).startsWith('http')) return String(file);
-  if (String(file).startsWith('/')) {
-    return `${MAGENTO_BASE_URL}/pub/media/catalog/product${file}`;
+  try {
+    const tree = await safeLoadCategoryTree();
+    return flattenCategoryTree(tree);
+  } catch (error) {
+    console.error('[ProductAdmin] Falling back to minimal category name map:', error);
+    return flattenCategoryTree(normalizeCategoryTreePayload(fallbackCategories));
   }
-  return String(file);
 }
 
 function inferImageUrl(product: any, customMap: Record<string, any>) {
-  const galleryEntries = normalizeMediaEntries(product.media_gallery_entries || product.media_gallery);
-  if (galleryEntries.length > 0) {
-    return resolveImageUrl(galleryEntries[0].file);
+  const media = resolveProductMedia(product, { allowLegacy: false });
+  if (media.image_url) return media.image_url;
+  if (typeof product.image_url === 'string' && product.image_url.startsWith('http')) return product.image_url;
+  return null;
+}
+
+function upsertCustomAttribute(customAttributes: any[], attributeCode: string, value: any) {
+  const normalizedCode = String(attributeCode || '').trim();
+  if (!normalizedCode) return customAttributes;
+
+  const nextValue = value == null ? '' : value;
+  const existingIndex = customAttributes.findIndex((attr) => String(attr?.attribute_code || '').trim() === normalizedCode);
+
+  if (existingIndex >= 0) {
+    customAttributes[existingIndex] = {
+      ...customAttributes[existingIndex],
+      attribute_code: normalizedCode,
+      value: nextValue,
+    };
+    return customAttributes;
   }
-  return resolveImageUrl(customMap.image) || resolveImageUrl(product.image_url) || null;
+
+  customAttributes.push({
+    attribute_code: normalizedCode,
+    value: nextValue,
+  });
+  return customAttributes;
 }
 
 function buildFallbackCustomAttributes(product: any): any[] {
@@ -406,6 +532,7 @@ function buildFallbackCustomAttributes(product: any): any[] {
   setIfPresent('special_price', product.special_price);
   setIfPresent('modelo', normalizeCsvValues(product.modelos));
   setIfPresent('ano', normalizeCsvValues(product.anos));
+  setIfPresent('versao', normalizeCsvValues(product.versoes));
   setIfPresent('url_key', product.url_key);
   setIfPresent('meta_title', product.meta_title);
   setIfPresent('meta_keyword', product.meta_keyword);
@@ -430,10 +557,10 @@ function isCanonicalProductRecord(product: any) {
   if (product._record_shape === 'canonical' && Number(product._record_version) >= CANONICAL_RECORD_VERSION) {
     return true;
   }
-  return Array.isArray(product.custom_attributes) && 'extension_attributes' in product;
+  return false;
 }
 
-async function normalizeProductRecord(input: any, existing: any = {}) {
+export async function normalizeProductRecord(input: any, existing: any = {}) {
   const merged = {
     ...existing,
     ...input,
@@ -441,8 +568,24 @@ async function normalizeProductRecord(input: any, existing: any = {}) {
   const rawCustomAttributes = Array.isArray(merged.custom_attributes) && merged.custom_attributes.length > 0
     ? merged.custom_attributes
     : buildFallbackCustomAttributes(merged);
-  const custom_attributes = normalizeCustomAttributes(rawCustomAttributes);
-  const customMap = customAttributesToMap(custom_attributes);
+  let custom_attributes = normalizeCustomAttributes(rawCustomAttributes);
+  let customMap = customAttributesToMap(custom_attributes);
+  const compatibilityMeta = await loadCompatibilityMetaContext();
+  const compatibility = resolveProductCompatibility({
+    ...existing,
+    ...merged,
+    custom_attributes,
+    custom_attributes_map: customMap,
+    compatibility_entries: Array.isArray(merged.compatibility_entries)
+      ? merged.compatibility_entries
+      : existing.compatibility_entries,
+  }, compatibilityMeta);
+
+  custom_attributes = upsertCustomAttribute(custom_attributes, 'modelo', compatibility.legacyFields.modelo.join(','));
+  custom_attributes = upsertCustomAttribute(custom_attributes, 'ano', compatibility.legacyFields.ano.join(','));
+  custom_attributes = upsertCustomAttribute(custom_attributes, 'versao', compatibility.legacyFields.versao.join(','));
+  custom_attributes = upsertCustomAttribute(custom_attributes, 'compatibilidade', compatibility.legacyFields.compatibilidade);
+  customMap = customAttributesToMap(custom_attributes);
   const extension_attributes = {
     ...(existing.extension_attributes || {}),
     ...(merged.extension_attributes || {}),
@@ -453,7 +596,8 @@ async function normalizeProductRecord(input: any, existing: any = {}) {
   const specialPriceRaw = customMap.special_price;
   const specialPrice = specialPriceRaw === '' || specialPriceRaw == null ? null : Number(specialPriceRaw);
   const media_gallery_entries = normalizeMediaEntries(merged.media_gallery_entries || merged.media_gallery);
-  const image_url = inferImageUrl({ ...merged, media_gallery_entries }, customMap);
+  const media = resolveProductMedia({ ...merged, media_gallery_entries }, { allowLegacy: false });
+  const image_url = inferImageUrl({ ...merged, media_gallery_entries, images: media.images, image_url: media.image_url }, customMap);
   const now = new Date().toISOString();
 
   const normalized = {
@@ -476,13 +620,32 @@ async function normalizeProductRecord(input: any, existing: any = {}) {
     category_names: categoryIds
       .map((id) => categoryMap.get(String(id)))
       .filter((name): name is string => !!name),
-    modelos: normalizeCsvValues(customMap.modelo),
-    anos: normalizeCsvValues(customMap.ano),
+    modelos: compatibility.legacyFields.modelo,
+    anos: compatibility.legacyFields.ano,
+    versoes: compatibility.legacyFields.versao,
+    compatibility_entries: compatibility.entries,
+    compatibility_review_required: compatibility.reviewRequired,
+    compatibility_summary: compatibility.summary,
+    compatibility_display: compatibility.compatibilityDisplay,
+    compatibility_audit_bucket: compatibility.auditBucket,
+    compat_models: compatibility.compatModels,
+    modelo_labels: compatibility.modelLabels,
+    ano_labels: compatibility.yearLabels,
+    version_labels: compatibility.versionLabels,
+    modelo_slugs: compatibility.modelSlugs,
+    compat_years: compatibility.compatYears,
+    compat_versions: compatibility.compatVersions,
+    compatibilidade: compatibility.compatibilityLegacyText,
     description: customMap.description ?? merged.description ?? existing.description ?? '',
     short_description: customMap.short_description ?? merged.short_description ?? existing.short_description ?? '',
     special_price: Number.isFinite(specialPrice as number) ? specialPrice : null,
     image_url,
-    has_image: !!image_url,
+    images: media.images,
+    has_image: media.has_image,
+    _image_source: media._image_source,
+    _legacy_image_paths: media._legacy_image_paths,
+    _image_storage_paths: media._image_storage_paths,
+    _image_sync_status: media._image_sync_status,
     has_promotion: Number.isFinite(specialPrice as number) && Number(specialPrice) > 0,
     _record_shape: 'canonical',
     _record_version: CANONICAL_RECORD_VERSION,
@@ -496,6 +659,98 @@ async function normalizeProductRecord(input: any, existing: any = {}) {
   return normalized;
 }
 
+async function listStoredProductRows(offset: number, limit: number) {
+  const safeOffset = Math.max(0, Number(offset) || 0);
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 100, 250));
+  const { data, error } = await withAdminTimeout(
+    supabase
+      .from('kv_store_1d6e33e0')
+      .select('key,value')
+      .like('key', `${PRODUCT_PREFIX}%`)
+      .order('key')
+      .range(safeOffset, safeOffset + safeLimit - 1),
+    `compatibility product batch:${safeOffset}:${safeLimit}`,
+    8000,
+  );
+  if (error) throw new Error(error.message);
+  return Array.isArray(data) ? data : [];
+}
+
+async function getStoredProductCount() {
+  const { count, error } = await withAdminTimeout(
+    supabase
+      .from('kv_store_1d6e33e0')
+      .select('*', { count: 'exact', head: true })
+      .like('key', `${PRODUCT_PREFIX}%`),
+    'compatibility product count',
+    8000,
+  );
+  if (error) throw new Error(error.message);
+  return Number(count || 0);
+}
+
+function buildCompatibilityAuditRow(product: any, compatibility: ReturnType<typeof resolveProductCompatibility>) {
+  return {
+    sku: normalizeSku(product?.sku),
+    name: String(product?.name || '').trim(),
+    audit_bucket: compatibility.auditBucket,
+    review_required: compatibility.reviewRequired,
+    entry_count: compatibility.entries.length,
+    source_types: Array.from(new Set(compatibility.entries.map((entry) => entry.source_type))),
+    model_slugs: compatibility.modelSlugs,
+    model_labels: compatibility.modelLabels,
+    year_labels: compatibility.yearLabels,
+    version_labels: compatibility.versionLabels,
+    compatibility_display: compatibility.compatibilityDisplay,
+    compatibility_legacy_text: compatibility.compatibilityLegacyText,
+    record_version: Number(product?._record_version || 0),
+    updated_at: product?.updated_at || null,
+  };
+}
+
+function summarizeCompatibilityRows(rows: Array<{ audit_bucket: string; review_required: boolean; entry_count: number }>) {
+  const buckets = {
+    ok_structured: 0,
+    legacy_only: 0,
+    toyota_only: 0,
+    ambiguous: 0,
+    empty: 0,
+  };
+  let reviewRequired = 0;
+  let withEntries = 0;
+
+  for (const row of rows) {
+    if (row.audit_bucket in buckets) {
+      buckets[row.audit_bucket as keyof typeof buckets] += 1;
+    }
+    if (row.review_required) reviewRequired += 1;
+    if (row.entry_count > 0) withEntries += 1;
+  }
+
+  return {
+    buckets,
+    review_required: reviewRequired,
+    with_entries: withEntries,
+    empty_entries: Math.max(0, rows.length - withEntries),
+  };
+}
+
+function buildCompatibilityFingerprint(product: any) {
+  return JSON.stringify({
+    version: Number(product?._record_version || 0),
+    entries: Array.isArray(product?.compatibility_entries) ? product.compatibility_entries : [],
+    review_required: !!product?.compatibility_review_required,
+    audit_bucket: product?.compatibility_audit_bucket || '',
+    model_slugs: Array.isArray(product?.modelo_slugs) ? product.modelo_slugs : [],
+    compat_years: Array.isArray(product?.compat_years) ? product.compat_years : [],
+    compat_versions: Array.isArray(product?.compat_versions) ? product.compat_versions : [],
+    legacy_modelos: Array.isArray(product?.modelos) ? product.modelos : [],
+    legacy_anos: Array.isArray(product?.anos) ? product.anos : [],
+    legacy_versoes: Array.isArray(product?.versoes) ? product.versoes : [],
+    compatibilidade: String(product?.compatibilidade || ''),
+  });
+}
+
 async function fetchMagentoProductBySku(sku: string) {
   try {
     return await fetchMagento(`/V1/products/${encodeURIComponent(sku)}`);
@@ -503,6 +758,33 @@ async function fetchMagentoProductBySku(sku: string) {
     console.warn(`[ProductAdmin] Magento read fallback failed for ${sku}:`, error);
     return null;
   }
+}
+
+async function getIndexedProductDetail(sku: string) {
+  if (!meili.isConfigured()) return null;
+  try {
+    return await meili.getDocument(sku);
+  } catch (error) {
+    console.warn(`[ProductAdmin] MeiliSearch detail fallback failed for ${sku}:`, error);
+    return null;
+  }
+}
+
+async function getEditorProductDetail(sku: string) {
+  const normalizedSku = normalizeSku(sku);
+  if (!normalizedSku) return null;
+
+  const stored = await getProduct(normalizedSku);
+  if (stored) {
+    return stored;
+  }
+
+  const indexedProduct = await getIndexedProductDetail(normalizedSku);
+  if (indexedProduct) {
+    return indexedProduct;
+  }
+
+  return await fetchMagentoProductBySku(normalizedSku);
 }
 
 async function getCanonicalProductDetail(sku: string) {
@@ -514,21 +796,44 @@ async function getCanonicalProductDetail(sku: string) {
     return stored;
   }
 
+  if (stored) {
+    try {
+      const fallbackCanonical = await normalizeProductRecord(stored, stored);
+      await kv.set(`${PRODUCT_PREFIX}${normalizedSku}`, fallbackCanonical).catch((error) => {
+        console.warn(`[ProductAdmin] Fallback cache write skipped for ${normalizedSku}:`, error);
+      });
+      return fallbackCanonical;
+    } catch (error) {
+      console.warn(`[ProductAdmin] Stored product normalization failed for ${normalizedSku}, trying Magento fallback:`, error);
+    }
+  }
+
+  const indexedProduct = await getIndexedProductDetail(normalizedSku);
+  if (indexedProduct) {
+    try {
+      const indexedCanonical = await normalizeProductRecord(indexedProduct, indexedProduct);
+      await kv.set(`${PRODUCT_PREFIX}${normalizedSku}`, indexedCanonical).catch((error) => {
+        console.warn(`[ProductAdmin] Indexed cache write skipped for ${normalizedSku}:`, error);
+      });
+      return indexedCanonical;
+    } catch (error) {
+      console.warn(`[ProductAdmin] Indexed product normalization failed for ${normalizedSku}, trying Magento fallback:`, error);
+    }
+  }
+
   const magentoProduct = await fetchMagentoProductBySku(normalizedSku);
   if (magentoProduct) {
     const canonical = await normalizeProductRecord(magentoProduct, stored || {});
-    await kv.set(`${PRODUCT_PREFIX}${normalizedSku}`, canonical);
+    await kv.set(`${PRODUCT_PREFIX}${normalizedSku}`, canonical).catch((error) => {
+      console.warn(`[ProductAdmin] Cache write skipped for ${normalizedSku}:`, error);
+    });
     return canonical;
   }
 
-  if (!stored) return null;
-
-  const fallbackCanonical = await normalizeProductRecord(stored, stored);
-  await kv.set(`${PRODUCT_PREFIX}${normalizedSku}`, fallbackCanonical);
-  return fallbackCanonical;
+  return null;
 }
 
-async function syncProductIndex(product: any) {
+export async function syncProductIndex(product: any) {
   if (!meili.isConfigured()) return;
   try {
     await meili.setupIndexIfNeeded();
@@ -675,9 +980,13 @@ async function fetchMagentoCategories() {
     return normalizeCategoryTreePayload(fallbackCategories);
   }
 
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+
   try {
     const res = await fetch(`${MAGENTO_BASE_URL}/rest/V1/categories`, {
-      headers: { 'Authorization': `Bearer ${MAGENTO_TOKEN}` }
+      headers: { 'Authorization': `Bearer ${MAGENTO_TOKEN}` },
+      signal: controller.signal,
     });
 
     if (!res.ok) throw new Error(`Magento API Error: ${res.status}`);
@@ -700,6 +1009,8 @@ async function fetchMagentoCategories() {
   } catch (error) {
     console.error('Failed to fetch Magento categories:', error);
     return normalizeCategoryTreePayload(fallbackCategories);
+  } finally {
+    clearTimeout(timeoutId);
   }
 }
 
@@ -874,13 +1185,192 @@ productAdmin.get('/metadata/:field', async (c) => {
 
 // Get category tree
 productAdmin.get('/metadata/structure/tree', async (c) => {
-  const tree = await loadCategoryTree();
+  const tree = await safeLoadCategoryTree();
   return c.json(tree || []);
 });
 
 productAdmin.get('/schema', async (c) => {
-  const categoryTree = await loadCategoryTree();
-  return c.json(buildEditorSchema(categoryTree));
+  try {
+    const categoryTree = await safeLoadCategoryTree();
+    const compatibilityMeta = await loadCompatibilityMetaContext();
+    return c.json(buildEditorSchema(categoryTree, buildCompatibilitySchemaOptions(compatibilityMeta)));
+  } catch (error: any) {
+    console.error('[ProductAdmin] Schema fallback failed:', error);
+    const compatibilityMeta = await loadCompatibilityMetaContext();
+    return c.json(buildEditorSchema(normalizeCategoryTreePayload(fallbackCategories), buildCompatibilitySchemaOptions(compatibilityMeta)));
+  }
+});
+
+productAdmin.get('/compatibility/audit', async (c) => {
+  try {
+    const limit = Math.max(1, Math.min(parseInt(c.req.query('limit') || '100', 10) || 100, 250));
+    const offset = Math.max(0, parseInt(c.req.query('offset') || '0', 10) || 0);
+    const requestedBuckets = (c.req.query('buckets') || '')
+      .split(',')
+      .map((item) => item.trim())
+      .filter(Boolean);
+    const reviewRequiredParam = (c.req.query('review_required') || '').trim().toLowerCase();
+    const skuFilter = normalizeSku(c.req.query('sku'));
+    const compatibilityMeta = await loadCompatibilityMetaContext();
+    const totalProducts = skuFilter ? 1 : await getStoredProductCount();
+
+    let products: any[] = [];
+    if (skuFilter) {
+      const product = await getProduct(skuFilter);
+      products = product ? [product] : [];
+    } else {
+      const rows = await listStoredProductRows(offset, limit);
+      products = rows.map((row: any) => row?.value).filter(Boolean);
+    }
+
+    const auditRows = products
+      .map((product) => {
+        const compatibility = resolveProductCompatibility(product, compatibilityMeta);
+        return buildCompatibilityAuditRow(product, compatibility);
+      })
+      .filter((row) => {
+        if (requestedBuckets.length > 0 && !requestedBuckets.includes(row.audit_bucket)) return false;
+        if (reviewRequiredParam === 'true' && !row.review_required) return false;
+        if (reviewRequiredParam === 'false' && row.review_required) return false;
+        return true;
+      });
+
+    return c.json({
+      rows: auditRows,
+      summary: summarizeCompatibilityRows(auditRows),
+      offset,
+      limit,
+      nextOffset: skuFilter ? null : offset + products.length,
+      totalProducts,
+      filters: {
+        sku: skuFilter || null,
+        buckets: requestedBuckets,
+        review_required: reviewRequiredParam || null,
+      },
+    });
+  } catch (error: any) {
+    console.error('[ProductAdmin] Compatibility audit failed:', error);
+    return c.json({ error: error?.message || 'Compatibility audit failed' }, 500);
+  }
+});
+
+productAdmin.post('/compatibility/backfill', async (c) => {
+  try {
+    const body = await c.req.json().catch(() => ({}));
+    const limit = Math.max(1, Math.min(parseInt(String(body?.limit ?? '50'), 10) || 50, 200));
+    const offset = Math.max(0, parseInt(String(body?.offset ?? '0'), 10) || 0);
+    const dryRun = String(body?.dryRun ?? 'false').toLowerCase() === 'true' || body?.dryRun === true;
+    const reindex = body?.reindex !== false;
+    const requestedBuckets = Array.isArray(body?.buckets)
+      ? body.buckets.map((item: any) => String(item || '').trim()).filter(Boolean)
+      : [];
+    const requestedSkus = Array.isArray(body?.skus)
+      ? body.skus.map((item: any) => normalizeSku(item)).filter(Boolean)
+      : [];
+    const reviewRequiredOnly = String(body?.reviewRequiredOnly ?? 'false').toLowerCase() === 'true' || body?.reviewRequiredOnly === true;
+    const compatibilityMeta = await loadCompatibilityMetaContext();
+
+    let products: any[] = [];
+    if (requestedSkus.length > 0) {
+      for (const sku of requestedSkus) {
+        const product = await getProduct(sku);
+        if (product) products.push(product);
+      }
+    } else {
+      const rows = await listStoredProductRows(offset, limit);
+      products = rows.map((row: any) => row?.value).filter(Boolean);
+    }
+
+    const filteredProducts = products.filter((product) => {
+      const compatibility = resolveProductCompatibility(product, compatibilityMeta);
+      if (requestedBuckets.length > 0 && !requestedBuckets.includes(compatibility.auditBucket)) return false;
+      if (reviewRequiredOnly && !compatibility.reviewRequired) return false;
+      return true;
+    });
+
+    const touchedRows: any[] = [];
+    const reindexDocs: any[] = [];
+    let updated = 0;
+    let unchanged = 0;
+    let failed = 0;
+
+    for (const product of filteredProducts) {
+      const sku = normalizeSku(product?.sku);
+      if (!sku) continue;
+
+      try {
+        const beforeFingerprint = buildCompatibilityFingerprint(product);
+        const normalized = await normalizeProductRecord(product, product);
+        const afterFingerprint = buildCompatibilityFingerprint(normalized);
+        const changed = beforeFingerprint !== afterFingerprint || !isCanonicalProductRecord(product);
+        const compatibility = resolveProductCompatibility(normalized, compatibilityMeta);
+        const auditRow = buildCompatibilityAuditRow(normalized, compatibility);
+
+        touchedRows.push({
+          ...auditRow,
+          changed,
+        });
+
+        if (changed) {
+          updated += 1;
+          if (!dryRun) {
+            await kv.set(`${PRODUCT_PREFIX}${sku}`, normalized);
+            if (reindex && meili.isConfigured()) {
+              const doc = meili.transformProduct(normalized);
+              if (doc?.id) reindexDocs.push(doc);
+            }
+          }
+        } else {
+          unchanged += 1;
+        }
+      } catch (error: any) {
+        failed += 1;
+        touchedRows.push({
+          sku,
+          audit_bucket: 'ambiguous',
+          review_required: true,
+          changed: false,
+          error: error?.message || String(error),
+        });
+      }
+    }
+
+    let indexError: string | null = null;
+    if (!dryRun && reindexDocs.length > 0) {
+      try {
+        await meili.setupIndexIfNeeded();
+        await meili.indexDocuments(reindexDocs);
+      } catch (error: any) {
+        indexError = error?.message || String(error);
+        console.error('[ProductAdmin] Compatibility backfill Meili sync failed:', error);
+      }
+    }
+
+    return c.json({
+      success: true,
+      dryRun,
+      processed: filteredProducts.length,
+      updated,
+      unchanged,
+      failed,
+      indexError,
+      summary: summarizeCompatibilityRows(
+        touchedRows.filter((row) => typeof row?.audit_bucket === 'string') as Array<{ audit_bucket: string; review_required: boolean; entry_count: number }>
+      ),
+      rows: touchedRows,
+      offset,
+      limit,
+      nextOffset: requestedSkus.length > 0 ? null : offset + products.length,
+      filters: {
+        buckets: requestedBuckets,
+        reviewRequiredOnly,
+        skus: requestedSkus,
+      },
+    });
+  } catch (error: any) {
+    console.error('[ProductAdmin] Compatibility backfill failed:', error);
+    return c.json({ error: error?.message || 'Compatibility backfill failed' }, 500);
+  }
 });
 
 // Create product

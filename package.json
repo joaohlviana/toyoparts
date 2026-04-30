@@ -4,8 +4,13 @@
   "version": "0.0.1",
   "type": "module",
   "scripts": {
+    "audit:catalog": "node scripts/audit-catalog-runtime.mjs",
     "build": "vite build",
+    "check:pt-texts": "node scripts/check-portuguese-texts.mjs",
     "dev": "vite",
+    "deploy:prod": "powershell -ExecutionPolicy Bypass -File scripts/deploy-production.ps1",
+    "deploy:prod:frontend": "powershell -ExecutionPolicy Bypass -File scripts/deploy-production.ps1 -SkipSupabase",
+    "deploy:prod:backend": "powershell -ExecutionPolicy Bypass -File scripts/deploy-production.ps1 -SkipBuild -SkipVercel",
     "test:e2e": "playwright test",
     "test:e2e:headed": "playwright test --headed"
   },
@@ -15,6 +20,7 @@
     "@mui/icons-material": "7.3.5",
     "@mui/material": "7.3.5",
     "@popperjs/core": "2.11.8",
+    "@posthog/react": "^1.9.0",
     "@radix-ui/react-accordion": "1.2.3",
     "@radix-ui/react-alert-dialog": "1.1.6",
     "@radix-ui/react-aspect-ratio": "1.1.2",
@@ -55,6 +61,7 @@
     "lucide-react": "0.487.0",
     "motion": "12.23.24",
     "next-themes": "0.4.6",
+    "posthog-js": "^1.365.4",
     "react-day-picker": "8.10.1",
     "react-dnd": "16.0.1",
     "react-dnd-html5-backend": "16.0.1",
@@ -80,6 +87,7 @@
     "@playwright/test": "^1.58.2",
     "@tailwindcss/vite": "4.1.12",
     "@vitejs/plugin-react": "4.7.0",
+    "supabase": "^2.83.0",
     "tailwindcss": "4.1.12",
     "vite": "6.3.5"
   },

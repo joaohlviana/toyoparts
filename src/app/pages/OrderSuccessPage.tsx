@@ -6,11 +6,38 @@ import { CheckCircle2, ShoppingBag, ArrowRight, Home, Copy, Check } from 'lucide
 import { Button } from '../components/ui/button';
 import { SEOHead } from '../components/seo/SEOHead';
 import { copyToClipboard } from '../utils/clipboard';
+import { projectId } from '../../../utils/supabase/info';
+import { trackPurchaseGoal } from '../lib/analytics';
+import { TOYOPARTS_DEFAULT_WHATSAPP_URL } from '../lib/whatsapp';
 
 export function OrderSuccessPage() {
   const [searchParams] = useSearchParams();
   const orderId = searchParams.get('orderId') || '';
   const [copied, setCopied] = React.useState(false);
+  const trackedRef = React.useRef(false);
+
+  React.useEffect(() => {
+    if (!orderId || trackedRef.current) return;
+
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch(`https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0/orders/${encodeURIComponent(orderId)}`);
+        if (!response.ok) return;
+        const payload = await response.json().catch(() => null);
+        const order = payload?.order;
+        if (cancelled || !order || order.payment_status !== 'paid') return;
+        trackedRef.current = true;
+        trackPurchaseGoal(String(order.asaas_payment_id || order.orderId || orderId), Number(order?.totals?.total || 0), 'BRL');
+      } catch {
+        // no-op
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [orderId]);
 
   const handleCopy = () => {
     if (orderId) {
@@ -63,7 +90,7 @@ export function OrderSuccessPage() {
               Dúvidas sobre seu pedido? Fale conosco:
             </p>
             <a
-              href="https://api.whatsapp.com/send?phone=554332941144&text=Ol%C3%A1!%20Toyoparts!"
+              href={TOYOPARTS_DEFAULT_WHATSAPP_URL}
               target="_blank"
               rel="noopener noreferrer"
               className="inline-flex items-center gap-2 text-sm font-semibold text-green-600 hover:text-green-700 transition-colors"

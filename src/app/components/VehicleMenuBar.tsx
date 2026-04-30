@@ -4,6 +4,13 @@ import { CAR_MODELS_SEO } from '../seo-config';
 import { ChevronRight, ArrowRight, Menu, X, Loader2 } from 'lucide-react';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
 import { AnimatePresence, motion } from 'motion/react';
+import { fetchWithTimeout } from '../lib/fetch-with-timeout';
+import { FALLBACK_CATEGORY_TREE, hasRenderableCategoryChildren } from '../lib/category-menu-fallback';
+import {
+  DEFAULT_HOME_CATEGORY_IMAGES,
+  getRenderableCategoryMenuImage,
+  markCategoryImageUrlBroken,
+} from '../lib/home-departments';
 
 // ─── API ─────────────────────────────────────────────────────────────────────
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0`;
@@ -14,7 +21,6 @@ const HEADERS: HeadersInit = {
 };
 
 // ─── S3 base for department images ───────────────────────────────────────────
-const S3 = 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 interface CategoryNode {
@@ -28,94 +34,57 @@ interface CategoryNode {
   children?: CategoryNode[]; // fallback for old cache format
 }
 
-// ─── Department definitions per model ────────────────────────────────────────
-interface Department {
-  name: string;
-  description: string;
-  imgKey: string;
-  path: string;
+interface NavigationNode {
+  id: string;
+  label: string;
+  level: number;
+  resultCount: number;
+  selectable: boolean;
+  selected: boolean;
+  children: NavigationNode[];
 }
 
-const COMMON_DEPTS = (modelKey: string): Department[] => [
-  {
-    name: 'Acessorios Externos',
-    description: 'Cromados, aerofolios, spoilers, antenas, frisos e mais',
-    imgKey: `${modelKey}-menu-acessorios-externos.jpg`,
-    path: 'acessorios-externos',
-  },
-  {
-    name: 'Acessorios Internos',
-    description: 'Cromados internos, porta-malas, tapetes, som e multimimidia',
-    imgKey: `${modelKey}-menu-acessorios-internos.jpg`,
-    path: 'acessorios-internos',
-  },
-  {
-    name: 'Iluminacao',
-    description: 'Farol de neblina, lanternas, lampadas LED e xenon',
-    imgKey: `${modelKey}-menu-iluminacao.jpg`,
-    path: 'iluminacao',
-  },
-  {
-    name: 'Pecas',
-    description: 'Amortecedor, cambio, filtros, freio e suspensao',
-    imgKey: `${modelKey}-menu-pecas.jpg`,
-    path: 'pecas',
-  },
-];
+interface CatalogNavigationPayload {
+  categoryTree?: NavigationNode[];
+  images?: Record<string, string>;
+}
 
-const MODEL_DEPARTMENTS: Record<string, Department[]> = {
-  hilux: [
-    ...COMMON_DEPTS('hilux'),
-    {
-      name: 'Santo Antonio',
-      description: 'Santo Antonio, barras e protecao',
-      imgKey: 'hilux-menu-santo-antonio.jpg',
-      path: 'santo-antonio',
-    },
-  ],
-  corolla: COMMON_DEPTS('corolla'),
-  'corolla-cross': [
-    {
-      name: 'Acessorios Externos',
-      description: 'Cromados, aerofolios, spoilers, antenas, frisos e mais',
-      imgKey: 'banner-departamento-corolla-cross-acessorio-externo.jpg',
-      path: 'acessorios-externos',
-    },
-    {
-      name: 'Acessorios Internos',
-      description: 'Cromados internos, porta-malas, tapetes, som e multimimidia',
-      imgKey: 'banner-departamento-corolla-cross-acessorio-interno.jpg',
-      path: 'acessorios-internos',
-    },
-    {
-      name: 'Iluminacao',
-      description: 'Farol de neblina, lanternas, lampadas LED e xenon',
-      imgKey: 'banne-departamento-corolla-cross-iluminacao.jpg',
-      path: 'iluminacao',
-    },
-    {
-      name: 'Pecas',
-      description: 'Amortecedor, cambio, filtros, freio e suspensao',
-      imgKey: 'banne-departamento-corolla-cross-pecas.jpg',
-      path: 'pecas',
-    },
-  ],
-  yaris: COMMON_DEPTS('yaris'),
-  sw4: [
-    ...COMMON_DEPTS('sw4'),
-    {
-      name: 'Acessorios Pick Up e SUV',
-      description: 'Capota maritima, overbumper, santo antonio',
-      imgKey: 'sw4-menu-pickup-suv.jpg',
-      path: 'pickup-suv',
-    },
-  ],
-  etios: COMMON_DEPTS('etios'),
-  rav4: COMMON_DEPTS('rav4'),
-  prius: COMMON_DEPTS('prius'),
-};
+function normalizeNavigationNode(node: NavigationNode, parentId = 1): CategoryNode {
+  const nodeId = Number(node.id) || parentId + 1;
+  return {
+    id: nodeId,
+    parent_id: parentId,
+    name: node.label,
+    level: Number(node.level || 0),
+    is_active: node.selectable !== false,
+    product_count: Number(node.resultCount || 0),
+    children_data: (node.children || []).map((child) => normalizeNavigationNode(child, nodeId)),
+  };
+}
 
-const MODEL_MENU_IMAGE_VERSION = '1770898453';
+function buildNavigationRoot(nodes: NavigationNode[] = []): CategoryNode {
+  return {
+    id: 1,
+    parent_id: 0,
+    name: 'Root',
+    level: 0,
+    is_active: true,
+    product_count: 0,
+    children_data: nodes.map((node) => normalizeNavigationNode(node, 1)),
+  };
+}
+
+function slugifyMenuValue(value: string) {
+  return String(value || '')
+    .trim()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/(^-|-$)/g, '');
+}
+
+// ─── Department definitions per model ────────────────────────────────────────
 const MENU_IMAGE_WARMUP_DELAY_MS = 500;
 
 // ─── Component ───────────────────────────────────────────────────────────────
@@ -126,7 +95,6 @@ export function VehicleMenuBar() {
   const barRef = useRef<HTMLDivElement>(null);
   const panelTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const warmedImageUrlsRef = useRef<Set<string>>(new Set());
-  const warmedCategoriesRef = useRef(false);
 
   // Vehicle model hover state
   const [activeModel, setActiveModel] = useState<string | null>(null);
@@ -136,7 +104,10 @@ export function VehicleMenuBar() {
   // Department hamburger state
   const [deptOpen, setDeptOpen] = useState(false);
   const [categoryTree, setCategoryTree] = useState<CategoryNode | null>(null);
-  const [categoryImages, setCategoryImages] = useState<Record<string, string>>({});
+  const [modelCategoryTrees, setModelCategoryTrees] = useState<Record<string, CategoryNode>>({});
+  const [categoryImages, setCategoryImages] = useState<Record<string, string>>(DEFAULT_HOME_CATEGORY_IMAGES);
+  const [categoryImageValidationVersion, setCategoryImageValidationVersion] = useState(0);
+  const [brokenModelDepartmentImages, setBrokenModelDepartmentImages] = useState<string[]>([]);
   const [activeCategoryId, setActiveCategoryId] = useState<string | null>(null);
   const [isLoadingCats, setIsLoadingCats] = useState(false);
   const [hasFetchedCats, setHasFetchedCats] = useState(false);
@@ -151,27 +122,61 @@ export function VehicleMenuBar() {
     if (hasFetchedCats || isLoadingCats) return;
     setIsLoadingCats(true);
     try {
-      const [treeRes, imgRes] = await Promise.all([
-        fetch(`${API}/categories/tree`, { headers: HEADERS }),
-        fetch(`${API}/categories/images`, { headers: HEADERS }),
-      ]);
-      if (treeRes.ok) {
-        const data = await treeRes.json();
-        setCategoryTree(data);
-        const top = getTopCategories(data);
+      const response = await fetchWithTimeout(`${API}/catalog/navigation`, { headers: HEADERS }, 6000).catch(() => ({ ok: false }));
+      if (response.ok) {
+        const data = await response.json() as CatalogNavigationPayload;
+        const safeTree = buildNavigationRoot(data.categoryTree || []);
+        setCategoryTree(safeTree);
+        if (data.images) {
+          setCategoryImages({
+            ...DEFAULT_HOME_CATEGORY_IMAGES,
+            ...data.images,
+          });
+        }
+        const top = getTopCategories(safeTree);
         if (top.length > 0) setActiveCategoryId(String(top[0].id));
-      }
-      if (imgRes.ok) {
-        const data = await imgRes.json();
-        if (data.images) setCategoryImages(data.images);
+      } else {
+        setCategoryTree(FALLBACK_CATEGORY_TREE);
+        setActiveCategoryId(String(FALLBACK_CATEGORY_TREE.children_data?.[0]?.id ?? ''));
       }
       setHasFetchedCats(true);
-    } catch (e) {
-      console.error('VehicleMenuBar: failed to fetch categories:', e);
+    } catch {
+      setCategoryTree(FALLBACK_CATEGORY_TREE);
+      setCategoryImages(DEFAULT_HOME_CATEGORY_IMAGES);
+      setActiveCategoryId(String(FALLBACK_CATEGORY_TREE.children_data?.[0]?.id ?? ''));
+      setHasFetchedCats(true);
     } finally {
       setIsLoadingCats(false);
     }
   }, [hasFetchedCats, isLoadingCats]);
+
+  const fetchModelCategories = useCallback(async (modelSlug: string) => {
+    if (!modelSlug || modelCategoryTrees[modelSlug]) return;
+    try {
+      const response = await fetchWithTimeout(
+        `${API}/catalog/navigation?modelo_slug=${encodeURIComponent(modelSlug)}`,
+        { headers: HEADERS },
+        6000,
+      ).catch(() => ({ ok: false }));
+      if (!response.ok) return;
+
+      const data = await response.json() as CatalogNavigationPayload;
+      const safeTree = buildNavigationRoot(data.categoryTree || []);
+      setModelCategoryTrees((current) => ({
+        ...current,
+        [modelSlug]: safeTree,
+      }));
+      if (data.images) {
+        setCategoryImages((current) => ({
+          ...DEFAULT_HOME_CATEGORY_IMAGES,
+          ...current,
+          ...data.images,
+        }));
+      }
+    } catch {
+      // Silent fallback: keep the menu usable even if scoped navigation fails.
+    }
+  }, [modelCategoryTrees]);
 
   // ─── Helpers ────────────────────────────────────────────────────────────
   const getTopCategories = (tree: CategoryNode | null): CategoryNode[] => {
@@ -188,38 +193,31 @@ export function VehicleMenuBar() {
   const getSubcategories = (node: CategoryNode): CategoryNode[] =>
     (node.children_data || node.children || []).filter(c => c.is_active);
 
-  const slugify = (text: string): string =>
-    text.toLowerCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '');
-
-  const getCategoryImage = (parentName: string, childName: string): string | null => {
-    if (!categoryImages || Object.keys(categoryImages).length === 0) return null;
-    const parentSlug = slugify(parentName);
-    const childSlug = slugify(childName);
-    
-    // 1. Exact composite key (namespaced)
-    const compositeKey = `${parentSlug}:${childSlug}`;
-    if (categoryImages[compositeKey]) return categoryImages[compositeKey];
-    
-    // 2. Exact composite key (hyphenated - e.g. "acessorios-externos-cromados")
-    const hyphenatedKey = `${parentSlug}-${childSlug}`;
-    if (categoryImages[hyphenatedKey]) return categoryImages[hyphenatedKey];
-
-    // 3. Child slug only
-    if (categoryImages[childSlug]) return categoryImages[childSlug];
-
-    // 4. Fuzzy search
-    for (const key of Object.keys(categoryImages)) {
-      if (key.includes(childSlug) || childSlug.includes(key)) return categoryImages[key];
+  const handleCategoryImageError = useCallback((imageUrl?: string | null) => {
+    if (markCategoryImageUrlBroken(imageUrl)) {
+      setCategoryImageValidationVersion((current) => current + 1);
     }
-    return null;
-  };
+  }, []);
 
-  const topCategories = getTopCategories(categoryTree);
+  const handleModelDepartmentImageError = useCallback((imageUrl: string) => {
+    setBrokenModelDepartmentImages((current) => (
+      current.includes(imageUrl) ? current : [...current, imageUrl]
+    ));
+  }, []);
+
+  const getCategoryImage = useCallback(
+    (parentName: string, childName: string): string | null =>
+      getRenderableCategoryMenuImage(childName, categoryImages, parentName),
+    [categoryImageValidationVersion, categoryImages],
+  );
+
+  const resolvedCategoryTree = useMemo(
+    () => (hasRenderableCategoryChildren(categoryTree) ? categoryTree : FALLBACK_CATEGORY_TREE),
+    [categoryTree]
+  );
+  const topCategories = getTopCategories(resolvedCategoryTree);
   const activeCategory = useMemo(
-    () => topCategories.find((cat) => String(cat.id) === activeCategoryId) ?? null,
+    () => topCategories.find((cat) => String(cat.id) === activeCategoryId) ?? topCategories[0] ?? null,
     [activeCategoryId, topCategories]
   );
 
@@ -276,17 +274,21 @@ export function VehicleMenuBar() {
   }, []);
 
   useEffect(() => {
-    const modelMenuUrls = Object.values(MODEL_DEPARTMENTS)
-      .flat()
-      .map((dept) => `${S3}/${dept.imgKey}?v=${MODEL_MENU_IMAGE_VERSION}`);
+    if (!activeModel) return;
+    void fetchModelCategories(activeModel);
+  }, [activeModel, fetchModelCategories]);
+
+  useEffect(() => {
+    const modelMenuUrls = Object.values(modelCategoryTrees).flatMap((tree) =>
+      getTopCategories(tree).flatMap((category) =>
+        getSubcategories(category)
+          .map((child) => getCategoryImage(category.name, child.name))
+          .filter(Boolean),
+      ),
+    );
 
     const warmMenuAssets = () => {
       warmImages(modelMenuUrls);
-
-      if (!warmedCategoriesRef.current) {
-        warmedCategoriesRef.current = true;
-        void fetchCategories();
-      }
     };
 
     if (typeof window === 'undefined') return;
@@ -300,7 +302,7 @@ export function VehicleMenuBar() {
 
     const timeoutId = window.setTimeout(warmMenuAssets, MENU_IMAGE_WARMUP_DELAY_MS);
     return () => window.clearTimeout(timeoutId);
-  }, [fetchCategories, warmImages]);
+  }, [getCategoryImage, modelCategoryTrees, warmImages]);
 
   useEffect(() => {
     if (!topCategories.length || !Object.keys(categoryImages).length) return;
@@ -312,7 +314,7 @@ export function VehicleMenuBar() {
     );
 
     warmImages(categoryMenuUrls);
-  }, [categoryImages, topCategories, warmImages]);
+  }, [categoryImages, getCategoryImage, topCategories, warmImages]);
 
   // ─── Model Hover handlers ─────────────────────────────────────────────
   const handleModelEnter = (slug: string) => {
@@ -353,12 +355,22 @@ export function VehicleMenuBar() {
 
   const handleCategoryClick = (catId: string, catName: string) => {
     setDeptOpen(false);
-    navigate(`/busca?category=${encodeURIComponent(catId)}&category_name=${encodeURIComponent(catName)}`);
+    const params = new URLSearchParams();
+    if (!catId.startsWith('-')) {
+      params.set('category', catId);
+    } else if (catName) {
+      params.set('category_name', catName);
+    }
+    navigate(`/busca${params.toString() ? `?${params.toString()}` : ''}`);
   };
 
   const isPanelOpen = activeModel !== null;
   const activeModelData = activeModel ? CAR_MODELS_SEO.find(m => m.slug === activeModel) : null;
-  const activeDepts = activeModel ? MODEL_DEPARTMENTS[activeModel] || COMMON_DEPTS(activeModel) : [];
+  const activeModelTree = activeModel ? modelCategoryTrees[activeModel] || null : null;
+  const activeDepts = useMemo(
+    () => getTopCategories(activeModelTree),
+    [activeModelTree],
+  );
 
   return (
     <div ref={barRef} className="relative z-30">
@@ -577,40 +589,50 @@ export function VehicleMenuBar() {
                           </button>
                         </div>
 
-                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-                          {getSubcategories(activeCategory).map((sub) => {
-                            const imgUrl = getCategoryImage(activeCategory.name, sub.name);
+                        {(() => {
+                          const visibleSubcategories = getSubcategories(activeCategory)
+                            .map((sub) => ({
+                              sub,
+                              imgUrl: getCategoryImage(activeCategory.name, sub.name),
+                            }))
+                            .filter((entry) => !!entry.imgUrl);
+
+                          if (visibleSubcategories.length === 0) {
                             return (
-                              <button
-                                key={sub.id}
-                                onClick={() => handleCategoryClick(String(sub.id), sub.name)}
-                                className="text-left group/card rounded-2xl overflow-hidden bg-[#f5f5f7] hover:bg-[#ebebed] transition-colors"
-                              >
-                                {imgUrl ? (
+                              <div className="rounded-2xl border border-dashed border-black/[0.08] px-4 py-10 text-center text-[13px] text-[#86868b]">
+                                Nenhuma subcategoria com foto válida foi encontrada.
+                              </div>
+                            );
+                          }
+
+                          return (
+                            <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                              {visibleSubcategories.map(({ sub, imgUrl }) => (
+                                <button
+                                  key={sub.id}
+                                  onClick={() => handleCategoryClick(String(sub.id), sub.name)}
+                                  className="text-left group/card rounded-2xl overflow-hidden bg-[#f5f5f7] hover:bg-[#ebebed] transition-colors"
+                                >
                                   <div className="relative aspect-[16/10] overflow-hidden">
                                     <img
-                                      src={imgUrl}
+                                      src={imgUrl!}
                                       alt={sub.name}
                                       className="w-full h-full object-cover transition-transform duration-500 group-hover/card:scale-[1.03]"
                                       loading="eager"
                                       decoding="async"
-                                      onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                                      onError={() => handleCategoryImageError(imgUrl)}
                                     />
                                   </div>
-                                ) : (
-                                  <div className="aspect-[16/10] flex items-center justify-center bg-[#e8e8ed]">
-                                    <span className="text-[24px] font-bold text-[#d2d2d7]/80">{sub.name.charAt(0)}</span>
+                                  <div className="px-2.5 py-2">
+                                    <span className="block text-[12px] font-medium text-[#1d1d1f] group-hover/card:text-primary transition-colors truncate">
+                                      {sub.name}
+                                    </span>
                                   </div>
-                                )}
-                                <div className="px-2.5 py-2">
-                                  <span className="block text-[12px] font-medium text-[#1d1d1f] group-hover/card:text-primary transition-colors truncate">
-                                    {sub.name}
-                                  </span>
-                                </div>
-                              </button>
-                            );
-                          })}
-                        </div>
+                                </button>
+                              ))}
+                            </div>
+                          );
+                        })()}
                       </motion.div>
                     )}
                   </AnimatePresence>
@@ -660,51 +682,67 @@ export function VehicleMenuBar() {
                     </Link>
                   </div>
 
-                  {/* Department cards grid */}
-                  <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
-                    {activeDepts.map((dept, index) => (
-                      <motion.div
-                        key={`${activeModelData.slug}-${dept.path}`}
-                        initial={{ opacity: 0, y: 10 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        transition={{ duration: 0.18, delay: index * 0.018, ease: [0.22, 1, 0.36, 1] }}
-                      >
-                        <Link
-                          to={`/pecas/${activeModelData.slug}/${dept.path}`}
-                          onClick={() => setActiveModel(null)}
-                          className="group/card block rounded-2xl overflow-hidden bg-[#f5f5f7] hover:bg-[#ebebed] transition-all duration-200"
-                        >
-                          <div className="relative aspect-[4/3] overflow-hidden bg-[#e8e8ed]">
-                            <img
-                              src={`${S3}/${dept.imgKey}?v=${MODEL_MENU_IMAGE_VERSION}`}
-                              alt={dept.name}
-                              className="w-full h-full object-cover transition-transform duration-500 group-hover/card:scale-[1.04]"
-                              loading="eager"
-                              decoding="async"
-                              onError={(e) => {
-                                const target = e.target as HTMLImageElement;
-                                target.style.display = 'none';
-                              }}
-                            />
-                            <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                              <span className="text-[24px] font-bold text-[#d2d2d7]/60">
-                                {dept.name.charAt(0)}
-                              </span>
-                            </div>
-                          </div>
+                  {activeDepts.length > 0 ? (
+                    <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-3">
+                      {activeDepts.map((dept, index) => {
+                        const children = getSubcategories(dept);
+                        const previewImageUrl = children
+                          .map((child) => getCategoryImage(dept.name, child.name))
+                          .find(Boolean) || null;
+                        const categorySlug = slugifyMenuValue(dept.name);
+                        const subtitle = children.length > 0
+                          ? children.slice(0, 2).map((child) => child.name).join(', ')
+                          : `${dept.product_count} produtos`;
 
-                          <div className="px-2.5 py-2">
-                            <span className="block text-[11px] sm:text-[12px] font-medium text-[#1d1d1f] group-hover/card:text-primary transition-colors leading-tight">
-                              {dept.name}
-                            </span>
-                            <span className="block text-[10px] text-[#86868b] mt-0.5 line-clamp-1 leading-tight">
-                              {dept.description}
-                            </span>
-                          </div>
-                        </Link>
-                      </motion.div>
-                    ))}
-                  </div>
+                        return (
+                          <motion.div
+                            key={`${activeModelData.slug}-${categorySlug}`}
+                            initial={{ opacity: 0, y: 10 }}
+                            animate={{ opacity: 1, y: 0 }}
+                            transition={{ duration: 0.18, delay: index * 0.018, ease: [0.22, 1, 0.36, 1] }}
+                          >
+                            <Link
+                              to={`/pecas/${activeModelData.slug}/${categorySlug}`}
+                              onClick={() => setActiveModel(null)}
+                              className="group/card block rounded-2xl overflow-hidden bg-[#f5f5f7] hover:bg-[#ebebed] transition-all duration-200"
+                            >
+                              <div className="relative aspect-[4/3] overflow-hidden bg-[#e8e8ed]">
+                                {previewImageUrl ? (
+                                  <img
+                                    src={previewImageUrl}
+                                    alt={dept.name}
+                                    className="w-full h-full object-cover transition-transform duration-500 group-hover/card:scale-[1.04]"
+                                    loading="eager"
+                                    decoding="async"
+                                    onError={() => handleModelDepartmentImageError(previewImageUrl)}
+                                  />
+                                ) : (
+                                  <div className="flex h-full w-full items-center justify-center bg-[radial-gradient(circle_at_top,#ffffff_0%,#ececef_55%,#e1e1e5_100%)] px-4 text-center">
+                                    <span className="text-[11px] font-semibold uppercase tracking-[0.08em] text-[#6e6e73]">
+                                      {dept.name}
+                                    </span>
+                                  </div>
+                                )}
+                              </div>
+
+                              <div className="px-2.5 py-2">
+                                <span className="block text-[11px] sm:text-[12px] font-medium text-[#1d1d1f] group-hover/card:text-primary transition-colors leading-tight">
+                                  {dept.name}
+                                </span>
+                                <span className="block text-[10px] text-[#86868b] mt-0.5 line-clamp-2 leading-tight">
+                                  {subtitle}
+                                </span>
+                              </div>
+                            </Link>
+                          </motion.div>
+                        );
+                      })}
+                    </div>
+                  ) : (
+                    <div className="rounded-2xl border border-dashed border-black/[0.08] px-4 py-10 text-center text-[13px] text-[#86868b]">
+                      Nenhuma categoria indexada foi encontrada para {activeModelData.name}.
+                    </div>
+                  )}
                 </motion.div>
               )}
             </AnimatePresence>

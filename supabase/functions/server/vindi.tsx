@@ -14,6 +14,8 @@
 import { Hono } from 'npm:hono';
 import * as kv from './kv_store.tsx';
 import { appendOrderEvent } from './audit.tsx';
+import { ensureOrderCustomerIndexes } from './order-indexes.tsx';
+import { syncStoreOrderSummarySafe } from './order-read-model.tsx';
 
 export const vindi = new Hono();
 
@@ -84,14 +86,17 @@ vindi.post('/webhook', async (c) => {
 
         if (order) {
           const prevStatus = order.payment_status || order.status;
+          const updatedOrder = {
+            ...order,
+            payment_status: newStatus,
+            status:         newStatus,   // legacy compatibility
+            updatedAt:      new Date().toISOString(),
+            last_payment_event: event,
+          };
           if (prevStatus !== newStatus) {
-            await kv.set(orderKey, {
-              ...order,
-              payment_status: newStatus,
-              status:         newStatus,   // legacy compatibility
-              updatedAt:      new Date().toISOString(),
-              last_payment_event: event,
-            });
+            await kv.set(orderKey, updatedOrder);
+            await ensureOrderCustomerIndexes(orderId, updatedOrder);
+            await syncStoreOrderSummarySafe(updatedOrder, 'vindi_webhook_status_changed');
             console.log(`[Vindi Webhook] Order ${orderId}: payment_status → ${newStatus}`);
 
             // Order event timeline
@@ -103,6 +108,9 @@ vindi.post('/webhook', async (c) => {
               bill_id:          bill?.id,
             }, 'webhook');
           } else {
+            await kv.set(orderKey, updatedOrder);
+            await ensureOrderCustomerIndexes(orderId, updatedOrder);
+            await syncStoreOrderSummarySafe(updatedOrder, 'vindi_webhook_received');
             console.log(`[Vindi Webhook] Order ${orderId} already at ${newStatus}, no change`);
             await appendOrderEvent(orderId, 'payment.webhook_received', {
               event,

@@ -1,16 +1,27 @@
 // Rede de Pecas Toyota + Enriquecimento IA
 import { Hono } from 'npm:hono';
+import { createClient } from 'jsr:@supabase/supabase-js@2.49.8';
 import * as kv from './kv_store.tsx';
 import { fetchMagento } from './magento.tsx';
+import * as meili from './meilisearch.tsx';
+import { normalizeProductRecord, syncProductIndex } from './product-admin.tsx';
 
 const app = new Hono();
 
 const PRODUCT_PREFIX = 'product:';
 const HISTORY_PREFIX = 'history:';
 const MEASURE_AUDIT_PREFIX = 'catalogo-medidas-audit:';
+const MEASURE_REVIEW_PREFIX = 'catalogo-medidas-review:';
+const CATEGORY_ENRICHMENT_AUDIT_PREFIX = 'catalogo-category-enrichment-audit:';
+const CATEGORY_ENRICHMENT_MAX_SKUS = 200;
+const CATEGORY_ENRICHMENT_CONFIDENCE = 0.7;
 const CAT_URL = () => (Deno.env.get('CATALOGO_DB_URL') || '').trim();
 const CAT_KEY = () => (Deno.env.get('CATALOGO_DB_API_KEY') || '').trim();
 const OPENAI_KEY = () => (Deno.env.get('OPENAI_API_KEY') || '').trim();
+const db = () => createClient(
+  Deno.env.get('SUPABASE_URL'),
+  Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),
+);
 
 const MEASURE_FIELDS = ['weight', 'dimensionLength', 'dimensionWidth', 'dimensionHeight'] as const;
 type MeasureField = typeof MEASURE_FIELDS[number];
@@ -56,6 +67,106 @@ async function queryToyotaPartnosExact(partnos: string[]) {
   return rows;
 }
 
+function getCatalogoErrorMessage(error: any): string {
+  return String(error?.message || error || '').trim();
+}
+
+function isCatalogoStatementTimeout(error: any): boolean {
+  const message = getCatalogoErrorMessage(error).toLowerCase();
+  return message.includes('57014') || message.includes('statement timeout') || message.includes('canceling statement due to statement timeout');
+}
+
+async function queryToyotaPartnosExactSafe(partnos: string[]) {
+  const unique = [...new Set(partnos.map((p) => String(p || '').trim()).filter(Boolean))];
+  const rows: any[] = [];
+  const failed = new Set<string>();
+  if (!unique.length) return { rows, failed };
+
+  const chunkSize = 24;
+  for (let i = 0; i < unique.length; i += chunkSize) {
+    const chunk = unique.slice(i, i + chunkSize);
+    try {
+      const batch = await queryToyotaPartnosExact(chunk);
+      if (Array.isArray(batch)) rows.push(...batch);
+      continue;
+    } catch (error) {
+      console.warn('[category-enrichment] Toyota exact batch fallback:', getCatalogoErrorMessage(error));
+      if (!isCatalogoStatementTimeout(error) && chunk.length <= 2) {
+        chunk.forEach((code) => failed.add(normalizeSku(code)));
+        continue;
+      }
+    }
+
+    for (const code of chunk) {
+      try {
+        const single = await queryToyotaPartnosExact([code]);
+        if (Array.isArray(single)) rows.push(...single);
+      } catch (error) {
+        console.warn(`[category-enrichment] Toyota exact single lookup failed for ${code}:`, getCatalogoErrorMessage(error));
+        failed.add(normalizeSku(code));
+      }
+    }
+  }
+
+  return { rows, failed };
+}
+
+async function collectCategoryEnrichmentCandidatesFallback(limit: number) {
+  const supabase = db();
+  const selected: string[] = [];
+  const seen = new Set<string>();
+  const batchSize = 400;
+  const maxScannedProducts = 5000;
+  const upperBound = `${PRODUCT_PREFIX}\uffff`;
+  let cursorKey: string | null = null;
+  let scannedProducts = 0;
+
+  while (selected.length < limit && scannedProducts < maxScannedProducts) {
+    let query = supabase
+      .from('kv_store_1d6e33e0')
+      .select('key, value')
+      .gte('key', PRODUCT_PREFIX)
+      .lt('key', upperBound)
+      .order('key', { ascending: true })
+      .limit(batchSize);
+
+    if (cursorKey) {
+      query = query.gt('key', cursorKey);
+    }
+
+    const { data, error } = await query;
+    if (error) throw new Error(error.message);
+    if (!data?.length) break;
+
+    scannedProducts += data.length;
+    cursorKey = data[data.length - 1]?.key || null;
+
+    for (const row of data) {
+      const product = row?.value;
+      const sku = normalizeSku(product?.sku || '');
+      if (!sku || seen.has(sku)) continue;
+
+      const isActive = String(product?.status || '') === '1' || product?.status === 1;
+      const inStock = resolveInStock(product);
+      const categoryIds = extractCategoryIds(product);
+      if (!isActive || !inStock || categoryIds.length > 0) continue;
+
+      seen.add(sku);
+      selected.push(sku);
+
+      if (selected.length >= limit) break;
+    }
+
+    if (!cursorKey) break;
+  }
+
+  return {
+    skus: selected,
+    scanned_products: scannedProducts,
+    reached_scan_limit: scannedProducts >= maxScannedProducts,
+  };
+}
+
 // Lookup cods (column name has slash)
 async function queryCodsIn(codes: string[]) {
   if (!codes.length) return [];
@@ -80,7 +191,7 @@ function getAttr(product: any, code: string): any {
   return product?.custom_attributes?.find((a: any) => a.attribute_code === code)?.value;
 }
 
-function normalizeSku(value: string): string {
+export function normalizeSku(value: string): string {
   return String(value || '').toUpperCase().replace(/[\s-]/g, '').trim();
 }
 
@@ -132,6 +243,33 @@ function upsertCustomAttribute(product: any, code: string, value: string) {
     attrs.push({ attribute_code: code, value });
   }
   return attrs;
+}
+
+function resolveStockPayload(product: any) {
+  const stockData = product?.extension_attributes?.stock;
+  if (!stockData) return null;
+  if (typeof stockData === 'string') {
+    try {
+      return JSON.parse(stockData);
+    } catch {
+      return null;
+    }
+  }
+  return stockData;
+}
+
+export function resolveInStock(product: any): boolean {
+  if (typeof product?.in_stock === 'boolean') return product.in_stock;
+  const stock = resolveStockPayload(product);
+  const value = stock?.is_in_stock;
+  return value === true || value === 1 || value === '1';
+}
+
+function resolveQty(product: any): number | null {
+  const directQty = parseNumber(product?.qty);
+  if (directQty != null) return directQty;
+  const stock = resolveStockPayload(product);
+  return parseNumber(stock?.qty);
 }
 
 function getToyotaMetricPayload(toyotaRecord: any) {
@@ -301,6 +439,69 @@ function buildMeasureComparison(sku: string, product: any, toyotaMatch: any) {
   };
 }
 
+function resolveBulkRowStatus(comparison: any): 'pending' | 'synced' | 'sem_match' {
+  if (!comparison?.match?.eligible) return 'sem_match';
+  return comparison?.summary?.hasDifferences ? 'pending' : 'synced';
+}
+
+function buildMeasureComparisonSignature(comparison: any) {
+  return JSON.stringify({
+    matchStatus: comparison?.match?.eligible ? 'elegivel' : (comparison?.match?.found ? 'fuzzy' : 'sem_match'),
+    matchedPartno: comparison?.match?.matchedPartno || null,
+    rowStatus: resolveBulkRowStatus(comparison),
+    toyota: comparison?.toyota?.normalized || {},
+    toyoparts: comparison?.toyoparts?.current || {},
+  });
+}
+
+function getMeasureReviewKey(sku: string) {
+  return `${MEASURE_REVIEW_PREFIX}${String(sku || '').trim()}`;
+}
+
+function buildMeasureReviewState(review: any, comparison: any) {
+  if (!review) {
+    return {
+      reviewed: false,
+      reviewStillValid: false,
+      reviewedAt: null,
+      reviewedBy: null,
+    };
+  }
+
+  const signature = buildMeasureComparisonSignature(comparison);
+  const reviewStillValid = review?.comparisonSignature === signature;
+
+  return {
+    reviewed: true,
+    reviewStillValid,
+    reviewedAt: review?.reviewedAt || null,
+    reviewedBy: review?.reviewedBy || null,
+  };
+}
+
+async function loadMeasureReviewMap() {
+  const reviews = await kv.getByPrefix(MEASURE_REVIEW_PREFIX) || [];
+  const map = new Map<string, any>();
+  for (const review of reviews) {
+    const sku = String(review?.sku || '').trim();
+    if (!sku) continue;
+    map.set(sku, review);
+  }
+  return map;
+}
+
+function buildMeasureReviewEntry(c: any, sku: string, comparison: any) {
+  return {
+    sku,
+    reviewedAt: new Date().toISOString(),
+    reviewedBy: (c.req.header('X-Admin-Token') || '').slice(0, 8) || null,
+    comparisonSignature: buildMeasureComparisonSignature(comparison),
+    matchStatus: comparison?.match?.eligible ? 'elegivel' : (comparison?.match?.found ? 'fuzzy' : 'sem_match'),
+    matchedPartno: comparison?.match?.matchedPartno || null,
+    rowStatus: resolveBulkRowStatus(comparison),
+  };
+}
+
 function getDefaultFieldsToApply(comparison: any, requestedFields?: string[]) {
   const validRequested = Array.isArray(requestedFields)
     ? requestedFields.filter((field) => MEASURE_FIELDS.includes(field as MeasureField))
@@ -360,6 +561,7 @@ async function persistMeasureUpdate(c: any, sku: string, product: any, compariso
   });
 
   await kv.set(`${PRODUCT_PREFIX}${sku}`, updatedProduct);
+  await kv.del(getMeasureReviewKey(sku));
 
   const auditEntry = {
     id: crypto.randomUUID(),
@@ -409,12 +611,46 @@ async function buildToyotaExactMap(skus: string[]) {
   return map;
 }
 
-function buildBulkMeasureRow(product: any, comparison: any) {
+async function buildToyotaExactMapSafe(skus: string[]) {
+  const lookupCodes = new Set<string>();
+  for (const sku of skus) {
+    const trimmed = String(sku || '').trim();
+    const normalized = normalizeSku(trimmed);
+    if (trimmed) lookupCodes.add(trimmed);
+    if (normalized) lookupCodes.add(normalized);
+  }
+
+  const { rows, failed } = await queryToyotaPartnosExactSafe([...lookupCodes]);
+  const map = new Map<string, any>();
+  for (const row of rows) {
+    const normalized = normalizeSku(row?.partno);
+    if (normalized && !map.has(normalized)) {
+      map.set(normalized, row);
+    }
+  }
+
+  const failedSkus = new Set<string>();
+  for (const sku of skus) {
+    const normalized = normalizeSku(sku);
+    if (!normalized || map.has(normalized)) continue;
+    if (failed.has(normalized) || failed.has(String(sku || '').trim())) {
+      failedSkus.add(normalized);
+    }
+  }
+
+  return { map, failedSkus };
+}
+
+function buildBulkMeasureRow(product: any, comparison: any, review?: any) {
+  const reviewState = buildMeasureReviewState(review, comparison);
   return {
     sku: product?.sku || '',
     name: product?.name || '',
+    inStock: resolveInStock(product),
+    qty: resolveQty(product),
     matchStatus: comparison.match.eligible ? 'elegivel' : (comparison.match.found ? 'fuzzy' : 'sem_match'),
     matchedPartno: comparison.match.matchedPartno,
+    rowStatus: resolveBulkRowStatus(comparison),
     canApply: comparison.summary.canApply,
     hasDifferences: comparison.summary.hasDifferences,
     divergentFields: comparison.summary.diffFields,
@@ -423,6 +659,10 @@ function buildBulkMeasureRow(product: any, comparison: any) {
     current: comparison.toyoparts.current,
     suggested: comparison.toyota.normalized,
     fields: comparison.fields,
+    reviewed: reviewState.reviewed,
+    reviewStillValid: reviewState.reviewStillValid,
+    reviewedAt: reviewState.reviewedAt,
+    reviewedBy: reviewState.reviewedBy,
   };
 }
 
@@ -511,6 +751,784 @@ async function loadCategoryMap(): Promise<{ map: Map<string, { name: string; pat
     console.error('[loadCategoryMap] Fatal error:', e.message, e.stack);
   }
   return { map, debug };
+}
+
+type CategoryOption = {
+  id: string;
+  name: string;
+  path: string;
+  normalizedName: string;
+  normalizedPath: string;
+  tokens: string[];
+};
+
+type CategorySuggestion = {
+  categoryId: string | null;
+  categoryName: string | null;
+  categoryPath: string | null;
+  confidence: number;
+  method: 'regra' | 'similaridade' | 'ia' | 'manual' | 'none';
+  reason: string;
+  alternatives: Array<{ categoryId: string; categoryName: string; categoryPath: string; confidence: number; reason: string }>;
+};
+
+function normalizeSearchText(value: any): string {
+  return String(value || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function uniqueList(values: any[]): string[] {
+  return [...new Set(values.map((value) => String(value || '').trim()).filter(Boolean))];
+}
+
+function tokenizeForCategory(value: any): string[] {
+  const stop = new Set(['a', 'as', 'o', 'os', 'de', 'do', 'da', 'dos', 'das', 'e', 'para', 'por', 'com', 'sem', 'toyota', 'peca', 'pecas', 'original', 'genuina', 'genuino']);
+  return uniqueList(normalizeSearchText(value).split(' ')
+    .map((token) => token.length > 4 && token.endsWith('s') ? token.slice(0, -1) : token)
+    .filter((token) => token.length >= 3 && !stop.has(token)));
+}
+
+function extractYearsFromText(value: any): string[] {
+  const matches = String(value || '').match(/\b(?:19|20)\d{2}\b/g) || [];
+  return uniqueList(matches);
+}
+
+export async function loadCategoryOptions(): Promise<{ options: CategoryOption[]; map: Map<string, { name: string; path: string }>; debug: any }> {
+  const { map, debug } = await loadCategoryMap();
+  const options = [...map.entries()]
+    .filter(([id, item]) => !['1', '2'].includes(String(id)) && !!item?.name)
+    .map(([id, item]) => {
+      const normalizedName = normalizeSearchText(item.name);
+      const normalizedPath = normalizeSearchText(item.path);
+      return {
+        id: String(id),
+        name: item.name,
+        path: item.path,
+        normalizedName,
+        normalizedPath,
+        tokens: tokenizeForCategory(`${item.path} ${item.name}`),
+      };
+    })
+    .filter((option) => option.tokens.length > 0);
+
+  return { options, map, debug };
+}
+
+function categoryNamesForIds(ids: string[], categoryMap: Map<string, { name: string; path: string }>) {
+  return ids.map((id) => {
+    const entry = categoryMap.get(String(id));
+    return {
+      id: String(id),
+      name: entry?.name || `Cat ${id}`,
+      path: entry?.path || `Cat ${id}`,
+    };
+  });
+}
+
+function buildToyotaCategoryText(toyota: any): string {
+  return [
+    toyota?.category,
+    toyota?.categoria,
+    toyota?.subCategory,
+    toyota?.subcategoria,
+    toyota?.cat,
+    toyota?.description,
+  ].filter(Boolean).join(' ');
+}
+
+function buildProductCategoryText(product: any, currentCategories: Array<{ id: string; name: string; path: string }>) {
+  return [
+    product?.sku,
+    product?.name,
+    getAttr(product, 'short_description'),
+    getAttr(product, 'description'),
+    getAttr(product, 'meta_keyword'),
+    getAttr(product, 'modelo'),
+    getAttr(product, 'ano'),
+    getAttr(product, 'compatibilidade'),
+    currentCategories.map((category) => category.path || category.name || '').join(' '),
+  ].filter(Boolean).join(' ');
+}
+
+function buildProductFallbackCategoryReference(product: any, currentCategories: Array<{ id: string; name: string; path: string }>) {
+  return {
+    category: '',
+    categoria: '',
+    subCategory: '',
+    subcategoria: '',
+    cat: '',
+    description: buildProductCategoryText(product, currentCategories),
+  };
+}
+
+function relabelSuggestionForProductContext(suggestion: CategorySuggestion): CategorySuggestion {
+  const rewrite = (value: any) => String(value || '')
+    .replace(/Subcategoria Toyota/gi, 'Termo principal do produto')
+    .replace(/Categoria Toyota/gi, 'Contexto do produto')
+    .replace(/Similaridade por termos Toyota/gi, 'Similaridade por termos do produto')
+    .replace(/e coerencia com categoria atual/gi, 'e coerencia com categorias atuais do site')
+    .replace(/coerencia com categoria atual/gi, 'coerencia com categorias atuais do site');
+
+  return {
+    ...suggestion,
+    reason: rewrite(suggestion.reason),
+    alternatives: (suggestion.alternatives || []).map((item) => ({
+      ...item,
+      reason: rewrite(item.reason),
+    })),
+  };
+}
+
+function scoreCategoryOption(toyota: any, option: CategoryOption, currentCategoryPaths: string[]) {
+  const category = normalizeSearchText(toyota?.category || toyota?.categoria || '');
+  const subcategory = normalizeSearchText(toyota?.subCategory || toyota?.subcategoria || '');
+  const cat = normalizeSearchText(toyota?.cat || '');
+  const text = normalizeSearchText(buildToyotaCategoryText(toyota));
+  const toyotaTokens = tokenizeForCategory(`${category} ${subcategory} ${cat} ${toyota?.description || ''}`);
+  const currentText = normalizeSearchText(currentCategoryPaths.join(' '));
+
+  let confidence = 0;
+  let reason = 'Similaridade por termos Toyota';
+
+  if (subcategory && (option.normalizedName === subcategory || option.normalizedPath.endsWith(` ${subcategory}`))) {
+    confidence = 0.98;
+    reason = 'Subcategoria Toyota igual ao nome/caminho da categoria';
+  } else if (category && (option.normalizedName === category || option.normalizedPath.endsWith(` ${category}`))) {
+    confidence = 0.94;
+    reason = 'Categoria Toyota igual ao nome/caminho da categoria';
+  } else if (subcategory && option.normalizedPath.includes(subcategory)) {
+    confidence = 0.88;
+    reason = 'Subcategoria Toyota encontrada no caminho da categoria';
+  } else if (category && option.normalizedPath.includes(category)) {
+    confidence = 0.82;
+    reason = 'Categoria Toyota encontrada no caminho da categoria';
+  } else {
+    const optionTokenSet = new Set(option.tokens);
+    const overlap = toyotaTokens.filter((token) => optionTokenSet.has(token)).length;
+    const base = toyotaTokens.length > 0 ? overlap / toyotaTokens.length : 0;
+    confidence = Math.min(0.78, base * 0.75);
+    if (text && option.normalizedPath.includes(text)) confidence = Math.max(confidence, 0.72);
+  }
+
+  if (currentText && option.normalizedPath && currentText.includes(option.normalizedName)) {
+    confidence = Math.min(0.99, confidence + 0.05);
+    reason += ' e coerencia com categoria atual';
+  }
+
+  return { confidence: Math.round(confidence * 100) / 100, reason };
+}
+
+function suggestCategoryDeterministic(toyota: any, currentCategories: Array<{ id: string; name: string; path: string }>, options: CategoryOption[]): CategorySuggestion {
+  if (!options.length) {
+    return {
+      categoryId: null,
+      categoryName: null,
+      categoryPath: null,
+      confidence: 0,
+      method: 'none',
+      reason: 'Arvore de categorias indisponivel',
+      alternatives: [],
+    };
+  }
+
+  const currentPaths = currentCategories.map((category) => category.path || category.name || '');
+  const scored = options
+    .map((option) => {
+      const score = scoreCategoryOption(toyota, option, currentPaths);
+      return { option, ...score };
+    })
+    .sort((a, b) => b.confidence - a.confidence);
+
+  const best = scored[0];
+  const method: CategorySuggestion['method'] = best.confidence >= 0.82 ? 'regra' : 'similaridade';
+  const alternatives = scored.slice(0, 5).map((item) => ({
+    categoryId: item.option.id,
+    categoryName: item.option.name,
+    categoryPath: item.option.path,
+    confidence: item.confidence,
+    reason: item.reason,
+  }));
+
+  return {
+    categoryId: best.option.id,
+    categoryName: best.option.name,
+    categoryPath: best.option.path,
+    confidence: best.confidence,
+    method,
+    reason: best.reason,
+    alternatives,
+  };
+}
+
+async function suggestCategoryWithAI(toyota: any, product: any, candidates: CategorySuggestion): Promise<CategorySuggestion | null> {
+  if (!OPENAI_KEY() || !candidates.alternatives.length) return null;
+
+  try {
+    const allowed = candidates.alternatives.map((item) => ({
+      id: item.categoryId,
+      path: item.categoryPath,
+      confidence_regra: item.confidence,
+    }));
+
+    const prompt = `Escolha a melhor categoria EXISTENTE da Toyoparts para uma peca Toyota.
+Retorne apenas JSON valido, sem markdown.
+
+Produto Toyoparts:
+SKU: ${product?.sku || ''}
+Nome: ${product?.name || ''}
+
+Dados Toyota:
+Categoria: ${toyota?.category || toyota?.categoria || ''}
+Subcategoria: ${toyota?.subCategory || toyota?.subcategoria || ''}
+Familia/Cat: ${toyota?.cat || ''}
+Descricao: ${toyota?.description || ''}
+
+Categorias permitidas:
+${JSON.stringify(allowed)}
+
+Retorne:
+{"categoryId":"id permitido","confidence":0.80,"reason":"motivo curto"}`;
+
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_KEY()}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: 'Voce so pode escolher uma categoryId da lista permitida. Nunca invente categorias.' },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.1,
+      }),
+    });
+
+    if (!res.ok) return null;
+    const json = await res.json();
+    const raw = String(json.choices?.[0]?.message?.content || '').replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    const parsed = JSON.parse(raw);
+    const chosen = candidates.alternatives.find((item) => item.categoryId === String(parsed?.categoryId || ''));
+    if (!chosen) return null;
+
+    return {
+      ...candidates,
+      categoryId: chosen.categoryId,
+      categoryName: chosen.categoryName,
+      categoryPath: chosen.categoryPath,
+      confidence: Math.max(0, Math.min(0.95, Number(parsed?.confidence) || chosen.confidence)),
+      method: 'ia',
+      reason: String(parsed?.reason || 'Categoria escolhida por IA entre categorias existentes'),
+    };
+  } catch (error) {
+    console.warn('[category-enrichment] AI category fallback skipped:', error);
+    return null;
+  }
+}
+
+async function suggestCategoryWithAIFromProduct(product: any, currentCategories: Array<{ id: string; name: string; path: string }>, candidates: CategorySuggestion): Promise<CategorySuggestion | null> {
+  if (!OPENAI_KEY() || !candidates.alternatives.length) return null;
+
+  try {
+    const allowed = candidates.alternatives.map((item) => ({
+      id: item.categoryId,
+      path: item.categoryPath,
+      confidence_regra: item.confidence,
+    }));
+
+    const prompt = `Escolha a melhor categoria EXISTENTE da Toyoparts para um produto, usando apenas as categorias permitidas.
+Retorne apenas JSON valido, sem markdown.
+
+Produto Toyoparts:
+SKU: ${product?.sku || ''}
+Nome: ${product?.name || ''}
+Descricao curta: ${getAttr(product, 'short_description') || ''}
+Descricao completa: ${getAttr(product, 'description') || ''}
+Modelo: ${getAttr(product, 'modelo') || ''}
+Ano: ${getAttr(product, 'ano') || ''}
+Compatibilidade: ${getAttr(product, 'compatibilidade') || ''}
+Categorias atuais: ${currentCategories.map((item) => item.path || item.name || '').join(' | ')}
+
+Categorias permitidas:
+${JSON.stringify(allowed)}
+
+Retorne:
+{"categoryId":"id permitido","confidence":0.80,"reason":"motivo curto"}`;
+
+    const res = await fetch('https://api.openai.com/v1/chat/completions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${OPENAI_KEY()}` },
+      body: JSON.stringify({
+        model: 'gpt-4o-mini',
+        messages: [
+          { role: 'system', content: 'Voce so pode escolher uma categoryId da lista permitida. Nunca invente categorias.' },
+          { role: 'user', content: prompt },
+        ],
+        temperature: 0.1,
+      }),
+    });
+
+    if (!res.ok) return null;
+    const json = await res.json();
+    const raw = String(json.choices?.[0]?.message?.content || '').replace(/```json\s*/g, '').replace(/```\s*/g, '').trim();
+    const parsed = JSON.parse(raw);
+    const chosen = candidates.alternatives.find((item) => item.categoryId === String(parsed?.categoryId || ''));
+    if (!chosen) return null;
+
+    return {
+      ...candidates,
+      categoryId: chosen.categoryId,
+      categoryName: chosen.categoryName,
+      categoryPath: chosen.categoryPath,
+      confidence: Math.max(0, Math.min(0.95, Number(parsed?.confidence) || chosen.confidence)),
+      method: 'ia',
+      reason: String(parsed?.reason || 'Categoria escolhida por IA com base no contexto do produto'),
+    };
+  } catch (error) {
+    console.warn('[category-enrichment] AI product category fallback skipped:', error);
+    return null;
+  }
+}
+
+async function buildCompatibilityRows(records: any[]) {
+  const codeSet = new Set<string>();
+  for (const record of records) {
+    const rawCompat = record?.COMPATIBILIDADE || record?.compatibilidade || '';
+    processCompat(rawCompat).forEach((code) => codeSet.add(code));
+  }
+
+  const codeList = [...codeSet].slice(0, 500);
+  const rows: any[] = [];
+  for (let i = 0; i < codeList.length; i += 80) {
+    const chunk = codeList.slice(i, i + 80);
+    try {
+      const batch = await queryCodsIn(chunk);
+      if (Array.isArray(batch)) rows.push(...batch);
+    } catch (error) {
+      console.warn('[category-enrichment] compatibility lookup skipped:', error);
+    }
+  }
+
+  const map = new Map<string, any[]>();
+  for (const row of rows) {
+    const code = String(row?.['models/mod'] || '').trim();
+    if (!code) continue;
+    if (!map.has(code)) map.set(code, []);
+    map.get(code)!.push(row);
+  }
+  return map;
+}
+
+function buildToyotaCategoryPayload(record: any, compatibilityRowsByCode: Map<string, any[]>) {
+  const rawCompat = record?.COMPATIBILIDADE || record?.compatibilidade || '';
+  const codes = processCompat(rawCompat);
+  const compatRows = codes.flatMap((code) => compatibilityRowsByCode.get(code) || []);
+  const compatLines = uniqueList(compatRows.map((row) => row?.['models/description']));
+  const compatModels = compatRows.map((row) => {
+    const descricao = String(row?.['models/description'] || '').trim();
+    return {
+      codigo: String(row?.['models/mod'] || '').trim(),
+      descricao,
+      modelo: descricao.split(/\s+/)[0] || '',
+      anos: extractYearsFromText(descricao),
+      trim: '',
+      cambio: '',
+      motor: '',
+    };
+  });
+
+  return {
+    found: !!record,
+    matchedPartno: record?.partno || null,
+    cat: record?.cat || '',
+    categoria: record?.category || record?.categoria || '',
+    subcategoria: record?.subCategory || record?.subcategoria || '',
+    name: record?.description || '',
+    seo_title: record?.description ? `${record.description} - Peca Genuina Toyota ${record?.partno || ''}`.trim() : '',
+    description: record?.description || '',
+    weight: normalizeToyotaMetric('weight', record?.weight),
+    compatibilityCodes: codes,
+    compatibilityLines: compatLines,
+    compatibilityModels: compatModels,
+  };
+}
+
+function buildEmptyToyotaCategoryPayload() {
+  return {
+    found: false,
+    matchedPartno: null,
+    cat: '',
+    categoria: '',
+    subcategoria: '',
+    name: '',
+    seo_title: '',
+    description: '',
+    weight: null,
+    compatibilityCodes: [],
+    compatibilityLines: [],
+    compatibilityModels: [],
+  };
+}
+
+function buildCategoryEnrichmentProductPayload(product: any, sku: string, categoryMap: Map<string, { name: string; path: string }>) {
+  const categoryIds = extractCategoryIds(product);
+  return {
+    categoryIds,
+    currentCategories: categoryNamesForIds(categoryIds, categoryMap),
+    payload: {
+      sku: product?.sku || sku,
+      name: product?.name || '',
+      weight: normalizeToyopartsMetric('weight', product?.weight),
+      status: product?.status || 0,
+      category_ids: categoryIds,
+      category_names: categoryNamesForIds(categoryIds, categoryMap),
+      modelo: getAttr(product, 'modelo') || '',
+      ano: getAttr(product, 'ano') || '',
+      compatibilidade: getAttr(product, 'compatibilidade') || '',
+      image_count: product?.media_gallery_entries?.length || product?.media_gallery?.length || 0,
+    },
+  };
+}
+
+async function suggestCategoryFromProductContext(
+  product: any,
+  currentCategories: Array<{ id: string; name: string; path: string }>,
+  options: CategoryOption[],
+  useAI: boolean,
+  aiCache: Map<string, Promise<CategorySuggestion | null>>,
+): Promise<CategorySuggestion> {
+  const reference = buildProductFallbackCategoryReference(product, currentCategories);
+  let suggestion = relabelSuggestionForProductContext(
+    suggestCategoryDeterministic(reference, currentCategories, options),
+  );
+
+  if (useAI && suggestion.confidence < CATEGORY_ENRICHMENT_CONFIDENCE && suggestion.alternatives.length > 0 && OPENAI_KEY()) {
+    const aiKey = `product:${normalizeSearchText(buildProductCategoryText(product, currentCategories))}`;
+    if (!aiCache.has(aiKey)) {
+      aiCache.set(aiKey, suggestCategoryWithAIFromProduct(product, currentCategories, suggestion));
+    }
+    const aiSuggestion = await aiCache.get(aiKey);
+    if (aiSuggestion) suggestion = aiSuggestion;
+  }
+
+  return suggestion;
+}
+
+function buildFieldSuggestions(product: any, toyota: any, suggestion: CategorySuggestion) {
+  const currentCategoryIds = extractCategoryIds(product);
+  const toyotaWeight = toyota?.weight ?? null;
+  const productWeight = normalizeToyopartsMetric('weight', product?.weight);
+  const compatibilityText = uniqueList(toyota?.compatibilityLines || []).join('\n');
+  const currentCompatibility = String(getAttr(product, 'compatibilidade') || '').trim();
+  const modelNames = uniqueList((toyota?.compatibilityModels || []).map((item: any) => item.modelo));
+  const years = uniqueList((toyota?.compatibilityModels || []).flatMap((item: any) => item.anos || []));
+
+  return {
+    category: {
+      label: 'Categoria',
+      canApply: !!suggestion.categoryId,
+      applyDefault: !!suggestion.categoryId && !currentCategoryIds.includes(String(suggestion.categoryId)) && suggestion.confidence >= CATEGORY_ENRICHMENT_CONFIDENCE,
+      current: currentCategoryIds,
+      suggested: suggestion.categoryId ? [String(suggestion.categoryId)] : [],
+    },
+    weight: {
+      label: 'Peso',
+      canApply: toyotaWeight != null,
+      applyDefault: toyotaWeight != null && toyotaWeight !== productWeight,
+      current: productWeight,
+      suggested: toyotaWeight,
+    },
+    compatibility: {
+      label: 'Compatibilidade Toyota',
+      canApply: !!compatibilityText,
+      applyDefault: false,
+      current: currentCompatibility,
+      suggested: compatibilityText,
+    },
+    modelYear: {
+      label: 'Modelo/Ano',
+      canApply: modelNames.length > 0 || years.length > 0,
+      applyDefault: false,
+      current: {
+        modelo: getAttr(product, 'modelo') || '',
+        ano: getAttr(product, 'ano') || '',
+      },
+      suggested: {
+        modelo: modelNames.join(','),
+        ano: years.join(','),
+      },
+    },
+    name: {
+      label: 'Nome',
+      canApply: !!toyota?.seo_title,
+      applyDefault: false,
+      current: product?.name || '',
+      suggested: toyota?.seo_title || '',
+    },
+  };
+}
+
+export async function buildCategoryEnrichmentRows(inputSkus: string[], useAI = true) {
+  const skus = uniqueList(inputSkus.map((sku) => normalizeSku(sku))).slice(0, CATEGORY_ENRICHMENT_MAX_SKUS);
+  const { options, map: categoryMap, debug: categoryDebug } = await loadCategoryOptions();
+  const products = await Promise.all(skus.map((sku) => kv.get(`${PRODUCT_PREFIX}${sku}`).catch(() => null)));
+  const productMap = new Map<string, any>();
+  skus.forEach((sku, index) => {
+    if (products[index]) productMap.set(sku, products[index]);
+  });
+
+  const { map: toyotaMap, failedSkus: failedToyotaLookups } = await buildToyotaExactMapSafe(skus);
+  const toyotaRecords = skus.map((sku) => toyotaMap.get(normalizeSku(sku))).filter(Boolean);
+  const compatibilityRowsByCode = await buildCompatibilityRows(toyotaRecords);
+  const aiCache = new Map<string, Promise<CategorySuggestion | null>>();
+
+  const rows: any[] = [];
+  for (const sku of skus) {
+    const product = productMap.get(sku);
+    const toyotaRecord = toyotaMap.get(normalizeSku(sku)) || null;
+    if (!product) {
+      const fallbackSuggestion = toyotaRecord
+        ? suggestCategoryDeterministic(toyotaRecord, [], options)
+        : null;
+      rows.push({
+        sku,
+        status: 'no_product',
+        statusLabel: 'Produto nao encontrado',
+        productFound: false,
+        toyotaFound: !!toyotaRecord,
+        product: null,
+        toyota: toyotaRecord ? buildToyotaCategoryPayload(toyotaRecord, compatibilityRowsByCode) : { found: false },
+        suggestion: fallbackSuggestion,
+        fieldSuggestions: {},
+      });
+      continue;
+    }
+
+    const { currentCategories, payload: productPayload } = buildCategoryEnrichmentProductPayload(product, sku, categoryMap);
+    if (!toyotaRecord && failedToyotaLookups.has(normalizeSku(sku))) {
+      const toyota = buildEmptyToyotaCategoryPayload();
+      const suggestion = await suggestCategoryFromProductContext(product, currentCategories, options, useAI, aiCache);
+      const fieldSuggestions = buildFieldSuggestions(product, toyota, suggestion);
+      rows.push({
+        sku,
+        status: 'error',
+        statusLabel: 'Erro localizado',
+        productFound: true,
+        toyotaFound: false,
+        product: productPayload,
+        toyota,
+        suggestion,
+        fieldSuggestions,
+      });
+      continue;
+    }
+
+    if (!toyotaRecord) {
+      const toyota = buildEmptyToyotaCategoryPayload();
+      const suggestion = await suggestCategoryFromProductContext(product, currentCategories, options, useAI, aiCache);
+      const fieldSuggestions = buildFieldSuggestions(product, toyota, suggestion);
+      rows.push({
+        sku,
+        status: 'no_toyota_match',
+        statusLabel: 'Toyota nao encontrou',
+        productFound: true,
+        toyotaFound: false,
+        product: productPayload,
+        toyota,
+        suggestion,
+        fieldSuggestions,
+      });
+      continue;
+    }
+
+    const toyota = buildToyotaCategoryPayload(toyotaRecord, compatibilityRowsByCode);
+    let suggestion = suggestCategoryDeterministic(toyotaRecord, currentCategories, options);
+
+    if (useAI && suggestion.confidence < CATEGORY_ENRICHMENT_CONFIDENCE && suggestion.alternatives.length > 0 && OPENAI_KEY()) {
+      const aiKey = normalizeSearchText(`${toyota.categoria}|${toyota.subcategoria}|${toyota.cat}|${toyota.name}`);
+      if (!aiCache.has(aiKey)) {
+        aiCache.set(aiKey, suggestCategoryWithAI(toyotaRecord, product, suggestion));
+      }
+      const aiSuggestion = await aiCache.get(aiKey);
+      if (aiSuggestion) suggestion = aiSuggestion;
+    }
+
+    const fieldSuggestions = buildFieldSuggestions(product, toyota, suggestion);
+    const hasSafeDiff = fieldSuggestions.category.applyDefault || fieldSuggestions.weight.applyDefault;
+    const alreadyCorrect = !hasSafeDiff && suggestion.categoryId && productPayload.category_ids.includes(String(suggestion.categoryId));
+    const status = alreadyCorrect
+      ? 'already_correct'
+      : suggestion.confidence >= CATEGORY_ENRICHMENT_CONFIDENCE && hasSafeDiff
+        ? 'ready'
+        : 'needs_review';
+
+    rows.push({
+      sku,
+      status,
+      statusLabel: status === 'ready' ? 'Pronto para atualizar' : status === 'already_correct' ? 'Ja esta correto' : 'Precisa revisar',
+      productFound: true,
+      toyotaFound: true,
+      product: productPayload,
+      toyota,
+      suggestion,
+      fieldSuggestions,
+    });
+  }
+
+  return {
+    rows,
+    categories: options.map((option) => ({ id: option.id, name: option.name, path: option.path })),
+    debug: { category: categoryDebug },
+  };
+}
+
+function summarizeCategoryEnrichment(rows: any[]) {
+  return {
+    total: rows.length,
+    product_found: rows.filter((row) => row.productFound).length,
+    toyota_found: rows.filter((row) => row.toyotaFound).length,
+    ready: rows.filter((row) => row.status === 'ready').length,
+    needs_review: rows.filter((row) => row.status === 'needs_review').length,
+    already_correct: rows.filter((row) => row.status === 'already_correct').length,
+    no_product: rows.filter((row) => row.status === 'no_product').length,
+    no_toyota_match: rows.filter((row) => row.status === 'no_toyota_match').length,
+  };
+}
+
+function applyCategoryToDraft(draft: any, categoryId: string) {
+  const categoryIds = [String(categoryId)];
+  draft.custom_attributes = upsertCustomAttribute(draft, 'category_ids', categoryIds.join(','));
+  draft.extension_attributes = {
+    ...(draft.extension_attributes || {}),
+    category_links: categoryIds.map((id, index) => ({ category_id: id, position: index })),
+  };
+  draft.category_ids = categoryIds;
+}
+
+export async function applyCategoryEnrichmentUpdate(
+  c: any,
+  update: any,
+  categoryOptions: Array<{ id: string; name: string; path: string }>,
+  precomputedRow?: any,
+) {
+  const sku = normalizeSku(update?.sku || '');
+  if (!sku) return { sku: '', success: false, error: 'SKU obrigatorio' };
+
+  const fields = Array.isArray(update?.fields) ? uniqueList(update.fields) : [];
+  if (!fields.length) return { sku, success: false, error: 'Nenhum campo selecionado' };
+
+  const product = await kv.get(`${PRODUCT_PREFIX}${sku}`);
+  if (!product) return { sku, success: false, error: 'Produto nao encontrado' };
+
+  const row = precomputedRow || (await buildCategoryEnrichmentRows([sku], false)).rows?.[0];
+  if (!row) return { sku, success: false, error: 'SKU nao elegivel para atualizacao' };
+  if (!row?.toyotaFound) {
+    const unsupportedFields = fields.filter((field) => field !== 'category');
+    if (unsupportedFields.length) {
+      return { sku, success: false, error: 'Sem match Toyota: apenas categoria pode ser aplicada neste SKU' };
+    }
+  }
+
+  const categoryId = String(update?.categoryId || row?.suggestion?.categoryId || '').trim();
+  const selectedCategory = categoryOptions.find((category) => category.id === categoryId);
+  if (fields.includes('category') && !selectedCategory) {
+    return { sku, success: false, error: 'Categoria selecionada nao existe na arvore atual' };
+  }
+
+  const before = {
+    name: product?.name || '',
+    weight: normalizeToyopartsMetric('weight', product?.weight),
+    category_ids: extractCategoryIds(product),
+    modelo: getAttr(product, 'modelo') || '',
+    ano: getAttr(product, 'ano') || '',
+    compatibilidade: getAttr(product, 'compatibilidade') || '',
+  };
+
+  const draft = {
+    ...product,
+    custom_attributes: cloneCustomAttributes(product),
+    updated_at: new Date().toISOString(),
+  };
+
+  const appliedFields: string[] = [];
+  if (fields.includes('category') && selectedCategory) {
+    applyCategoryToDraft(draft, selectedCategory.id);
+    appliedFields.push('category');
+  }
+
+  if (fields.includes('weight') && row?.toyota?.weight != null) {
+    draft.weight = row.toyota.weight;
+    appliedFields.push('weight');
+  }
+
+  if (fields.includes('compatibility') && row?.fieldSuggestions?.compatibility?.suggested) {
+    draft.custom_attributes = upsertCustomAttribute(draft, 'compatibilidade', String(row.fieldSuggestions.compatibility.suggested));
+    appliedFields.push('compatibility');
+  }
+
+  if (fields.includes('modelYear') && row?.fieldSuggestions?.modelYear?.suggested) {
+    const suggested = row.fieldSuggestions.modelYear.suggested;
+    if (suggested.modelo) draft.custom_attributes = upsertCustomAttribute(draft, 'modelo', String(suggested.modelo));
+    if (suggested.ano) draft.custom_attributes = upsertCustomAttribute(draft, 'ano', String(suggested.ano));
+    appliedFields.push('modelYear');
+  }
+
+  if (fields.includes('name') && row?.fieldSuggestions?.name?.suggested) {
+    draft.name = String(row.fieldSuggestions.name.suggested);
+    appliedFields.push('name');
+  }
+
+  if (!appliedFields.length) {
+    return { sku, success: false, error: 'Nenhum campo aplicavel para este SKU' };
+  }
+
+  const historyTimestamp = Date.now();
+  await kv.set(`${HISTORY_PREFIX}${sku}:${historyTimestamp}`, {
+    ...product,
+    snapshot_at: new Date().toISOString(),
+    change_type: 'catalogo_category_enrichment',
+  });
+
+  const updatedProduct = await normalizeProductRecord(draft, product);
+  await kv.set(`${PRODUCT_PREFIX}${sku}`, updatedProduct);
+  await syncProductIndex(updatedProduct);
+
+  const after = {
+    name: updatedProduct?.name || '',
+    weight: normalizeToyopartsMetric('weight', updatedProduct?.weight),
+    category_ids: extractCategoryIds(updatedProduct),
+    modelo: getAttr(updatedProduct, 'modelo') || '',
+    ano: getAttr(updatedProduct, 'ano') || '',
+    compatibilidade: getAttr(updatedProduct, 'compatibilidade') || '',
+  };
+
+  const auditEntry = {
+    id: crypto.randomUUID(),
+    sku,
+    applied_at: new Date().toISOString(),
+    applied_fields: appliedFields,
+    before,
+    after,
+    selected_category: selectedCategory || null,
+    suggestion: row?.suggestion || null,
+    toyota: row?.toyota || null,
+    admin_token_prefix: (c?.req?.header?.('X-Admin-Token') || '').slice(0, 8) || null,
+  };
+
+  await kv.set(`${CATEGORY_ENRICHMENT_AUDIT_PREFIX}${historyTimestamp}:${sku}`, auditEntry);
+
+  return {
+    sku,
+    success: true,
+    appliedFields,
+    before,
+    after,
+    audit: auditEntry,
+    product: updatedProduct,
+  };
 }
 
 // Buscar produto Toyota por partno (com fallback)
@@ -912,8 +1930,9 @@ app.post('/comparar-medidas', async (c) => {
 
     const toyotaMatch = await findToyotaMatchInfo(requestedSku);
     const comparison = buildMeasureComparison(requestedSku, product, toyotaMatch);
+    const review = buildMeasureReviewState(await kv.get(getMeasureReviewKey(requestedSku)), comparison);
 
-    return c.json({ sku: requestedSku, comparison });
+    return c.json({ sku: requestedSku, comparison, review });
   } catch (e: any) {
     console.error('[comparar-medidas]', e.message);
     return c.json({ error: e.message }, 500);
@@ -925,16 +1944,24 @@ app.post('/comparar-medidas-lote', async (c) => {
   try {
     const {
       offset = 0,
-      limit = 30,
+      limit = 50,
       q = '',
-      onlyDivergent = false,
+      onlyDivergent = true,
+      inStockOnly = false,
       field = 'all',
       matchStatus = 'all',
+      rowStatus = 'all',
+      showReviewed = false,
     } = await c.req.json();
 
     const safeOffset = Math.max(0, Number(offset) || 0);
-    const safeLimit = Math.min(100, Math.max(1, Number(limit) || 30));
+    const safeLimit = Math.min(100, Math.max(1, Number(limit) || 50));
     const query = String(q || '').trim().toLowerCase();
+    const onlyInStock = Boolean(inStockOnly);
+    const includeReviewed = Boolean(showReviewed);
+    const rowStatusFilter = ['all', 'pending', 'synced', 'sem_match'].includes(String(rowStatus))
+      ? String(rowStatus)
+      : 'all';
 
     const allProducts = (await kv.getByPrefix(PRODUCT_PREFIX) || [])
       .filter((product: any) => product?.sku)
@@ -949,6 +1976,7 @@ app.post('/comparar-medidas-lote', async (c) => {
       : allProducts;
 
     const toyotaMap = await buildToyotaExactMap(searchedProducts.map((product: any) => product.sku));
+    const reviewMap = await loadMeasureReviewMap();
 
     const rows = searchedProducts.map((product: any) => {
       const normalizedSku = normalizeSku(product.sku);
@@ -962,25 +1990,34 @@ app.post('/comparar-medidas-lote', async (c) => {
         matchedPartno: toyotaRecord?.partno || null,
         record: toyotaRecord,
       });
-      return buildBulkMeasureRow(product, comparison);
+      return buildBulkMeasureRow(product, comparison, reviewMap.get(String(product?.sku || '').trim()));
     });
 
     const filteredRows = rows.filter((row: any) => {
       if (onlyDivergent && !row.hasDifferences) return false;
+      if (onlyInStock && !row.inStock) return false;
       if (field !== 'all' && ![...row.divergentFields, ...row.missingFields].includes(field)) return false;
       if (matchStatus !== 'all' && row.matchStatus !== matchStatus) return false;
+      if (rowStatusFilter !== 'all' && row.rowStatus !== rowStatusFilter) return false;
+      if (!includeReviewed && row.reviewed && row.reviewStillValid) return false;
       return true;
     });
 
     const pagedRows = filteredRows.slice(safeOffset, safeOffset + safeLimit);
+    const nextOffset = safeOffset + pagedRows.length;
 
     const stats = {
+      total_catalog_rows: allProducts.length,
       total_analyzed: rows.length,
       total_after_filters: filteredRows.length,
+      total_in_stock: rows.filter((row: any) => row.inStock).length,
       total_eligible_matches: rows.filter((row: any) => row.matchStatus === 'elegivel').length,
-      total_without_match: rows.filter((row: any) => row.matchStatus === 'sem_match').length,
+      total_without_match: rows.filter((row: any) => row.rowStatus === 'sem_match').length,
       total_with_differences: rows.filter((row: any) => row.hasDifferences).length,
       total_eligible_to_apply: rows.filter((row: any) => row.canApply).length,
+      total_pending: rows.filter((row: any) => row.rowStatus === 'pending').length,
+      total_synced: rows.filter((row: any) => row.rowStatus === 'synced').length,
+      total_reviewed: rows.filter((row: any) => row.reviewed && row.reviewStillValid).length,
       field_counts: {
         weight: {
           divergente: rows.filter((row: any) => row.fields.weight.status === 'divergente').length,
@@ -1015,9 +2052,18 @@ app.post('/comparar-medidas-lote', async (c) => {
       total_source_rows: rows.length,
       offset: safeOffset,
       limit: safeLimit,
-      has_more: safeOffset + safeLimit < filteredRows.length,
+      nextOffset,
+      has_more: nextOffset < filteredRows.length,
       stats,
-      filters: { q: query, onlyDivergent, field, matchStatus },
+      filters: {
+        q: query,
+        onlyDivergent,
+        inStockOnly: onlyInStock,
+        field,
+        matchStatus,
+        rowStatus: rowStatusFilter,
+        showReviewed: includeReviewed,
+      },
     });
   } catch (e: any) {
     console.error('[comparar-medidas-lote]', e.message);
@@ -1048,6 +2094,7 @@ app.post('/aplicar-medidas', async (c) => {
       success: result.success,
       result,
       comparison: refreshedComparison,
+      row: buildBulkMeasureRow(result.product || product, refreshedComparison),
     });
   } catch (e: any) {
     console.error('[aplicar-medidas]', e.message);
@@ -1105,11 +2152,22 @@ app.post('/aplicar-medidas-lote', async (c) => {
 
       try {
         const result = await persistMeasureUpdate(c, sku, product, comparison);
+        const refreshedComparison = buildMeasureComparison(sku, result.product || product, {
+          found: !!toyotaRecord,
+          mode: toyotaRecord ? (toyotaRecord.partno === sku ? 'exact' : 'normalized') : 'none',
+          eligible: !!toyotaRecord,
+          requestedSku: sku,
+          normalizedSku,
+          matchedPartno: toyotaRecord?.partno || null,
+          record: toyotaRecord,
+        });
         applied.push({
           sku,
           appliedFields: result.appliedFields,
           before: result.before,
           after: result.after,
+          comparison: refreshedComparison,
+          row: buildBulkMeasureRow(result.product || product, refreshedComparison),
         });
       } catch (err: any) {
         errors.push({ sku, error: err.message });
@@ -1127,6 +2185,84 @@ app.post('/aplicar-medidas-lote', async (c) => {
     });
   } catch (e: any) {
     console.error('[aplicar-medidas-lote]', e.message);
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ── POST /marcar-medidas-conferidas ───────────────────────────────────────────
+app.post('/marcar-medidas-conferidas', async (c) => {
+  try {
+    const { skus = [] } = await c.req.json();
+    const uniqueSkus = [...new Set((Array.isArray(skus) ? skus : []).map((sku: any) => String(sku || '').trim()).filter(Boolean))];
+    if (!uniqueSkus.length) return c.json({ error: 'Lista de SKUs obrigatoria' }, 400);
+
+    const products = await Promise.all(uniqueSkus.map((sku) => kv.get(`${PRODUCT_PREFIX}${sku}`)));
+    const productMap = new Map<string, any>();
+    uniqueSkus.forEach((sku, index) => {
+      if (products[index]) productMap.set(sku, products[index]);
+    });
+
+    const toyotaMap = await buildToyotaExactMap(uniqueSkus);
+    const reviewed: any[] = [];
+    const skipped: any[] = [];
+
+    for (const sku of uniqueSkus) {
+      const product = productMap.get(sku);
+      if (!product) {
+        skipped.push({ sku, reason: 'Produto nao encontrado no Toyoparts' });
+        continue;
+      }
+
+      const normalizedSku = normalizeSku(sku);
+      const toyotaRecord = toyotaMap.get(normalizedSku) || null;
+      const comparison = buildMeasureComparison(sku, product, {
+        found: !!toyotaRecord,
+        mode: toyotaRecord ? (toyotaRecord.partno === sku ? 'exact' : 'normalized') : 'none',
+        eligible: !!toyotaRecord,
+        requestedSku: sku,
+        normalizedSku,
+        matchedPartno: toyotaRecord?.partno || null,
+        record: toyotaRecord,
+      });
+
+      const reviewEntry = buildMeasureReviewEntry(c, sku, comparison);
+      await kv.set(getMeasureReviewKey(sku), reviewEntry);
+      reviewed.push({
+        sku,
+        review: buildMeasureReviewState(reviewEntry, comparison),
+        row: buildBulkMeasureRow(product, comparison, reviewEntry),
+      });
+    }
+
+    return c.json({
+      success: true,
+      reviewed_count: reviewed.length,
+      skipped_count: skipped.length,
+      reviewed,
+      skipped,
+    });
+  } catch (e: any) {
+    console.error('[marcar-medidas-conferidas]', e.message);
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// ── POST /desmarcar-medidas-conferidas ───────────────────────────────────────
+app.post('/desmarcar-medidas-conferidas', async (c) => {
+  try {
+    const { skus = [] } = await c.req.json();
+    const uniqueSkus = [...new Set((Array.isArray(skus) ? skus : []).map((sku: any) => String(sku || '').trim()).filter(Boolean))];
+    if (!uniqueSkus.length) return c.json({ error: 'Lista de SKUs obrigatoria' }, 400);
+
+    await Promise.all(uniqueSkus.map((sku) => kv.del(getMeasureReviewKey(sku))));
+
+    return c.json({
+      success: true,
+      unreviewed_count: uniqueSkus.length,
+      skus: uniqueSkus,
+    });
+  } catch (e: any) {
+    console.error('[desmarcar-medidas-conferidas]', e.message);
     return c.json({ error: e.message }, 500);
   }
 });
@@ -1152,7 +2288,161 @@ app.get('/historico-medidas', async (c) => {
   }
 });
 
-function extractCategoryIds(product: any): string[] {
+// -- POST /category-enrichment/preview ------------------------------------------------
+app.post('/category-enrichment/preview', async (c) => {
+  try {
+    const body = await c.req.json();
+    const rawSkus = Array.isArray(body?.skus)
+      ? body.skus
+      : String(body?.text || '')
+        .split(/[\r\n,;]+/g);
+    const skus = uniqueList(rawSkus.map((sku: any) => normalizeSku(sku))).slice(0, CATEGORY_ENRICHMENT_MAX_SKUS);
+
+    if (!skus.length) return c.json({ error: 'Informe ao menos um SKU' }, 400);
+
+    const result = await buildCategoryEnrichmentRows(skus, body?.useAI !== false);
+    return c.json({
+      rows: result.rows,
+      categories: result.categories,
+      summary: summarizeCategoryEnrichment(result.rows),
+      limits: {
+        max_skus: CATEGORY_ENRICHMENT_MAX_SKUS,
+        received: rawSkus.length,
+        analyzed: skus.length,
+      },
+      debug: result.debug,
+    });
+  } catch (e: any) {
+    console.error('[category-enrichment/preview]', e.message);
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// -- POST /category-enrichment/apply --------------------------------------------------
+app.post('/category-enrichment/apply', async (c) => {
+  try {
+    const body = await c.req.json();
+    const updates = Array.isArray(body?.updates) ? body.updates : [];
+    if (!updates.length) return c.json({ error: 'Lista de updates obrigatoria' }, 400);
+    if (updates.length > CATEGORY_ENRICHMENT_MAX_SKUS) {
+      return c.json({ error: `Limite de ${CATEGORY_ENRICHMENT_MAX_SKUS} SKUs por aplicacao` }, 400);
+    }
+
+    const { categories } = await buildCategoryEnrichmentRows(
+      uniqueList(updates.map((update: any) => normalizeSku(update?.sku || ''))),
+      false,
+    );
+
+    const applied: any[] = [];
+    const skipped: any[] = [];
+    const errors: any[] = [];
+
+    for (const update of updates) {
+      try {
+        const result = await applyCategoryEnrichmentUpdate(c, update, categories);
+        if (result.success) applied.push(result);
+        else skipped.push(result);
+      } catch (err: any) {
+        errors.push({ sku: normalizeSku(update?.sku || ''), error: err.message });
+      }
+    }
+
+    return c.json({
+      success: errors.length === 0,
+      applied_count: applied.length,
+      skipped_count: skipped.length,
+      error_count: errors.length,
+      applied,
+      skipped,
+      errors,
+    });
+  } catch (e: any) {
+    console.error('[category-enrichment/apply]', e.message);
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// -- GET /category-enrichment/history -------------------------------------------------
+app.get('/category-enrichment/history', async (c) => {
+  try {
+    const limit = Math.min(200, Math.max(1, Number(c.req.query('limit') || 50)));
+    const sku = normalizeSku(c.req.query('sku') || '');
+    const history = await kv.getByPrefix(CATEGORY_ENRICHMENT_AUDIT_PREFIX) || [];
+    const filtered = sku ? history.filter((entry: any) => normalizeSku(entry?.sku || '') === sku) : history;
+    const sorted = filtered.sort((a: any, b: any) =>
+      new Date(b?.applied_at || 0).getTime() - new Date(a?.applied_at || 0).getTime()
+    );
+
+    return c.json({
+      items: sorted.slice(0, limit),
+      total: filtered.length,
+    });
+  } catch (e: any) {
+    console.error('[category-enrichment/history]', e.message);
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+// -- GET /category-enrichment/candidates ----------------------------------------------
+app.get('/category-enrichment/candidates', async (c) => {
+  try {
+    const limit = Math.min(CATEGORY_ENRICHMENT_MAX_SKUS, Math.max(1, Number(c.req.query('limit') || CATEGORY_ENRICHMENT_MAX_SKUS)));
+    const filters = {
+      active: true,
+      in_stock: true,
+      without_categories: true,
+    };
+
+    if (meili.isConfigured()) {
+      try {
+        const result = await meili.search('', {
+          limit,
+          offset: 0,
+          filter: ['status = 1', 'in_stock = true', 'category_ids IS EMPTY'],
+          sort: ['created_at:desc'],
+          facets: [],
+        });
+
+        const skus = [...new Set(
+          (result?.hits || [])
+            .map((hit: any) => normalizeSku(hit?.sku || ''))
+            .filter(Boolean),
+        )].slice(0, limit);
+
+        if (skus.length > 0) {
+          return c.json({
+            skus,
+            total_candidates: result?.totalHits ?? result?.estimatedTotalHits ?? skus.length,
+            selected_count: skus.length,
+            filters,
+            source: 'meilisearch',
+          });
+        }
+
+        console.warn('[category-enrichment/candidates] Meilisearch returned no hits, using bounded fallback');
+      } catch (meiliError: any) {
+        console.warn('[category-enrichment/candidates] Meilisearch failed, using bounded fallback:', meiliError?.message || String(meiliError));
+      }
+    }
+
+    const fallback = await collectCategoryEnrichmentCandidatesFallback(limit);
+
+    return c.json({
+      skus: fallback.skus,
+      total_candidates: fallback.skus.length,
+      selected_count: fallback.skus.length,
+      filters,
+      source: 'kv_bounded_fallback',
+      scanned_products: fallback.scanned_products,
+      reached_scan_limit: fallback.reached_scan_limit,
+    });
+  } catch (e: any) {
+    console.error('[category-enrichment/candidates]', e.message);
+    return c.json({ error: e.message }, 500);
+  }
+});
+
+export function extractCategoryIds(product: any): string[] {
   const catSet = new Set<string>();
   const customAttrs = product?.custom_attributes || [];
   const catAttr = customAttrs.find((a: any) => a.attribute_code === 'category_ids');

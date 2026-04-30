@@ -11,6 +11,7 @@ import type {
   ShippingQuote,
   ShippingCalculator,
 } from './shipping-types';
+import { getShippingServiceDisplayName } from './shipping-labels';
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0/frenet`;
 const HEADERS: HeadersInit = {
@@ -168,7 +169,7 @@ export const frenetShippingCalculator: ShippingCalculator = {
     return result.quotes.map(q => ({
       id: q.serviceCode || q.serviceDescription,
       carrier: q.carrier,
-      name: q.serviceDescription,
+      name: getShippingServiceDisplayName(q.serviceDescription, q.carrier),
       price: q.price,
       originalPrice: q.originalPrice,
       estimatedDays: q.deliveryDays,

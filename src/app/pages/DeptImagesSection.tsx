@@ -10,6 +10,7 @@ import { projectId, publicAnonKey } from '../../../utils/supabase/info';
 import { Button } from '../components/base/button';
 import { Badge } from '../components/base/badge';
 import { Card } from '../components/base/card';
+import { getModelStorageIconUrl } from '../lib/media-urls';
 import { Progress } from '../components/ui/progress';
 import { Tabs, TabsList, TabsTrigger, TabsContent } from '../components/ui/tabs';
 import { Tooltip, TooltipTrigger, TooltipContent } from '../components/ui/tooltip';
@@ -219,7 +220,7 @@ function ModelIconCard({
 }) {
   const fileRef = useRef<HTMLInputElement>(null);
   const isUploading = uploading === name;
-  const fallback = `https://toyoparts.com.br/pub/media/catalog/icons/models/${encodeURIComponent(name)}.png?v=1`;
+  const fallback = getModelStorageIconUrl(name);
 
   const handleFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

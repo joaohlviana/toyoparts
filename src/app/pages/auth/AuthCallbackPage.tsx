@@ -1,11 +1,11 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useNavigate } from 'react-router';
 import { Loader2, ShieldAlert } from 'lucide-react';
-import { supabase } from '../../../lib/supabase';
 import { toast } from 'sonner';
 import {
   CUSTOMER_ORDERS_PATH,
 } from '../../lib/customer-auth';
+import { getValidatedCustomerSession } from '../../lib/customer-session';
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -37,8 +37,16 @@ export function AuthCallbackPage() {
   const navigate = useNavigate();
   const [statusMessage, setStatusMessage] = useState('Validando seu acesso...');
   const [errorMessage, setErrorMessage] = useState('');
+  const hasStartedRef = useRef(false);
 
   useEffect(() => {
+    if (hasStartedRef.current) {
+      return undefined;
+    }
+
+    hasStartedRef.current = true;
+    let cancelled = false;
+
     const handleAuthCallback = async () => {
       try {
         const currentUrl = new URL(window.location.href);
@@ -47,40 +55,38 @@ export function AuthCallbackPage() {
         const directError = readCallbackParam('error_description', currentUrl, hashParams)
           || readCallbackParam('error', currentUrl, hashParams);
 
-        if (directError) {
-          throw new Error(formatAuthError(directError));
-        }
-
-        const code = currentUrl.searchParams.get('code');
-        if (code) {
-          setStatusMessage('Confirmando sua sessao...');
-          const { error } = await supabase.auth.exchangeCodeForSession(code);
-          if (error) {
-            throw error;
-          }
-        }
-
         setStatusMessage('Concluindo login...');
         let session = null;
+        let sessionError: Error | null = null;
+
         for (let attempt = 0; attempt < 4; attempt += 1) {
-          const { data, error } = await supabase.auth.getSession();
-          if (error) {
-            throw error;
+          try {
+            if (cancelled) return;
+            setStatusMessage(attempt === 0 ? 'Confirmando sua sessao...' : 'Finalizando seu acesso...');
+            session = await getValidatedCustomerSession();
+            if (session?.user) {
+              break;
+            }
+          } catch (error: any) {
+            sessionError = error;
           }
-          if (data.session?.user) {
-            session = data.session;
-            break;
-          }
+          if (cancelled) return;
           await sleep(250);
         }
 
-        if (!session?.user) {
-          throw new Error('Este link expirou, ja foi usado ou nao pode mais ser validado.');
+        if (directError && !session?.user) {
+          throw new Error(formatAuthError(directError));
         }
 
+        if (!session?.user) {
+          throw sessionError || new Error('Este link expirou, ja foi usado ou nao pode mais ser validado.');
+        }
+
+        if (cancelled) return;
         toast.success('Login realizado com sucesso!');
         navigate(CUSTOMER_ORDERS_PATH, { replace: true });
       } catch (e: any) {
+        if (cancelled) return;
         const friendlyMessage = formatAuthError(e?.message || '');
         console.error('Auth callback error:', e);
         setErrorMessage(friendlyMessage);
@@ -92,6 +98,10 @@ export function AuthCallbackPage() {
     };
 
     handleAuthCallback();
+
+    return () => {
+      cancelled = true;
+    };
   }, [navigate]);
 
   return (

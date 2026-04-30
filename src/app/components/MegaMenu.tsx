@@ -1,11 +1,17 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Search, User, ShoppingCart, X, Settings, Truck, Phone, ArrowRight, Clock, TrendingUp, LogIn, Sparkles, Grid3X3, Menu, ChevronRight, ChevronLeft, MessageCircle } from 'lucide-react';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
 import { useNavigate, Link } from 'react-router';
 import { ToyopartsLogo } from './ToyopartsLogo';
 import { useCart } from '../lib/cart/cart-store';
+import { getModelStorageIconUrl } from '../lib/media-urls';
 import { Skeleton } from './ui/skeleton';
+import { TOYOPARTS_DEFAULT_WHATSAPP_URL } from '../lib/whatsapp';
+import { fetchWithTimeout } from '../lib/fetch-with-timeout';
+import { FALLBACK_CATEGORY_TREE, hasRenderableCategoryChildren } from '../lib/category-menu-fallback';
+import { getRenderableCategoryMenuImage, markCategoryImageUrlBroken } from '../lib/home-departments';
+import { CAR_MODELS_SEO } from '../seo-config';
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0`;
 const HEADERS: HeadersInit = {
@@ -26,25 +32,62 @@ interface CategoryNode {
   children?: CategoryNode[];
 }
 
+interface NavigationNode {
+  id: string;
+  label: string;
+  level: number;
+  resultCount: number;
+  selectable: boolean;
+  selected: boolean;
+  children: NavigationNode[];
+}
+
+interface CatalogNavigationPayload {
+  categoryTree?: NavigationNode[];
+  images?: Record<string, string>;
+}
+
+function normalizeNavigationNode(node: NavigationNode, parentId = 1): CategoryNode {
+  const nodeId = Number(node.id) || parentId + 1;
+  return {
+    id: nodeId,
+    parent_id: parentId,
+    name: node.label,
+    level: Number(node.level || 0),
+    is_active: node.selectable !== false,
+    product_count: Number(node.resultCount || 0),
+    children_data: (node.children || []).map((child) => normalizeNavigationNode(child, nodeId)),
+  };
+}
+
+function buildNavigationRoot(nodes: NavigationNode[] = []): CategoryNode {
+  return {
+    id: 1,
+    parent_id: 0,
+    name: 'Root',
+    level: 0,
+    is_active: true,
+    product_count: 0,
+    children_data: nodes.map((node) => normalizeNavigationNode(node, 1)),
+  };
+}
+
 // ─── Car Model Definitions (for mobile menu) ────────────────────────────────
 interface CarModelDef {
-  id: string;
+  slug: string;
   modeloIds: string[];
   name: string;
   imgSrc: string;
   storageKey: string;
 }
 
-const CAR_MODELS: CarModelDef[] = [
-  { id: 'hilux', modeloIds: ['Hilux', '35'], name: 'Hilux', storageKey: 'HILUX', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/HILUX.png?v=1' },
-  { id: 'corolla', modeloIds: ['Corolla', '38'], name: 'Corolla', storageKey: 'COROLLA', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/COROLLA.png?v=1' },
-  { id: 'corolla-cross', modeloIds: ['Corolla Cross', '206'], name: 'Corolla Cross', storageKey: 'COROLLA CROSS', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/COROLLA%20CROSS.png?v=1' },
-  { id: 'yaris', modeloIds: ['Yaris', '205'], name: 'Yaris', storageKey: 'YARIS', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/YARIS.png?v=1' },
-  { id: 'sw4', modeloIds: ['SW4', '204'], name: 'SW4', storageKey: 'SW4', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/SW4.png?v=1' },
-  { id: 'etios', modeloIds: ['Etios', '37', '207'], name: 'Etios', storageKey: 'ETIOS', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/ETIOS.png?v=1' },
-  { id: 'rav4', modeloIds: ['RAV4', 'Rav4', '36'], name: 'RAV4', storageKey: 'RAV4', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/RAV4.png?v=1' },
-  { id: 'prius', modeloIds: ['Prius', '40'], name: 'Prius', storageKey: 'PRIUS', imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/PRIUS.png?v=1' },
-];
+const CAR_MODELS: CarModelDef[] = CAR_MODELS_SEO.map((model) => ({
+  slug: model.slug,
+  modeloIds: model.modeloIds,
+  name: model.name,
+  imgSrc: model.imgSrc || getModelStorageIconUrl(model.storageKey),
+  storageKey: model.storageKey,
+}));
 
 function CarModelIcon({ model, size = 80, overrideUrl }: { model: CarModelDef; size?: number; overrideUrl?: string }) {
   return (
@@ -52,7 +95,7 @@ function CarModelIcon({ model, size = 80, overrideUrl }: { model: CarModelDef; s
       src={overrideUrl || model.imgSrc}
       alt={model.name}
       style={{ width: size, height: size * 0.5 }}
-      className="object-contain"
+      className="object-contain brightness-0 opacity-70"
       loading="lazy"
     />
   );
@@ -64,7 +107,7 @@ interface MegaMenuProps {
   currentPage: 'sync' | 'products' | 'search' | 'admin' | 'home';
   onNavigate: (page: 'sync' | 'products' | 'search' | 'admin' | 'home' | 'departments' | 'cart') => void;
   onCategorySelect?: (categoryId: string, categoryName: string) => void;
-  onModeloSelect?: (modeloId: string, modeloName: string) => void;
+  onModeloSelect?: (modeloSlug: string, modeloName: string) => void;
   onSearchSubmit?: (query: string, aiMode?: boolean) => void;
   onProductSelect?: (sku: string, name: string) => void;
   onCartClick?: () => void;
@@ -91,8 +134,9 @@ export function MegaMenu({
   const { totals } = useCart();
   // ─── State ─────────────────────────────────────────────────────────────────
   const [categoryTree, setCategoryTree] = useState<CategoryNode | null>(null);
-  const [isLoading, setIsLoading] = useState(true);
+  const [isLoading, setIsLoading] = useState(false);
   const [categoryImages, setCategoryImages] = useState<Record<string, string>>({});
+  const [categoryImageValidationVersion, setCategoryImageValidationVersion] = useState(0);
   const [modelImageUrls, setModelImageUrls] = useState<Record<string, string>>({});
 
   const [searchValue, setSearchValue] = useState('');
@@ -131,6 +175,12 @@ export function MegaMenu({
   const searchInputRef = useRef<HTMLInputElement>(null);
   const mobileSearchInputRef = useRef<HTMLInputElement>(null);
 
+  const handleCategoryImageError = useCallback((imageUrl?: string | null) => {
+    if (markCategoryImageUrlBroken(imageUrl)) {
+      setCategoryImageValidationVersion((current) => current + 1);
+    }
+  }, []);
+
   // ─── Effects ───────────────────────────────────────────────────────────────
   useEffect(() => {
     const handleScroll = () => setIsScrolled(window.scrollY > 0);
@@ -140,10 +190,14 @@ export function MegaMenu({
       const saved = localStorage.getItem('toyoparts_recent_searches');
       if (saved) setRecentSearches(JSON.parse(saved).slice(0, 5));
     } catch {}
-    // Fetch category tree for autocomplete
-    fetchCategoryTree();
     return () => window.removeEventListener('scroll', handleScroll);
   }, []);
+
+  useEffect(() => {
+    if ((searchOpen || mobileSearchOpen || mobileDeptOpen) && !categoryTree && !isLoading) {
+      void fetchCategoryTree();
+    }
+  }, [categoryTree, isLoading, mobileDeptOpen, mobileSearchOpen, searchOpen]);
 
   // Close on Escape
   useEffect(() => {
@@ -183,34 +237,21 @@ export function MegaMenu({
 
   // ─── Data Fetching ────────────────────────────────────────────────────────
   const fetchCategoryTree = async () => {
+    if (isLoading || categoryTree) return;
+    setIsLoading(true);
     try {
-      const [treeRes, imgRes] = await Promise.all([
-        fetch(`${API}/categories/tree`, { headers: HEADERS }).catch(e => {
-          console.warn('MegaMenu: categories tree endpoint unavailable (servidor pode estar offline)');
-          return { ok: false };
-        }),
-        fetch(`${API}/categories/images`, { headers: HEADERS }).catch(e => {
-          console.warn('MegaMenu: categories images endpoint unavailable');
-          return { ok: false };
-        }),
-      ]);
-      
-      if (treeRes.ok) {
-        const treeData = await treeRes.json();
-        setCategoryTree(treeData);
+      const response = await fetchWithTimeout(`${API}/catalog/navigation`, { headers: HEADERS }, 6000).catch(() => ({ ok: false }));
+
+      if (response.ok) {
+        const data = await response.json() as CatalogNavigationPayload;
+        const treeData = buildNavigationRoot(data.categoryTree || []);
+        setCategoryTree(hasRenderableCategoryChildren(treeData) ? treeData : FALLBACK_CATEGORY_TREE);
+        setCategoryImages(data.images || {});
       } else {
-        // Fallback to empty tree - menu will work but categories won't be visible
-        setCategoryTree({ id: 1, name: 'Root', children_data: [] });
-      }
-      
-      if (imgRes.ok) {
-        const data = await imgRes.json();
-        if (data.images) setCategoryImages(data.images);
-      } else {
-        // Fallback to empty images
+        setCategoryTree(FALLBACK_CATEGORY_TREE);
         setCategoryImages({});
       }
-    } catch (e) {
+    } catch {
       // Silently handle - this is expected if backend is not running
       console.info('MegaMenu: Rodando sem backend (categorias não disponíveis)');
       setCategoryTree({ id: 1, name: 'Root', children_data: [] });
@@ -221,34 +262,11 @@ export function MegaMenu({
   };
 
   // ─── Helpers ───────────────────────────────────────────────────────────────
-  const slugify = (text: string): string =>
-    text.toLowerCase()
-      .normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/[^a-z0-9]+/g, '-')
-      .replace(/(^-|-$)/g, '');
-
-  const getCategoryImage = (childName: string, parentName?: string): string | null => {
-    if (!categoryImages || Object.keys(categoryImages).length === 0) return null;
-    const childSlug = slugify(childName);
-    
-    // 1. Exact composite key
-    if (parentName) {
-      const parentSlug = slugify(parentName);
-      const compositeKey = `${parentSlug}:${childSlug}`;
-      if (categoryImages[compositeKey]) return categoryImages[compositeKey];
-      const hyphenatedKey = `${parentSlug}-${childSlug}`;
-      if (categoryImages[hyphenatedKey]) return categoryImages[hyphenatedKey];
-    }
-
-    // 2. Child slug only
-    if (categoryImages[childSlug]) return categoryImages[childSlug];
-
-    // 3. Fuzzy search
-    for (const key of Object.keys(categoryImages)) {
-      if (key.includes(childSlug) || childSlug.includes(key)) return categoryImages[key];
-    }
-    return null;
-  };
+  const getCategoryImage = useCallback(
+    (childName: string, parentName?: string): string | null =>
+      getRenderableCategoryMenuImage(childName, categoryImages, parentName),
+    [categoryImageValidationVersion, categoryImages],
+  );
   const getTopCategories = useCallback((tree: CategoryNode | null): CategoryNode[] => {
     if (!tree) return [];
     const walk = (node: CategoryNode): CategoryNode[] => {
@@ -260,11 +278,15 @@ export function MegaMenu({
     return walk(tree);
   }, []);
 
-  const topCategories = getTopCategories(categoryTree);
+  const resolvedCategoryTree = useMemo(
+    () => (hasRenderableCategoryChildren(categoryTree) ? categoryTree : FALLBACK_CATEGORY_TREE),
+    [categoryTree]
+  );
+  const topCategories = getTopCategories(resolvedCategoryTree);
 
   // Filter categories that match search query
   const filterCategories = useCallback((query: string): { name: string; id: number }[] => {
-    if (!query.trim() || !categoryTree) return [];
+    if (!query.trim() || !resolvedCategoryTree) return [];
     const q = query.toLowerCase();
     const matches: { name: string; id: number }[] = [];
     const walk = (node: CategoryNode) => {
@@ -273,9 +295,9 @@ export function MegaMenu({
       }
       (node.children_data || node.children || []).forEach(walk);
     };
-    walk(categoryTree);
+    walk(resolvedCategoryTree);
     return matches.slice(0, 4);
-  }, [categoryTree]);
+  }, [resolvedCategoryTree]);
 
   // ─── Autocomplete ─────────────────────────────────��───────────────────────
   const fetchSuggestions = useCallback(async (query: string, useAi = false) => {
@@ -329,6 +351,9 @@ export function MegaMenu({
 
   const handleSearchInputChange = (value: string) => {
     setSearchValue(value);
+    if (value.trim().length >= 2 && !categoryTree && !isLoading) {
+      void fetchCategoryTree();
+    }
     if (suggestionsTimerRef.current) clearTimeout(suggestionsTimerRef.current);
     suggestionsTimerRef.current = setTimeout(() => fetchSuggestions(value, aiMode), 250);
   };
@@ -713,7 +738,7 @@ export function MegaMenu({
 
             {/* Desktop WhatsApp — phone → "Fale por WhatsApp" on hover */}
             <a
-              href="https://api.whatsapp.com/send?phone=554332941144&text=Ol%C3%A1!%20Toyoparts!"
+              href={TOYOPARTS_DEFAULT_WHATSAPP_URL}
               target="_blank"
               rel="noopener noreferrer"
               className="hidden xl:flex items-center flex-shrink-0 group/wa rounded-full px-2.5 py-1.5 hover:bg-[#25D366]/[0.08] transition-all duration-300 cursor-pointer"
@@ -967,9 +992,9 @@ export function MegaMenu({
                   <div className="px-5 grid grid-cols-4 gap-2">
                     {CAR_MODELS.map(model => (
                       <button
-                        key={model.id}
+                        key={model.slug}
                         onClick={() => {
-                          onModeloSelect?.(model.modeloIds[0], model.name);
+                          onModeloSelect?.(model.slug, model.name);
                           // onModeloSelect already navigates via RootLayout
                           setMobileSearchOpen(false);
                           setSuggestions([]);
@@ -1120,15 +1145,17 @@ export function MegaMenu({
                               ))}
                             </div>
                           ) : (() => {
-                          const nodes = mobileDeptStack.length === 0 
+                          const parentName = mobileDeptStack.length > 0 ? mobileDeptStack[mobileDeptStack.length - 1].name : undefined;
+                          const rawNodes = mobileDeptStack.length === 0 
                             ? topCategories 
                             : (mobileDeptStack[mobileDeptStack.length - 1].children_data || mobileDeptStack[mobileDeptStack.length - 1].children || []).filter(c => c.is_active);
+                          const nodes = rawNodes.filter((category) => !!getCategoryImage(category.name, parentName));
 
                           if (nodes.length === 0) {
                             return (
                               <div className="py-20 text-center px-10">
                                 <Grid3X3 className="w-12 h-12 text-[#86868b]/20 mx-auto mb-4" />
-                                <p className="text-[16px] text-[#86868b] font-medium">Nenhuma subcategoria encontrada</p>
+                                <p className="text-[16px] text-[#86868b] font-medium">Nenhuma categoria com foto válida foi encontrada</p>
                                 <button
                                   onClick={() => {
                                     if (mobileDeptStack.length > 0) {
@@ -1173,8 +1200,8 @@ export function MegaMenu({
 
                               {nodes.map((cat) => {
                                 const hasChildren = (cat.children_data || cat.children || []).filter(c => c.is_active).length > 0;
-                                const parentName = mobileDeptStack.length > 0 ? mobileDeptStack[mobileDeptStack.length - 1].name : undefined;
                                 const imgUrl = getCategoryImage(cat.name, parentName);
+                                if (!imgUrl) return null;
                                 return (
                                   <button
                                     key={cat.id}
@@ -1191,11 +1218,15 @@ export function MegaMenu({
                                     className="w-full flex items-center justify-between px-5 py-[18px] active:bg-black/[0.04] transition-colors text-left"
                                   >
                                     <div className="flex items-center gap-3 flex-1 min-w-0">
-                                      {imgUrl && (
-                                        <div className="w-10 h-10 rounded-lg overflow-hidden bg-[#f5f5f7] flex-shrink-0 border border-black/[0.04] flex items-center justify-center">
-                                          <img src={imgUrl} alt="" className="w-full h-full object-cover" />
-                                        </div>
-                                      )}
+                                      <div className="w-10 h-10 rounded-lg overflow-hidden bg-[#f5f5f7] flex-shrink-0 border border-black/[0.04] flex items-center justify-center">
+                                        <img
+                                          src={imgUrl}
+                                          alt={cat.name}
+                                          className="w-full h-full object-cover"
+                                          loading="lazy"
+                                          onError={() => handleCategoryImageError(imgUrl)}
+                                        />
+                                      </div>
                                       <span className="text-[17px] text-[#1d1d1f] font-medium truncate pr-2">{cat.name}</span>
                                     </div>
                                     <div className="flex items-center gap-2 flex-shrink-0">
@@ -1294,7 +1325,7 @@ export function MegaMenu({
                   <span className="text-[14px] text-[#1d1d1f]">Ofertas</span>
                 </button>
                 <a
-                  href="https://api.whatsapp.com/send?phone=554332941144&text=Ol%C3%A1!%20Toyoparts!"
+                  href={TOYOPARTS_DEFAULT_WHATSAPP_URL}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="w-full flex items-center gap-3 px-3 py-3 rounded-xl text-left hover:bg-[#25D366]/[0.06] active:bg-[#25D366]/[0.1] transition-colors"

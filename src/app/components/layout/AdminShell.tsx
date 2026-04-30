@@ -4,11 +4,13 @@ import {
   Archive,
   ArrowLeftRight,
   BarChart3,
+  BadgePercent,
   Brain,
   Car,
   CreditCard,
   Database,
   FileCode2,
+  FileSpreadsheet,
   FileText,
   FolderTree,
   Gift,
@@ -19,6 +21,8 @@ import {
   Mail,
   Megaphone,
   Menu,
+  MessageCircle,
+  MonitorSmartphone,
   Package,
   RefreshCcw,
   Rocket,
@@ -51,6 +55,7 @@ export function AdminShell({ children, activeSection, onNavigate, onBackToStore 
       label: 'Visao Geral',
       items: [
         { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+        { id: 'analytics', label: 'Analytics', icon: BarChart3 },
       ],
     },
     {
@@ -83,14 +88,17 @@ export function AdminShell({ children, activeSection, onNavigate, onBackToStore 
         { id: 'categories', label: 'Categorias', icon: FolderTree },
         { id: 'rede_pecas', label: 'Rede de Pecas Toyota', icon: Car },
         { id: 'price_update', label: 'Atualizacao de Precos', icon: RefreshCcw },
+        { id: 'discounts', label: 'Descontos', icon: BadgePercent },
       ],
     },
     {
       label: 'Marketing e Conteudo',
       items: [
+        { id: 'homepage', label: 'Pagina Inicial', icon: MonitorSmartphone },
         { id: 'banners', label: 'Banners Hero', icon: Megaphone },
         { id: 'images', label: 'Imagens do Site', icon: ImageIcon },
         { id: 'newsletter', label: 'Newsletter', icon: Mail },
+        { id: 'contact_leads', label: 'Fale Conosco', icon: MessageCircle },
         {
           id: 'seo',
           label: 'SEO',
@@ -122,7 +130,16 @@ export function AdminShell({ children, activeSection, onNavigate, onBackToStore 
           ],
         },
         { id: 'enriquecimento', label: 'Enriquecimento IA', icon: Brain },
+        { id: 'category_engine', label: 'Motor de Categorias', icon: Brain },
         { id: 'search_intelligence', label: 'Search Intelligence', icon: LineChart },
+      ],
+    },
+    {
+      label: 'Performance',
+      items: [
+        { id: 'google_ads', label: 'Google Ads e Merchant', icon: Target },
+        { id: 'google_merchant', label: 'Google Merchant', icon: FileSpreadsheet },
+        { id: 'whatsapp_leads', label: 'WhatsApp Leads', icon: MessageCircle },
       ],
     },
     {

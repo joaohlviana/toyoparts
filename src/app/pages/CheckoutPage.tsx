@@ -2,7 +2,7 @@
 // Order summary + customer form → PAL unified checkout (Asaas / Vindi / Stripe).
 // Todos os providers retornam checkoutUrl (hosted page) — fluxo de redirect uniforme.
 
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate, Link, useSearchParams } from 'react-router';
 import { toast } from 'sonner';
 import { v4 as uuidv4 } from 'uuid';
@@ -11,10 +11,11 @@ import {
   ArrowLeft, ShoppingBag, Package, User, MapPin,
   CreditCard, Shield, Truck, ChevronDown,
   Loader2, AlertCircle, Lock, CheckCircle2,
-  Tag, Sparkles, MessageCircle,
+  Tag,
 } from 'lucide-react';
 import { useCart } from '../lib/cart/cart-store';
 import { useShippingQuote } from '../lib/shipping/useFrenet';
+import { formatShippingTransitTime } from '../lib/shipping/shipping-labels';
 import {
   maskCPF, maskCEP, maskPhone,
 } from '../lib/checkout/checkout-validation';
@@ -26,10 +27,17 @@ import type { AppliedCoupon } from '../components/checkout/CouponInput';
 import { Button } from '../components/ui/button';
 import { Input } from '../components/ui/input';
 import { ToyotaPlaceholder } from '../components/ToyotaPlaceholder';
+import { ShippingPromotionCallouts } from '../components/shipping/ShippingPromotionCallouts';
 import { SEOHead } from '../components/seo/SEOHead';
 import { ToyopartsLogo } from '../components/ToyopartsLogo';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
 import type { PaymentMethodIntent } from '../lib/shipping/shipping-types';
+import {
+  getAnalyticsData,
+  trackBeginCheckout,
+  trackPageView,
+  trackWhatsappBannerLead,
+} from '../lib/analytics';
 
 function formatBRL(v: number | undefined | null) {
   if (v === undefined || v === null) return 'R$ 0,00';
@@ -60,6 +68,7 @@ export function CheckoutPage() {
   } = useShippingQuote();
 
   const [imgErrors, setImgErrors] = useState<Set<string>>(new Set());
+  const beginCheckoutTrackedRef = useRef(false);
 
   // ── Customer form state ──
   const [name, setName] = useState('');
@@ -221,6 +230,25 @@ export function CheckoutPage() {
     }
   }, [quotes, shipping, isLoadingShipping, setShipping]);
 
+  useEffect(() => {
+    trackPageView('/checkout');
+  }, []);
+
+  useEffect(() => {
+    if (items.length === 0) return;
+    if (beginCheckoutTrackedRef.current) return;
+    beginCheckoutTrackedRef.current = true;
+    trackBeginCheckout(
+      items.map((item) => ({
+        sku: item.sku,
+        name: item.name,
+        qty: item.qty,
+        unitPrice: item.unitPrice,
+      })),
+      totals.total,
+    );
+  }, [items, totals.total]);
+
   // ── Cart empty guard ──
   const isEmpty = items.length === 0 && !isSubmitting;
 
@@ -251,6 +279,7 @@ export function CheckoutPage() {
     setIsSubmitting(true);
 
     const orderId = uuidv4();
+    const analyticsData = getAnalyticsData();
 
     try {
       console.log(`[Checkout] Submitting order ${orderId} — total=${totals.total}, subtotal=${totals.subtotal}, shipping=${totals.shipping}, coupon=${appliedCoupon?.code || 'none'}, discount=${appliedCoupon?.discountValue ?? 0}`);
@@ -300,6 +329,15 @@ export function CheckoutPage() {
             estimatedDays: shipping.estimatedDays,
             price:         shipping.price,
           } : null,
+          attribution: {
+            ...analyticsData,
+            landing_page: analyticsData.landing_page || `${window.location.pathname}${window.location.search}`,
+            referrer: analyticsData.referrer || document.referrer || undefined,
+            session_id: analyticsData.session_id,
+            anonymous_id: analyticsData.anonymous_id,
+            user_id: analyticsData.user_id,
+            user_agent: navigator.userAgent,
+          },
           paymentMethodIntent,
           // Stripe redirect URLs — frontend passes its own origin so the server
           // can construct correct redirect URLs without needing FRONTEND_URL env var.
@@ -795,45 +833,29 @@ export function CheckoutPage() {
                           </div>
                         </div>
 
-                        {shippingAppliedRule && (
-                          <div className="mb-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4">
-                            <div className="flex items-start gap-3">
-                              <Sparkles className="w-4 h-4 text-emerald-600 mt-0.5" />
-                              <div>
-                                <p className="text-sm font-bold text-emerald-800">{shippingAppliedRule.ruleName}</p>
-                                <p className="text-[12px] text-emerald-700 mt-1">{shippingAppliedRule.message}</p>
-                              </div>
-                            </div>
+                        {(shippingAppliedRule || shippingPotentialRules.length > 0 || shippingWhatsAppOffer) && (
+                          <div className="mb-4 space-y-4">
+                            <ShippingPromotionCallouts
+                              appliedRule={shippingAppliedRule}
+                              potentialRules={shippingPotentialRules}
+                              whatsappOffer={shippingWhatsAppOffer}
+                              onWhatsappClick={() => {
+                                void trackWhatsappBannerLead({
+                                  source_surface: 'checkout_shipping_offer',
+                                  page_type: 'checkout',
+                                  page_path: '/checkout',
+                                  cartTotal: totals.total,
+                                  checkoutTotal: totals.total,
+                                  href: shippingWhatsAppOffer?.url,
+                                  properties: {
+                                    rule_id: shippingWhatsAppOffer?.ruleId,
+                                    rule_name: shippingWhatsAppOffer?.ruleName,
+                                    potential: shippingWhatsAppOffer?.potential,
+                                  },
+                                });
+                              }}
+                            />
                           </div>
-                        )}
-
-                        {!shippingAppliedRule && shippingPotentialRules.length > 0 && (
-                          <div className="mb-4 rounded-2xl border border-blue-200 bg-blue-50 p-4">
-                            <div className="flex items-start gap-3">
-                              <Sparkles className="w-4 h-4 text-blue-600 mt-0.5" />
-                              <div>
-                                <p className="text-sm font-bold text-blue-800">Benefício potencial de frete grátis</p>
-                                <p className="text-[12px] text-blue-700 mt-1">
-                                  {shippingPotentialRules[0]?.message} A seleção acima confirma a regra antes do redirecionamento.
-                                </p>
-                              </div>
-                            </div>
-                          </div>
-                        )}
-
-                        {shippingWhatsAppOffer && (
-                          <a
-                            href={shippingWhatsAppOffer.url}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            className="mb-4 flex items-start gap-3 rounded-2xl border border-[#25D366]/25 bg-[#25D366]/10 p-4 transition-colors hover:bg-[#25D366]/15"
-                          >
-                            <MessageCircle className="w-4 h-4 text-[#128C7E] mt-0.5" />
-                            <div>
-                              <p className="text-sm font-bold text-[#128C7E]">Frete grátis exclusivo no WhatsApp</p>
-                              <p className="text-[12px] text-[#128C7E]/90 mt-1">{shippingWhatsAppOffer.message}</p>
-                            </div>
-                          </a>
                         )}
 
                         <p className="mb-4 text-[11px] font-medium text-slate-500">
@@ -876,7 +898,7 @@ export function CheckoutPage() {
                                           </span>
                                         )}
                                       </div>
-                                      <p className="text-[12px] text-slate-500 font-medium">Receba em {opt.estimatedDays} dias</p>
+                                      <p className="text-[12px] text-slate-500 font-medium">Receba em {formatShippingTransitTime(opt.estimatedDays)}</p>
                                       {opt.message && (
                                         <p className="text-[11px] text-emerald-700 mt-1">{opt.message}</p>
                                       )}

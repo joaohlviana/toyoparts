@@ -1,6 +1,7 @@
 import React from 'react';
+import { TOYOPARTS_DEFAULT_WHATSAPP_URL } from '../lib/whatsapp';
 
-const WHATSAPP_URL = 'https://api.whatsapp.com/send?phone=554332941144&text=Ol%C3%A1!%20Toyoparts!';
+const WHATSAPP_URL = TOYOPARTS_DEFAULT_WHATSAPP_URL;
 
 export function CompatibilityBanner() {
   return (

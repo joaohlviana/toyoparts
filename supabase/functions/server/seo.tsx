@@ -2,10 +2,16 @@ import { Hono } from 'npm:hono';
 import * as meili from './meilisearch.tsx';
 import * as kv from './kv_store.tsx';
 import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
+import { resolveProductMedia } from './media-utils.tsx';
+import { resolveProductCompatibility } from '../../../shared/product-compatibility.ts';
 
 const app = new Hono();
 const SITE_URL = 'https://www.toyoparts.com.br';
 const SUPABASE_URL = (Deno.env.get("SUPABASE_URL") || '').replace(/\/$/, '');
+const SUPABASE_SERVICE_ROLE_KEY = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY") || '';
+const supabaseAdmin = SUPABASE_URL && SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
+  : null;
 
 // ─── Slugify Helper ──────────────────────────────────────────────────────────
 function slugify(text: any): string {
@@ -29,6 +35,203 @@ function escapeXml(str: any): string {
     .replace(/>/g, '&gt;')
     .replace(/"/g, '&quot;')
     .replace(/'/g, '&apos;');
+}
+
+function toNumber(value: unknown): number | null {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
+}
+
+function normalizeText(value: unknown): string {
+  return String(value ?? '')
+    .replace(/<[^>]*>/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, fallback: T): Promise<T> {
+  return await Promise.race<T>([
+    promise,
+    new Promise<T>((resolve) => setTimeout(() => resolve(fallback), ms)),
+  ]);
+}
+
+function toStringArray(value: unknown): string[] {
+  if (Array.isArray(value)) {
+    return value
+      .flatMap((item) => {
+        if (item == null) return [];
+        if (typeof item === 'string' || typeof item === 'number') return [String(item)];
+        if (typeof item === 'object') {
+          const candidate = (item as any).name ?? (item as any).label ?? (item as any).value ?? (item as any).id;
+          return candidate == null ? [] : [String(candidate)];
+        }
+        return [];
+      })
+      .map((entry) => entry.trim())
+      .filter(Boolean);
+  }
+
+  return String(value || '')
+    .split(',')
+    .map((entry) => entry.trim())
+    .filter(Boolean);
+}
+
+function resolveInStock(product: any): boolean {
+  if (typeof product?.in_stock === 'boolean') return product.in_stock;
+  const stockData = product?.extension_attributes?.stock;
+  if (!stockData) return false;
+  try {
+    const stock = typeof stockData === 'string' ? JSON.parse(stockData) : stockData;
+    const value = stock?.is_in_stock;
+    return value === true || value === 1 || value === '1';
+  } catch {
+    return false;
+  }
+}
+
+function normalizeCategoryList(value: unknown) {
+  return toStringArray(value).map((name, index) => ({
+    id: String(index + 1),
+    name,
+    path: '',
+  }));
+}
+
+function buildCompatibilityMetaContext(meta: any) {
+  return {
+    modelIdToLabel: meta?.modelos || {},
+    yearIdToLabel: meta?.anos || {},
+    versionIdToLabel: meta?.versions || {},
+  };
+}
+
+function buildProductFromMeiliHit(hit: any) {
+  const price = toNumber(hit?.price) || 0;
+  const specialCandidate = toNumber(hit?.special_price);
+  const specialPrice = specialCandidate != null && specialCandidate > 0 && specialCandidate < price
+    ? specialCandidate
+    : null;
+  const media = resolveProductMedia(hit, { allowLegacy: true });
+
+  return {
+    sku: String(hit?.sku || '').trim(),
+    name: String(hit?.name || '').trim(),
+    seo_title: String(hit?.seo_title || hit?.name || '').trim() || null,
+    meta_description: normalizeText(hit?.meta_description || hit?.short_description || ''),
+    url_key: String(hit?.url_key || slugify(hit?.name || '')).trim(),
+    price,
+    special_price: specialPrice,
+    status: Number(hit?.status || 1),
+    in_stock: resolveInStock(hit),
+    description: normalizeText(hit?.description),
+    short_description: normalizeText(hit?.short_description),
+    image_url: media.image_url,
+    images: media.images,
+    category_names: normalizeCategoryList(hit?.category_names),
+    modelo_label: toStringArray((hit as any)?.modelos ?? (hit as any)?.modelo_label).join(', ') || null,
+    ano_labels: toStringArray((hit as any)?.anos ?? (hit as any)?.ano_labels).join(', ') || null,
+    compat_models: Array.isArray(hit?.compat_models) ? hit.compat_models : [],
+    compatibility_entries: Array.isArray(hit?.compatibility_entries) ? hit.compatibility_entries : [],
+    compatibility_display: Array.isArray(hit?.compatibility_display) ? hit.compatibility_display : [],
+    bullet_points: Array.isArray(hit?.bullet_points) ? hit.bullet_points : [],
+    tags_seo: Array.isArray(hit?.tags_seo) ? hit.tags_seo : [],
+  };
+}
+
+function buildProductFromCatalogRecord(product: any, metaContext: any = {}) {
+  const price = toNumber(product?.price) || 0;
+  const specialCandidate = toNumber(product?.special_price);
+  const specialPrice = specialCandidate != null && specialCandidate > 0 && specialCandidate < price
+    ? specialCandidate
+    : null;
+  const media = resolveProductMedia(product, { allowLegacy: true });
+  const compatibility = resolveProductCompatibility(product, metaContext);
+
+  return {
+    sku: String(product?.sku || '').trim(),
+    name: String(product?.name || '').trim(),
+    seo_title: String(product?.seo_title || product?.name || '').trim() || null,
+    meta_description: normalizeText(product?.meta_description || product?.short_description || ''),
+    url_key: String(product?.url_key || slugify(product?.name || '')).trim(),
+    price,
+    special_price: specialPrice,
+    status: Number(product?.status || 1),
+    in_stock: resolveInStock(product),
+    weight: toNumber(product?.weight),
+    description: normalizeText(product?.description),
+    short_description: normalizeText(product?.short_description),
+    image_url: media.image_url,
+    images: media.images,
+    category_names: normalizeCategoryList(product?.category_names),
+    modelo_label: compatibility.summary.models.join(', ') || null,
+    ano_labels: compatibility.summary.years.join(', ') || null,
+    compat_models: compatibility.compatModels,
+    compatibility_entries: compatibility.entries,
+    compatibility_display: compatibility.compatibilityDisplay,
+    bullet_points: Array.isArray(product?.bullet_points) ? product.bullet_points : [],
+    tags_seo: Array.isArray(product?.tags_seo) ? product.tags_seo : [],
+  };
+}
+
+async function getProductFromKvExact(sku: string, metaContext: any = {}) {
+  const normalizedSku = String(sku || '').trim();
+  if (!normalizedSku) return null;
+
+  const product = await kv.get(`product:${normalizedSku}`).catch(() => null);
+  if (!product || typeof product !== 'object') return null;
+
+  return buildProductFromCatalogRecord(product, metaContext);
+}
+
+function matchesNormalizedSku(hit: any, normalizedSku: string) {
+  const hitSku = String(hit?.sku || '').trim().toUpperCase();
+  const hitId = String(hit?.id || '').trim().toUpperCase();
+  const sanitizedSku = String(meili.sanitizeSku(normalizedSku) || '').trim().toUpperCase();
+
+  return hitSku === normalizedSku
+    || hitId === normalizedSku
+    || (sanitizedSku.length > 0 && hitId === sanitizedSku);
+}
+
+async function getProductFromMeili(sku: string) {
+  if (!meili.isConfigured()) return null;
+  const normalizedSku = String(sku || '').trim().toUpperCase();
+  if (!normalizedSku) return null;
+  const result = await meili.search(normalizedSku, {
+    limit: 20,
+    offset: 0,
+    facets: [],
+  });
+
+  const hit = Array.isArray(result?.hits)
+    ? result.hits.find((candidate: any) => matchesNormalizedSku(candidate, normalizedSku))
+    : null;
+
+  return hit ? buildProductFromMeiliHit(hit) : null;
+}
+
+async function getProductFromKvTableFallback(sku: string, metaContext: any = {}) {
+  if (!supabaseAdmin) return null;
+
+  const normalizedSku = String(sku || '').trim().toUpperCase();
+  if (!normalizedSku) return null;
+
+  const { data, error } = await supabaseAdmin
+    .from('kv_store_1d6e33e0')
+    .select('key, value')
+    .like('key', `product:%${normalizedSku}%`)
+    .limit(25);
+
+  if (error || !data?.length) return null;
+
+  const exact = data
+    .map((row: any) => row?.value)
+    .find((candidate: any) => String(candidate?.sku || '').trim().toUpperCase() === normalizedSku);
+
+  return exact ? buildProductFromCatalogRecord(exact, metaContext) : null;
 }
 
 async function buildSnapshotSitemapEntries() {
@@ -121,9 +324,9 @@ app.get('/sitemap.xml', async (c) => {
         const facetResult = await meili.search('', {
           limit: 0,
           filter: ['in_stock = true'],
-          facets: ['modelos'],
+          facets: ['modelo_slugs'],
         });
-        modelosFacet = facetResult.facetDistribution?.modelos || {};
+        modelosFacet = facetResult.facetDistribution?.modelo_slugs || {};
       } catch (e) {
         console.error('MeiliSearch sitemap failed, falling back to KV:', e);
       }
@@ -167,9 +370,9 @@ app.get('/sitemap.xml', async (c) => {
 
     // 4. Gerar URLs de modelos (/pecas/:modeloSlug)
     const modelUrlsXml = Object.entries(modelosFacet)
-      .filter(([name, count]) => (count as number) >= 3 && name && name !== 'undefined')
-      .map(([name]) => {
-        const modelSlug = slugify(name);
+      .filter(([slug, count]) => (count as number) >= 3 && slug && slug !== 'undefined')
+      .map(([slug]) => {
+        const modelSlug = slugify(slug);
         return `
   <url>
     <loc>${SITE_URL}/pecas/${modelSlug}</loc>
@@ -310,7 +513,42 @@ app.get('/product/:sku', async (c) => {
   const sku = c.req.param('sku');
   try {
     const decodedSku = decodeURIComponent(sku);
-    const product = await kv.get(`product:${decodedSku}`);
+    const meta = await withTimeout(
+      kv.get('meili:sync:meta').catch(() => null),
+      500,
+      null,
+    );
+    const compatibilityMeta = buildCompatibilityMetaContext(meta);
+    let product = await withTimeout(
+      getProductFromKvExact(decodedSku, compatibilityMeta).catch((error) => {
+        console.warn(`[SEO] KV exact lookup failed for ${decodedSku}:`, error);
+        return null;
+      }),
+      900,
+      null,
+    );
+
+    if (!product) {
+      product = await withTimeout(
+        getProductFromKvTableFallback(decodedSku, compatibilityMeta).catch((error) => {
+          console.warn(`[SEO] KV table fallback failed for ${decodedSku}:`, error);
+          return null;
+        }),
+        1400,
+        null,
+      );
+    }
+
+    if (!product) {
+      product = await withTimeout(
+        getProductFromMeili(decodedSku).catch((error) => {
+          console.warn(`[SEO] Meili lookup failed for ${decodedSku}:`, error);
+          return null;
+        }),
+        2500,
+        null,
+      );
+    }
     
     if (!product) {
       return c.json({ error: 'Product not found' }, 404);
@@ -319,18 +557,15 @@ app.get('/product/:sku', async (c) => {
     // ─── METADATA TRANSLATION ───
     // Translate IDs to Labels for frontend display
     try {
-      const meta = await kv.get('meili:sync:meta');
       if (meta) {
-        // Modelo
-        if (product.modelo) {
+        if (!product.modelo_label && product.modelo) {
           const modeloId = String(product.modelo);
           if (meta.modelos?.[modeloId]) {
             product.modelo_label = meta.modelos[modeloId];
           }
         }
         
-        // Anos (CSV)
-        if (product.ano) {
+        if (!product.ano_labels && product.ano) {
           const anoIds = String(product.ano).split(',').map(s => s.trim()).filter(Boolean);
           const labels = anoIds.map(id => meta.anos?.[id] || id);
           product.ano_labels = labels.join(', ');

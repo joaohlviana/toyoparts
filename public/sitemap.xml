@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap>
+    <loc>https://www.toyoparts.com.br/sitemap_static.xml</loc>
+  </sitemap>
+  <sitemap>
+    <loc>https://www.toyoparts.com.br/sitemap_categories.xml</loc>
+  </sitemap>
+  <sitemap>
+    <loc>https://www.toyoparts.com.br/sitemap_filters.xml</loc>
+  </sitemap>
+  <sitemap>
+    <loc>https://www.toyoparts.com.br/sitemap_products.xml</loc>
+  </sitemap>
+  <sitemap>
+    <loc>https://www.toyoparts.com.br/sitemap_out_of_stock.xml</loc>
+  </sitemap>
+</sitemapindex>

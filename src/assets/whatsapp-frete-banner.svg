@@ -1,0 +1,78 @@
+<svg width="760" height="220" viewBox="0 0 760 220" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="banner-bg" x1="64" y1="22" x2="684" y2="198" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#31D84F"/>
+      <stop offset="0.55" stop-color="#19C83A"/>
+      <stop offset="1" stop-color="#10B62D"/>
+    </linearGradient>
+    <linearGradient id="banner-highlight" x1="380" y1="34" x2="380" y2="110" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#FFFFFF" stop-opacity="0.38"/>
+      <stop offset="1" stop-color="#FFFFFF" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="banner-stroke" x1="380" y1="20" x2="380" y2="200" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#AFFF66"/>
+      <stop offset="1" stop-color="#0B9E25"/>
+    </linearGradient>
+    <radialGradient id="hero-bg" cx="0" cy="0" r="1" gradientUnits="userSpaceOnUse" gradientTransform="translate(626 112) rotate(90) scale(88 74)">
+      <stop stop-color="#F4FFF5"/>
+      <stop offset="1" stop-color="#8FE8A0"/>
+    </radialGradient>
+    <filter id="banner-shadow" x="10" y="20" width="740" height="180" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="8"/>
+      <feGaussianBlur stdDeviation="8"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.0470588 0 0 0 0 0.478431 0 0 0 0 0.117647 0 0 0 0.3 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
+    <filter id="text-shadow" x="94" y="55" width="388" height="86" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+      <feFlood flood-opacity="0" result="BackgroundImageFix"/>
+      <feColorMatrix in="SourceAlpha" type="matrix" values="0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 127 0" result="hardAlpha"/>
+      <feOffset dy="4"/>
+      <feGaussianBlur stdDeviation="3"/>
+      <feComposite in2="hardAlpha" operator="out"/>
+      <feColorMatrix type="matrix" values="0 0 0 0 0.0627451 0 0 0 0 0.521569 0 0 0 0 0.145098 0 0 0 0.38 0"/>
+      <feBlend mode="normal" in2="BackgroundImageFix" result="effect1_dropShadow_1_1"/>
+      <feBlend mode="normal" in="SourceGraphic" in2="effect1_dropShadow_1_1" result="shape"/>
+    </filter>
+  </defs>
+
+  <g filter="url(#banner-shadow)">
+    <rect x="26" y="36" width="708" height="140" rx="28" fill="url(#banner-bg)"/>
+    <rect x="28" y="38" width="704" height="136" rx="26" stroke="url(#banner-stroke)" stroke-width="4"/>
+    <path d="M58 48H702C713.046 48 722 56.9543 722 68V79C722 90.0457 713.046 99 702 99H58C46.9543 99 38 90.0457 38 79V68C38 56.9543 46.9543 48 58 48Z" fill="url(#banner-highlight)"/>
+    <path d="M54 164C115 126 163 132 229 164" stroke="#7DF16A" stroke-opacity="0.55" stroke-width="8" stroke-linecap="round"/>
+    <path d="M280 164C337 138 404 138 468 164" stroke="#8BF279" stroke-opacity="0.42" stroke-width="6" stroke-linecap="round"/>
+  </g>
+
+  <g>
+    <circle cx="92" cy="106" r="48" fill="#FFFFFF" fill-opacity="0.18"/>
+    <circle cx="92" cy="106" r="43.5" stroke="#FFFFFF" stroke-opacity="0.65" stroke-width="5"/>
+    <path d="M111.75 123.15C107.05 127.8 99.7 130.65 92.75 130.65C86.9 130.65 81.15 128.8 76.45 125.25L64.85 128.4L68.65 117.3C64.8 112.25 62.75 106.25 62.75 99.95C62.75 83.65 76.3 70.4 92.75 70.4C109.2 70.4 122.75 83.65 122.75 99.95C122.75 108.45 118.95 116.55 111.75 123.15Z" stroke="#FFFFFF" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M83.3 89.95C82.55 88.2 81.75 88.15 80.95 88.1C80.3 88.05 79.55 88.05 78.85 88.05C78.15 88.05 77 88.3 76 89.35C75 90.4 72.2 92.95 72.2 98.15C72.2 103.35 76.1 108.4 76.65 109.1C77.2 109.8 84.3 120.95 95.25 125.3C104.3 128.95 106.15 128.2 108.15 128C110.15 127.8 114.6 125.45 115.5 122.95C116.4 120.45 116.4 118.3 116.15 117.9C115.9 117.5 115.2 117.25 114.15 116.75C113.1 116.25 107.95 113.75 107.05 113.45C106.15 113.15 105.5 113 104.85 113.95C104.2 114.9 102.35 117.25 101.8 117.9C101.25 118.55 100.7 118.65 99.65 118.15C98.6 117.65 95.2 116.55 91.15 112.95C88 110.15 85.9 106.75 85.3 105.7C84.7 104.65 85.2 104.1 85.75 103.55C86.25 103.05 86.8 102.25 87.3 101.65C87.8 101.05 87.95 100.65 88.25 100C88.55 99.35 88.4 98.8 88.15 98.3C87.9 97.8 85.95 92.45 85.15 90.65L83.3 89.95Z" fill="#FFFFFF"/>
+  </g>
+
+  <g filter="url(#text-shadow)">
+    <text x="144" y="104" fill="#FFFFFF" font-family="Arial, Helvetica, sans-serif" font-size="35" font-weight="800" letter-spacing="-0.03em">
+      Frete Gratis pelo WhatsApp
+    </text>
+    <text x="144" y="135" fill="#E5FFE8" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="500">
+      Finalize sua compra com frete gratis via WhatsApp.
+    </text>
+  </g>
+
+  <g transform="translate(530 26)">
+    <ellipse cx="98" cy="86" rx="82" ry="74" fill="url(#hero-bg)"/>
+    <path d="M72 89C72 63.6 90.6 44 114.5 44C135.7 44 151 58.9 151 81.9C151 101.6 137.8 116.5 118.7 119.4L112.5 139H90.7L97.3 117.8C81.9 111.7 72 101.9 72 89Z" fill="#161A1F"/>
+    <path d="M149 79.5C149 101.5 133.9 117.5 114 117.5C94.1 117.5 81 102.4 81 84C81 65.6 94.1 50.5 114 50.5C133.9 50.5 149 59.5 149 79.5Z" fill="#F2C6AC"/>
+    <path d="M94 78C95.8 71.1 103.2 65.3 112.7 65.3C122.3 65.3 129.8 71.3 132.1 78.4C127.6 77.1 122.7 76.4 117.5 76.4C108.6 76.4 100.4 78.4 94 82.1V78Z" fill="#161A1F"/>
+    <path d="M102 96.8C103.4 98 105.1 98.7 107 98.7C108.9 98.7 110.6 98 112 96.8" stroke="#A85E4D" stroke-width="2.6" stroke-linecap="round"/>
+    <circle cx="105.5" cy="88.3" r="2.2" fill="#2E1A12"/>
+    <circle cx="123.5" cy="88.3" r="2.2" fill="#2E1A12"/>
+    <path d="M88 136C92.6 123.1 104.8 115 118.2 115C130.9 115 141.2 121.8 147 132.9L151.9 142.2L151.1 162H79L79.8 145.4L88 136Z" fill="#B5F0B7"/>
+    <path d="M122 129.5C131.8 132.1 140.3 139 146 148.7L160.3 140.2C161.4 139.5 162.7 139.4 163.9 139.9C165.1 140.4 166 141.4 166.5 142.6L170.7 152.4C171.3 153.9 171.1 155.6 170.1 156.8C169.1 158 167.4 158.6 165.8 158.2L146.4 153.1C144.8 152.7 143.6 151.4 143 149.9L139.3 140.9C138.6 139.1 138.8 137.2 139.8 135.6C140.9 134 142.7 133.1 144.6 133.3L122 129.5Z" fill="#F2C6AC"/>
+    <path d="M72 165C78 165 82 161.5 86.8 157.6C92.7 152.8 99.5 147.3 112.5 147.3C125.5 147.3 132.3 152.8 138.2 157.6C143 161.5 147 165 153 165H72Z" fill="#22C745" fill-opacity="0.22"/>
+  </g>
+</svg>

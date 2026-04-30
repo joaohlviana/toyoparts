@@ -1,11 +1,12 @@
-import React, { useState, useRef } from 'react';
-import { Upload, X, Loader2, Image as ImageIcon, AlertCircle } from 'lucide-react';
+import React, { useRef, useState } from 'react';
+import { AlertCircle, Loader2, Upload, X } from 'lucide-react';
 import { toast } from 'sonner';
-import { projectId, publicAnonKey } from '../../../../utils/supabase/info';
+import { projectId } from '../../../../utils/supabase/info';
+import { adminFetch } from '../../lib/admin-auth';
 import { Button } from '../base/button';
 import { Label } from '../ui/label';
 
-const API = `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0`;
+const API = `https://${projectId}.supabase.co/functions/v1/home-config-1d6e33e0`;
 
 interface ImageUploadProps {
   label: string;
@@ -15,6 +16,72 @@ interface ImageUploadProps {
   helpText?: string;
   maxSizeMB?: number;
   aspectRatio?: string;
+}
+
+function slugifyFileName(value: string): string {
+  return String(value || 'banner')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim()
+    .replace(/\.[^.]+$/, '')
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .replace(/-{2,}/g, '-') || 'banner';
+}
+
+async function convertToWebp(file: File): Promise<File> {
+  if (file.type === 'image/webp') {
+    const safeName = `${slugifyFileName(file.name)}.webp`;
+    if (file.name.endsWith('.webp')) {
+      return file;
+    }
+    return new File([file], safeName, {
+      type: 'image/webp',
+      lastModified: file.lastModified || Date.now(),
+    });
+  }
+
+  if (!['image/png', 'image/jpeg', 'image/jpg'].includes(file.type)) {
+    throw new Error('Use apenas arquivos PNG, JPG, JPEG ou WebP');
+  }
+
+  const objectUrl = URL.createObjectURL(file);
+
+  try {
+    const image = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const img = new Image();
+      img.onload = () => resolve(img);
+      img.onerror = () => reject(new Error('Nao foi possivel abrir a imagem selecionada'));
+      img.src = objectUrl;
+    });
+
+    const canvas = document.createElement('canvas');
+    canvas.width = image.naturalWidth || image.width;
+    canvas.height = image.naturalHeight || image.height;
+
+    const context = canvas.getContext('2d');
+    if (!context) {
+      throw new Error('Nao foi possivel preparar a conversao da imagem');
+    }
+
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+
+    const blob = await new Promise<Blob | null>((resolve) => {
+      canvas.toBlob(resolve, 'image/webp', 0.9);
+    });
+
+    if (!blob) {
+      throw new Error('Nao foi possivel converter a imagem para WebP');
+    }
+
+    return new File([blob], `${slugifyFileName(file.name)}.webp`, {
+      type: 'image/webp',
+      lastModified: Date.now(),
+    });
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }
 
 export function ImageUpload({
@@ -31,83 +98,61 @@ export function ImageUpload({
   const inputRef = useRef<HTMLInputElement>(null);
 
   const handleFile = async (file: File) => {
-    // Validate file type
     if (!file.type.startsWith('image/')) {
       toast.error('Arquivo deve ser uma imagem');
       return;
     }
 
-    // Validate file size
     const sizeMB = file.size / 1024 / 1024;
     if (sizeMB > maxSizeMB) {
-      toast.error(`Imagem muito grande. Máximo ${maxSizeMB}MB`);
+      toast.error(`Imagem muito grande. Maximo ${maxSizeMB}MB`);
       return;
     }
 
     setUploading(true);
     try {
+      const webpFile = await convertToWebp(file);
       const formData = new FormData();
-      formData.append('image', file);
+      formData.append('image', webpFile);
 
-      const res = await fetch(`${API}/banners/upload`, {
+      const res = await adminFetch(`${API}/admin/banners/upload`, {
         method: 'POST',
-        headers: {
-          Authorization: `Bearer ${publicAnonKey}`,
-          apikey: publicAnonKey,
-        },
         body: formData,
       });
 
       if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || 'Falha no upload');
+        const error = await res.json().catch(() => ({}));
+        throw new Error(error.error || 'Falha no upload');
       }
 
       const data = await res.json();
-      if (data.success && data.url) {
-        onChange(data.url);
-        toast.success('Imagem enviada com sucesso!');
-      } else {
-        throw new Error('URL da imagem não retornada');
+      if (!data.success || !data.url) {
+        throw new Error('URL da imagem nao retornada');
       }
-    } catch (err: any) {
-      console.error('ImageUpload error:', err);
-      toast.error(err.message || 'Erro ao fazer upload');
+
+      onChange(data.url);
+      toast.success('Imagem enviada com sucesso em WebP');
+    } catch (error: any) {
+      console.error('ImageUpload error:', error);
+      toast.error(error.message || 'Erro ao fazer upload');
     } finally {
       setUploading(false);
     }
   };
 
-  const handleDrop = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
+  const handleDrop = (event: React.DragEvent) => {
+    event.preventDefault();
+    event.stopPropagation();
     setDragActive(false);
 
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      handleFile(e.dataTransfer.files[0]);
+    if (event.dataTransfer.files && event.dataTransfer.files[0]) {
+      void handleFile(event.dataTransfer.files[0]);
     }
   };
 
-  const handleDragEnter = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(true);
-  };
-
-  const handleDragLeave = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-    setDragActive(false);
-  };
-
-  const handleDragOver = (e: React.DragEvent) => {
-    e.preventDefault();
-    e.stopPropagation();
-  };
-
-  const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files && e.target.files[0]) {
-      handleFile(e.target.files[0]);
+  const handleChange = (event: React.ChangeEvent<HTMLInputElement>) => {
+    if (event.target.files && event.target.files[0]) {
+      void handleFile(event.target.files[0]);
     }
   };
 
@@ -121,75 +166,71 @@ export function ImageUpload({
   return (
     <div className="space-y-2">
       <Label className="text-xs">{label}</Label>
-      
+
       {value ? (
-        // Preview with remove button
         <div className="relative group">
-          <div 
+          <div
             className="relative rounded-lg overflow-hidden border border-border bg-secondary/30"
-            style={aspectRatio ? { aspectRatio } : { minHeight: '120px' }}
+            style={aspectRatio ? { aspectRatio } : { minHeight: '140px' }}
           >
-            <img 
-              src={value} 
-              alt="Preview" 
-              className="w-full h-full object-contain"
-              onError={(e) => {
-                const target = e.target as HTMLImageElement;
-                target.style.display = 'none';
-                target.parentElement?.classList.add('flex', 'items-center', 'justify-center');
-                const icon = document.createElement('div');
-                icon.className = 'text-muted-foreground flex flex-col items-center gap-2';
-                icon.innerHTML = '<svg class="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg><span class="text-xs">Erro ao carregar imagem</span>';
-                target.parentElement?.appendChild(icon);
-              }}
-            />
+            <img src={value} alt="Preview" className="h-full w-full object-cover" />
           </div>
           <Button
             color="secondary"
             size="sm"
             onClick={handleRemove}
-            className="absolute top-2 right-2 opacity-0 group-hover:opacity-100 transition-opacity bg-background/90 backdrop-blur-sm"
+            className="absolute right-2 top-2 opacity-0 transition-opacity group-hover:opacity-100 bg-background/90 backdrop-blur-sm"
             disabled={uploading}
           >
-            <X className="w-3.5 h-3.5 mr-1" />
+            <X className="mr-1 h-3.5 w-3.5" />
             Remover
           </Button>
         </div>
       ) : (
-        // Upload dropzone
         <div
           className={`relative rounded-lg border-2 border-dashed transition-all ${
             dragActive
               ? 'border-primary bg-primary/5'
-              : 'border-border hover:border-border/80 bg-secondary/30'
-          } ${uploading ? 'opacity-60 pointer-events-none' : 'cursor-pointer'}`}
-          style={aspectRatio ? { aspectRatio } : { minHeight: '120px' }}
+              : 'border-border bg-secondary/30 hover:border-border/80'
+          } ${uploading ? 'pointer-events-none opacity-60' : 'cursor-pointer'}`}
+          style={aspectRatio ? { aspectRatio } : { minHeight: '140px' }}
           onDrop={handleDrop}
-          onDragEnter={handleDragEnter}
-          onDragLeave={handleDragLeave}
-          onDragOver={handleDragOver}
+          onDragEnter={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setDragActive(true);
+          }}
+          onDragLeave={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            setDragActive(false);
+          }}
+          onDragOver={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+          }}
           onClick={() => inputRef.current?.click()}
         >
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-2 p-4 text-center">
             {uploading ? (
               <>
-                <Loader2 className="w-8 h-8 text-primary animate-spin" />
-                <p className="text-xs text-muted-foreground">Enviando...</p>
+                <Loader2 className="h-8 w-8 animate-spin text-primary" />
+                <p className="text-xs text-muted-foreground">Convertendo e enviando...</p>
               </>
             ) : (
               <>
-                <div className="w-12 h-12 rounded-full bg-secondary flex items-center justify-center">
-                  <Upload className="w-5 h-5 text-muted-foreground" />
+                <div className="flex h-12 w-12 items-center justify-center rounded-full bg-secondary">
+                  <Upload className="h-5 w-5 text-muted-foreground" />
                 </div>
                 <div>
                   <p className="text-sm font-medium text-foreground">
                     {placeholder || 'Clique ou arraste uma imagem'}
                   </p>
-                  {helpText && (
-                    <p className="text-xs text-muted-foreground mt-0.5">{helpText}</p>
-                  )}
-                  <p className="text-[10px] text-muted-foreground/60 mt-1">
-                    Máximo {maxSizeMB}MB • JPG, PNG, GIF, WebP
+                  {helpText ? (
+                    <p className="mt-0.5 text-xs text-muted-foreground">{helpText}</p>
+                  ) : null}
+                  <p className="mt-1 text-[10px] text-muted-foreground/70">
+                    PNG, JPG ou WebP. O arquivo final sempre sera publicado em WebP.
                   </p>
                 </div>
               </>
@@ -198,13 +239,18 @@ export function ImageUpload({
           <input
             ref={inputRef}
             type="file"
-            accept="image/*"
+            accept="image/png,image/jpeg,image/jpg,image/webp"
             onChange={handleChange}
             className="hidden"
             disabled={uploading}
           />
         </div>
       )}
+
+      <div className="flex items-center gap-1 text-[11px] text-muted-foreground">
+        <AlertCircle className="h-3.5 w-3.5" />
+        <span>Os banners sao publicados em WebP para manter a home leve.</span>
+      </div>
     </div>
   );
 }

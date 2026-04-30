@@ -20,9 +20,9 @@
 import { Hono } from 'npm:hono';
 import * as kv from './kv_store.tsx';
 import * as meili from './meilisearch.tsx';
+import { resolveProductMedia } from './media-utils.tsx';
 
 const app = new Hono();
-const MAGENTO_BASE_URL = 'https://www.toyoparts.com.br';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -68,6 +68,30 @@ function dateKeyToISO(dk: string): string {
   return `${dk.slice(0, 4)}-${dk.slice(4, 6)}-${dk.slice(6, 8)}`;
 }
 
+function buildEmptyTopProductsResult(days: number, ranking: 'search' | 'views') {
+  return {
+    products: [],
+    hits: [],
+    promotional_hits: [],
+    ranking,
+    period_days: days,
+    generated_at: new Date().toISOString(),
+    degraded: true,
+  };
+}
+
+function buildEmptyRelatedResult(sku: string, days: number) {
+  return {
+    sku,
+    products: [],
+    source: 'degraded',
+    co_view_sessions: 0,
+    period_days: days,
+    generated_at: new Date().toISOString(),
+    degraded: true,
+  };
+}
+
 function getCustomAttr(product: any, code: string): any {
   return product?.custom_attributes?.find((attr: any) => attr?.attribute_code === code)?.value;
 }
@@ -103,29 +127,7 @@ function resolveQty(product: any): number | null {
 }
 
 function resolveImageUrl(product: any): string | null {
-  if (product?.image_url && String(product.image_url).startsWith('http')) {
-    return product.image_url;
-  }
-
-  if (Array.isArray(product?.images) && product.images[0]) {
-    return product.images[0];
-  }
-
-  if (Array.isArray(product?.media_gallery_entries)) {
-    const media = product.media_gallery_entries.find((entry: any) => !entry?.disabled && (!entry?.media_type || entry.media_type === 'image'));
-    if (media?.file) {
-      if (String(media.file).startsWith('http')) return media.file;
-      return `${MAGENTO_BASE_URL}/pub/media/catalog/product${media.file}`;
-    }
-  }
-
-  const imageAttr = getCustomAttr(product, 'image') ?? product?.image;
-  if (imageAttr && imageAttr !== 'no_selection') {
-    if (String(imageAttr).startsWith('http')) return imageAttr;
-    return `${MAGENTO_BASE_URL}/pub/media/catalog/product${imageAttr}`;
-  }
-
-  return null;
+  return resolveProductMedia(product, { allowLegacy: false }).image_url;
 }
 
 function normalizeRelatedProduct(product: any, sourceTag: string, meta: Record<string, any> = {}) {
@@ -151,6 +153,12 @@ function isRenderableRelatedProduct(product: any): boolean {
   const price = Number(product?.price || 0);
   const specialPrice = Number(product?.special_price || 0);
   return !!product?.sku && !!product?.name && !!product?.image_url && (price > 0 || specialPrice > 0) && product?.in_stock !== false;
+}
+
+function hasRenderablePromotion(product: any): boolean {
+  const price = Number(product?.price || 0);
+  const specialPrice = Number(product?.special_price || 0);
+  return specialPrice > 0 && (price <= 0 || specialPrice < price);
 }
 
 async function hydrateProductBySku(sku: string): Promise<any | null> {
@@ -224,6 +232,49 @@ interface DailyAggregate {
   updated_at: string;
 }
 
+interface ProductMetricAggregate {
+  views: number;
+  search_clicks: number;
+  view_sources: Record<string, number>;
+  search_sources: Record<string, number>;
+}
+
+interface DailyProductAggregate {
+  date: string;
+  products: Record<string, ProductMetricAggregate>;
+  updated_at: string;
+}
+
+const MAX_DAILY_PRODUCT_AGG_SKUS = 1200;
+
+function createProductMetricAggregate(): ProductMetricAggregate {
+  return {
+    views: 0,
+    search_clicks: 0,
+    view_sources: {},
+    search_sources: {},
+  };
+}
+
+function normalizeMetricSku(sku: unknown): string {
+  return String(sku || '').trim();
+}
+
+function mergeProductMetric(
+  target: ProductMetricAggregate,
+  source: Partial<ProductMetricAggregate> | null | undefined,
+) {
+  target.views += Number(source?.views || 0);
+  target.search_clicks += Number(source?.search_clicks || 0);
+
+  for (const [key, value] of Object.entries(source?.view_sources || {})) {
+    target.view_sources[key] = (target.view_sources[key] || 0) + Number(value || 0);
+  }
+  for (const [key, value] of Object.entries(source?.search_sources || {})) {
+    target.search_sources[key] = (target.search_sources[key] || 0) + Number(value || 0);
+  }
+}
+
 async function incrementDailyAgg(
   dk: string,
   field: 'total_searches' | 'zero_results' | 'clicks' | 'views' | 'add_to_cart',
@@ -256,6 +307,43 @@ async function incrementDailyAgg(
 }
 
 // ─── Incremental Term Aggregate ─────────────────────────────────────────────
+
+async function incrementDailyProductAgg(
+  dk: string,
+  productSku: unknown,
+  field: 'views' | 'search_clicks',
+  source: string,
+): Promise<void> {
+  try {
+    const sku = normalizeMetricSku(productSku);
+    if (!sku) return;
+
+    const key = `si:prod_agg:${dk}`;
+    const current: DailyProductAggregate = (await kv.get(key)) || {
+      date: dk,
+      products: {},
+      updated_at: '',
+    };
+
+    if (!current.products[sku]) {
+      const size = Object.keys(current.products).length;
+      if (size >= MAX_DAILY_PRODUCT_AGG_SKUS) return;
+      current.products[sku] = createProductMetricAggregate();
+    }
+
+    const item = current.products[sku];
+    item[field]++;
+
+    const sourceKey = String(source || 'unknown').trim() || 'unknown';
+    const sourceBucket = field === 'search_clicks' ? item.search_sources : item.view_sources;
+    sourceBucket[sourceKey] = (sourceBucket[sourceKey] || 0) + 1;
+
+    current.updated_at = new Date().toISOString();
+    await kv.set(key, current);
+  } catch (e) {
+    console.warn(`[SI] incrementDailyProductAgg ${dk}/${field} failed:`, e);
+  }
+}
 
 interface TermAggregate {
   query_normalized: string;
@@ -408,6 +496,7 @@ app.post('/track/search-click', async (c) => {
     await Promise.allSettled([
       incrementDailyAgg(dk, 'clicks', session_id),
       incrementTermAgg(query_normalized, 'click_count', Number(position)),
+      incrementDailyProductAgg(dk, product_sku, 'search_clicks', source),
     ]);
 
     console.log(`[SI] click | q="${query_normalized}" | sku=${product_sku} | pos=${position}`);
@@ -462,17 +551,19 @@ app.post('/track/view', async (c) => {
       created_at: now,
     });
 
-    // Increment aggregate
-    await incrementDailyAgg(dk, 'views', session_id);
+    await Promise.allSettled([
+      incrementDailyAgg(dk, 'views', session_id),
+      incrementDailyProductAgg(dk, product_sku, 'views', source),
+    ]);
 
     console.log(`[SI] view | sku=${product_sku} | source=${source} | session=${session_id.slice(0, 8)}`);
 
     return c.json({ status: 'ok', event_id: id });
-  } catch (err: any) {
-    console.error('[SI] track/view error:', err.message);
-    return c.json({ error: err.message }, 500);
-  }
-});
+    } catch (err: any) {
+      console.error('[SI] track/view error:', err.message);
+      return c.json({ status: 'degraded', product_sku: null }, 200);
+    }
+  });
 
 // ─── POST /track/add-to-cart ────────────────────────────────────────────────
 // Completes the conversion funnel: Search → Click → View → ATC
@@ -848,51 +939,222 @@ app.get('/intelligence/trending', async (c) => {
   }
 });
 
-// ─── GET /intelligence/top-products ─────────────────────────────────────────
-// Most viewed products
-app.get('/intelligence/top-products', async (c) => {
+async function withSoftTimeout<T>(promise: Promise<T>, ms: number, fallback: T, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | null = null;
   try {
-    const days = Math.min(parseInt(c.req.query('days') || '7'), 30);
-    const limit = Math.min(parseInt(c.req.query('limit') || '20'), 50);
-    const cacheKey = `si:cache:top_products:${days}:${limit}`;
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timeoutId = setTimeout(() => {
+          timeoutId = null;
+          console.warn(`[SI] ${label} timed out after ${ms}ms`);
+          resolve(fallback);
+        }, ms);
+      }),
+    ]);
+  } catch (error) {
+    console.warn(`[SI] ${label} failed:`, error);
+    return fallback;
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
 
-    const cached = await getCached(cacheKey);
-    if (cached) return c.json(cached);
+async function loadProductCountsFromDailyAggregates(dateKeys: string[]) {
+  const skuCounts: Record<string, ProductMetricAggregate> = {};
+  for (const dk of dateKeys) {
+    const aggregate = await kv.get(`si:prod_agg:${dk}`).catch(() => null);
+    const products = (aggregate as DailyProductAggregate | null)?.products;
+    if (!products || typeof products !== 'object') continue;
 
-    const dateKeys = daysBack(days);
-    const skuCounts: Record<string, { views: number; sources: Record<string, number> }> = {};
+    for (const [sku, metric] of Object.entries(products)) {
+      const normalizedSku = normalizeMetricSku(sku);
+      if (!normalizedSku) continue;
+      if (!skuCounts[normalizedSku]) skuCounts[normalizedSku] = createProductMetricAggregate();
+      mergeProductMetric(skuCounts[normalizedSku], metric);
+    }
+  }
 
-    for (const dk of dateKeys) {
-      const dayViews = await kv.getByPrefix(`si:v:${dk}:`);
-      if (!dayViews) continue;
-      for (const row of dayViews) {
-        const val = row?.value || row;
-        if (!val?.product_sku) continue;
-        if (!skuCounts[val.product_sku]) {
-          skuCounts[val.product_sku] = { views: 0, sources: {} };
-        }
-        skuCounts[val.product_sku].views++;
-        const src = val.source || 'unknown';
-        skuCounts[val.product_sku].sources[src] = (skuCounts[val.product_sku].sources[src] || 0) + 1;
-      }
+  return skuCounts;
+}
+
+async function loadProductCountsFromLegacyEvents(dateKeys: string[]) {
+  const skuCounts: Record<string, ProductMetricAggregate> = {};
+  const legacyKeys = dateKeys.slice(0, 7);
+
+  const ensureSku = (sku: unknown) => {
+    const normalizedSku = normalizeMetricSku(sku);
+    if (!normalizedSku) return null;
+    if (!skuCounts[normalizedSku]) skuCounts[normalizedSku] = createProductMetricAggregate();
+    return { sku: normalizedSku, metric: skuCounts[normalizedSku] };
+  };
+
+  for (const dk of legacyKeys) {
+    const dayViews = await withSoftTimeout(
+      kv.getByPrefix(`si:v:${dk}:`),
+      900,
+      [] as any[],
+      `legacy top views ${dk}`,
+    );
+    for (const row of dayViews || []) {
+      const val = row?.value || row;
+      const current = ensureSku(val?.product_sku);
+      if (!current) continue;
+      current.metric.views++;
+      const source = String(val?.source || 'unknown');
+      current.metric.view_sources[source] = (current.metric.view_sources[source] || 0) + 1;
     }
 
-    const products = Object.entries(skuCounts)
-      .sort(([, a], [, b]) => b.views - a.views)
-      .slice(0, limit)
-      .map(([sku, data]) => ({
-        sku,
-        views: data.views,
-        top_source: Object.entries(data.sources).sort(([, a], [, b]) => b - a)[0]?.[0] || 'unknown',
-        sources: data.sources,
-      }));
+    const dayClicks = await withSoftTimeout(
+      kv.getByPrefix(`si:c:${dk}:`),
+      900,
+      [] as any[],
+      `legacy top clicks ${dk}`,
+    );
+    for (const row of dayClicks || []) {
+      const val = row?.value || row;
+      const current = ensureSku(val?.product_sku);
+      if (!current) continue;
+      current.metric.search_clicks++;
+      const source = String(val?.source || 'search_page');
+      current.metric.search_sources[source] = (current.metric.search_sources[source] || 0) + 1;
+    }
+  }
 
-    const result = { products, period_days: days, generated_at: new Date().toISOString() };
-    await setCache(cacheKey, result);
+  return skuCounts;
+}
+
+function rankProductCounts(
+  skuCounts: Record<string, ProductMetricAggregate>,
+  ranking: 'search' | 'views',
+  limit: number,
+) {
+  return Object.entries(skuCounts)
+    .map(([sku, data]) => {
+      const score = ranking === 'search'
+        ? (data.search_clicks * 5) + data.views
+        : data.views;
+      const topSourceEntries = ranking === 'search' && Object.keys(data.search_sources).length > 0
+        ? data.search_sources
+        : data.view_sources;
+      return {
+        sku,
+        score,
+        views: data.views,
+        search_clicks: data.search_clicks,
+        top_source: Object.entries(topSourceEntries).sort(([, a], [, b]) => Number(b) - Number(a))[0]?.[0] || 'unknown',
+        sources: topSourceEntries,
+        view_sources: data.view_sources,
+        search_sources: data.search_sources,
+      };
+    })
+    .filter((item) => item.score > 0)
+    .sort((a, b) =>
+      b.score - a.score ||
+      b.search_clicks - a.search_clicks ||
+      b.views - a.views ||
+      a.sku.localeCompare(b.sku)
+    )
+    .slice(0, limit);
+}
+
+export async function getTopProductsIntelligenceSnapshot(options?: {
+  days?: number;
+  limit?: number;
+  ranking?: 'search' | 'views';
+  hydrate?: boolean;
+  cachedOnly?: boolean;
+}) {
+  const days = Math.min(Math.max(Number(options?.days || 7), 1), 30);
+  const limit = Math.min(Math.max(Number(options?.limit || 20), 1), 120);
+  const hydrate = options?.hydrate === true;
+  const cachedOnly = options?.cachedOnly === true;
+  const ranking = options?.ranking === 'search' ? 'search' : 'views';
+  const cacheKey = `si:cache:top_products:${days}:${limit}:${ranking}:${hydrate ? 'h1' : 'h0'}`;
+
+  const cached = await getCached(cacheKey);
+  if (cached) return cached;
+
+  const dateKeys = daysBack(days);
+  let skuCounts = await loadProductCountsFromDailyAggregates(dateKeys);
+  if (Object.keys(skuCounts).length === 0 && !cachedOnly) {
+    skuCounts = await loadProductCountsFromLegacyEvents(dateKeys);
+  }
+
+  const rankedProducts = rankProductCounts(skuCounts, ranking, Math.min(Math.max(limit * 6, 24), 120));
+  const products = rankedProducts.slice(0, limit).map((item) => ({
+    sku: item.sku,
+    score: item.score,
+    views: item.views,
+    search_clicks: item.search_clicks,
+    top_source: item.top_source,
+    sources: item.sources,
+    view_sources: item.view_sources,
+    search_sources: item.search_sources,
+  }));
+
+  let hits: any[] = [];
+  let promotional_hits: any[] = [];
+
+  if (hydrate && rankedProducts.length > 0) {
+    const hydrationPool = rankedProducts.slice(0, Math.min(Math.max(limit * 6, 24), 120));
+    const statsBySku = new Map(hydrationPool.map((item) => [item.sku, item]));
+    const hydratedPool = await hydrateRelatedProducts(
+      hydrationPool.map((item) => ({
+        sku: item.sku,
+        score: item.score,
+        search_clicks: item.search_clicks,
+        views: item.views,
+      })),
+      ranking === 'search' ? 'search_popular' : 'popular'
+    );
+
+    const enrichedPool = hydratedPool
+      .map((product) => ({
+        ...product,
+        _intelligence: statsBySku.get(product.sku) || null,
+      }))
+      .filter(isRenderableRelatedProduct)
+      .sort((a, b) =>
+        Number(b?._intelligence?.score || 0) - Number(a?._intelligence?.score || 0) ||
+        Number(b?._intelligence?.search_clicks || 0) - Number(a?._intelligence?.search_clicks || 0) ||
+        Number(b?._intelligence?.views || 0) - Number(a?._intelligence?.views || 0)
+      );
+
+    hits = enrichedPool.slice(0, limit);
+    promotional_hits = enrichedPool.filter(hasRenderablePromotion).slice(0, limit);
+  }
+
+  const result = {
+    products,
+    hits,
+    promotional_hits,
+    ranking,
+    period_days: days,
+    generated_at: new Date().toISOString(),
+  };
+  await setCache(cacheKey, result);
+  return result;
+}
+
+// ─── GET /intelligence/top-products ─────────────────────────────────────────
+// Most viewed products (default) or most searched/clicked products for merchandising
+app.get('/intelligence/top-products', async (c) => {
+  const days = parseInt(c.req.query('days') || '7');
+  const ranking = (c.req.query('ranking') || 'views').toLowerCase() === 'search' ? 'search' : 'views';
+  const cachedOnly = ['1', 'true', 'yes'].includes((c.req.query('cachedOnly') || '').toLowerCase());
+  try {
+    const result = await getTopProductsIntelligenceSnapshot({
+      days,
+      limit: Math.min(parseInt(c.req.query('limit') || '20'), 50),
+      hydrate: ['1', 'true', 'yes'].includes((c.req.query('hydrate') || '').toLowerCase()),
+      ranking,
+      cachedOnly,
+    });
     return c.json(result);
   } catch (err: any) {
     console.error('[SI] intelligence/top-products error:', err.message);
-    return c.json({ error: err.message }, 500);
+    return c.json(buildEmptyTopProductsResult(days, ranking), 200);
   }
 });
 
@@ -999,13 +1261,13 @@ app.get('/intelligence/position-distribution', async (c) => {
 //   2. Meilisearch similarity: same model/category
 //   3. Most viewed products (global popularity)
 app.get('/intelligence/related/:sku', async (c) => {
+  const sku = c.req.param('sku');
+  const days = Math.min(parseInt(c.req.query('days') || '30'), 90);
   try {
-    const sku = c.req.param('sku');
     if (!sku) return c.json({ error: 'sku required' }, 400);
 
-    const limit = Math.min(parseInt(c.req.query('limit') || '8'), 20);
-    const days = Math.min(parseInt(c.req.query('days') || '30'), 90);
-    const cacheKey = `si:cache:related:${sku}:${days}:${limit}`;
+      const limit = Math.min(parseInt(c.req.query('limit') || '8'), 20);
+      const cacheKey = `si:cache:related:${sku}:${days}:${limit}`;
 
     const cached = await getCached(cacheKey);
     if (cached) return c.json(cached);
@@ -1153,7 +1415,7 @@ app.get('/intelligence/related/:sku', async (c) => {
     return c.json(result);
   } catch (err: any) {
     console.error('[SI] intelligence/related error:', err.message);
-    return c.json({ error: err.message }, 500);
+    return c.json(buildEmptyRelatedResult(sku || '', days), 200);
   }
 });
 

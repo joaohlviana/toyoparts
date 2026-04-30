@@ -15,7 +15,6 @@ import { Button } from '../../components/ui/button';
 import { Input } from '../../components/ui/input';
 import { Label } from '../../components/ui/label';
 import { toast } from 'sonner';
-import { supabase } from '../../../lib/supabase';
 import { projectId, publicAnonKey } from '../../../../utils/supabase/info';
 import { ImageWithFallback } from '../../components/figma/ImageWithFallback';
 import {
@@ -89,6 +88,7 @@ export function MagicLoginPage() {
         const resendData = await resendRes.json().catch(() => ({}));
         const resendMessage =
           resendData.error || 'Nao foi possivel enviar seu link de acesso agora.';
+        const { supabase } = await import('../../../lib/supabase');
 
         const { error } = await supabase.auth.signInWithOtp({
           email: targetEmail,
@@ -307,9 +307,6 @@ export function MagicLoginPage() {
               </div>
             )}
 
-            <p className="text-center text-xs text-muted-foreground">
-              Protegido por reCAPTCHA e sujeito à Política de Privacidade e Termos de Serviço do Google.
-            </p>
           </div>
         </div>
       </div>

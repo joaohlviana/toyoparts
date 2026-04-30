@@ -8,6 +8,10 @@ import { Hono } from 'npm:hono';
 import * as kv from './kv_store.tsx';
 import { getCarriers, matchCarrier } from './carriers.tsx';
 import { logAuditEvent, appendOrderEvent } from './audit.tsx';
+import { compareOrderRecordDateDesc, isStoreOrderRecord } from './order-records.tsx';
+import { getOrdersReadModelEnabled, listOrderSummaries, listStoreOrdersFromSource, syncStoreOrderSummarySafe } from './order-read-model.tsx';
+import { backupStoreOrderSafe, findStoreBackupOrderById, readStoreOrdersFromBackup } from './store-backup-orders.tsx';
+import { sendResendEmail } from './resend-mailer.tsx';
 
 export const orders = new Hono();
 
@@ -43,8 +47,47 @@ function normalizeOrder(order: any): any {
     payment_status:     order.payment_status     || order.status || 'waiting_payment',
     fulfillment_status: order.fulfillment_status || 'pending',
     payment_provider:   order.payment_provider   || 'asaas',
+    order_source:       order.order_source       || 'checkout_web',
+    lead_id:            order.lead_id            || null,
     createdAt:          order.createdAt || order.created_at || new Date(0).toISOString(),
   };
+}
+
+function isRecoverableReadError(error: any): boolean {
+  const message = String(error?.message || error || '').toLowerCase();
+  return (
+    message.includes('schema cache') ||
+    message.includes('retrying') ||
+    message.includes('timed out') ||
+    message.includes('abort') ||
+    message.includes('maximum number of connections') ||
+    message.includes('remaining connection slots are reserved') ||
+    message.includes('too many clients')
+  );
+}
+
+async function readStoreBackupOrdersPageForAdmin(
+  page: number,
+  limit: number,
+  search: string,
+  paymentStatus: string | null,
+  fulfillmentStatus: string | null,
+) {
+  const backup = await readStoreOrdersFromBackup({
+    page,
+    limit,
+    search,
+    paymentStatus,
+    fulfillmentStatus,
+  });
+  return {
+    items: (backup.items || []).map((order: any) => normalizeOrder(order)),
+    total: Number(backup.total || 0),
+    page: Number(backup.page || page),
+    limit: Number(backup.limit || limit),
+    has_more: backup.has_more === true,
+    source: backup.source,
+  } as const;
 }
 
 // ─── Email: order_shipped ─────────────────────────────────────────────────────
@@ -99,33 +142,13 @@ async function sendShippedEmail(
     const subject = (stored?.subject || 'Seu pedido #{{order_id}} foi enviado! 🚚')
       .replace(/\{\{order_id\}\}/g, shortId);
 
-    const emailPayload = { from: `${fromName} <${fromEmail}>`, to: [customerEmail], subject, html };
-    const emailHeaders = { 'Authorization': `Bearer ${RESEND_API}`, 'Content-Type': 'application/json' };
-
-    let res = await fetch('https://api.resend.com/emails', {
-      method: 'POST',
-      headers: emailHeaders,
-      body: JSON.stringify(emailPayload),
+    const { data } = await sendResendEmail({
+      to: [customerEmail],
+      subject,
+      html,
+      fromName,
+      fromEmail,
     });
-
-    // Fallback: if domain not verified, retry with Resend's free domain
-    if (res.status === 403) {
-      const errData = await res.json().catch(() => ({}));
-      if (/domain.*not verified/i.test(errData.message || '')) {
-        console.log('[Orders] Domain not verified, retrying with onboarding@resend.dev');
-        res = await fetch('https://api.resend.com/emails', {
-          method: 'POST',
-          headers: emailHeaders,
-          body: JSON.stringify({ ...emailPayload, from: 'Toyoparts <onboarding@resend.dev>' }),
-        });
-      }
-    }
-
-    if (!res.ok) {
-      const txt = await res.text().catch(() => '');
-      return { sent: false, error: `Resend API ${res.status}: ${txt}` };
-    }
-    const data = await res.json();
     console.log(`[Orders] order_shipped email sent: ${data.id} → ${customerEmail}`);
     return { sent: true };
   } catch (err: any) {
@@ -137,12 +160,131 @@ async function sendShippedEmail(
 
 orders.get('/', async (c) => {
   try {
-    const raw = await kv.getByPrefix('order:');
-    const list = (raw || [])
-      .filter((o: any) => o && typeof o === 'object' && o.orderId)
-      .map(normalizeOrder);
-    list.sort((a: any, b: any) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-    return c.json({ success: true, orders: list, total: list.length });
+    const enabled = await getOrdersReadModelEnabled();
+    const page = Math.max(1, Number(c.req.query('page') || 1));
+    const limit = Math.min(1000, Math.max(1, Number(c.req.query('limit') || 1000)));
+    const search = String(c.req.query('search') || '').trim();
+    const paymentStatus = String(c.req.query('payment_status') || '').trim() || null;
+    const fulfillmentStatus = String(c.req.query('fulfillment_status') || '').trim() || null;
+
+    try {
+      if (enabled) {
+        const result = await listOrderSummaries({
+          recordKind: 'store_order',
+          page,
+          limit,
+          search,
+          paymentStatus,
+          fulfillmentStatus,
+        });
+
+        return c.json({
+          success: true,
+          orders: result.items,
+          total: result.total,
+          page: result.page,
+          limit: result.limit,
+          has_more: result.has_more,
+          source: 'read_model',
+        });
+      }
+
+      const sourcePage = await listStoreOrdersFromSource({
+        page,
+        limit,
+        search,
+        paymentStatus,
+        fulfillmentStatus,
+      });
+
+      const paged = (sourcePage.items || [])
+        .filter((o: any) => isStoreOrderRecord(o))
+        .map(normalizeOrder)
+        .sort(compareOrderRecordDateDesc);
+
+      if (paged.length > 0) {
+        await Promise.all(paged.map((entry: any) => backupStoreOrderSafe(entry, 'orders_list_source')));
+      }
+
+      if (!paged.length && Number(sourcePage.total || 0) === 0) {
+        const backup = await readStoreBackupOrdersPageForAdmin(page, limit, search, paymentStatus, fulfillmentStatus);
+        if (backup.total > 0) {
+          return c.json({
+            success: true,
+            orders: backup.items,
+            total: backup.total,
+            page: backup.page,
+            limit: backup.limit,
+            has_more: backup.has_more,
+            source: backup.source,
+          });
+        }
+
+        return c.json({
+          success: true,
+          orders: [],
+          total: 0,
+          page,
+          limit,
+          has_more: false,
+          source: 'store_empty',
+          degraded: true,
+        });
+      }
+
+      return c.json({
+        success: true,
+        orders: paged,
+        total: sourcePage.total,
+        page: sourcePage.page,
+        limit: sourcePage.limit,
+        has_more: sourcePage.has_more,
+        source: 'source_page',
+      });
+    } catch (readError: any) {
+      if (isRecoverableReadError(readError)) {
+        console.warn('[Orders] degraded list read:', readError);
+        try {
+          const backup = await readStoreBackupOrdersPageForAdmin(page, limit, search, paymentStatus, fulfillmentStatus);
+          if (backup.total > 0) {
+            return c.json({
+              success: true,
+              orders: backup.items,
+              total: backup.total,
+              page: backup.page,
+              limit: backup.limit,
+              has_more: backup.has_more,
+              source: backup.source,
+              degraded: true,
+            });
+          }
+
+          return c.json({
+            success: true,
+            orders: [],
+            total: 0,
+            page,
+            limit,
+            has_more: false,
+            source: enabled ? 'read_model_degraded' : 'source_page_degraded',
+            degraded: true,
+          });
+        } catch (backupError) {
+          console.warn('[Orders] store backup fallback failed:', backupError);
+          return c.json({
+            success: true,
+            orders: [],
+            total: 0,
+            page,
+            limit,
+            has_more: false,
+            source: enabled ? 'read_model_degraded' : 'source_page_degraded',
+            degraded: true,
+          });
+        }
+      }
+      throw readError;
+    }
   } catch (err: any) {
     console.error('[Orders] GET / error:', err);
     return c.json({ success: false, error: err.message }, 500);
@@ -155,9 +297,21 @@ orders.get('/:id', async (c) => {
   try {
     const id = c.req.param('id');
     const order = await kv.get(`order:${id}`);
+    if (!order) {
+      const backupOrder = await findStoreBackupOrderById(id);
+      const magentoBackupOrder = backupOrder;
+      if (!magentoBackupOrder) return c.json({ error: 'Pedido não encontrado' }, 404);
+
+      return c.json({
+        success: true,
+        order: normalizeOrder(backupOrder),
+        source: 'store_backup',
+      });
+    }
     if (!order) return c.json({ error: 'Pedido não encontrado' }, 404);
 
     const normalized = normalizeOrder(order);
+    await backupStoreOrderSafe(order, 'orders_detail_read');
 
     // Enrich with matched carrier config
     if (order.shipping?.carrier) {
@@ -222,6 +376,7 @@ orders.patch('/:id/tracking', async (c) => {
       updatedAt:         now,
     };
     await kv.set(orderKey, updated);
+    await syncStoreOrderSummarySafe(updated, 'orders_tracking_update');
     console.log(`[Orders] Tracking saved for order ${id}: ${tracking_code}`);
 
     // ── 2. SEND email (non-blocking — failure doesn't fail the request) ───────
@@ -299,6 +454,8 @@ orders.patch('/:id/fulfillment', async (c) => {
     };
     await kv.set(orderKey, updated);
     console.log(`[Orders] Fulfillment ${id}: ${from} → ${to}`);
+
+    await syncStoreOrderSummarySafe(updated, 'orders_fulfillment_update');
 
     // Audit + order events
     await Promise.all([

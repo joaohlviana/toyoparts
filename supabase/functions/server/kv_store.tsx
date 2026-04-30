@@ -17,13 +17,33 @@ const client = () => createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY"),
 );
 
+const KV_TIMEOUT_MS = Math.max(800, Number(Deno.env.get("KV_REQUEST_TIMEOUT_MS") || 3500));
+
+async function withTimeout<T>(promise: Promise<T>, label: string): Promise<T> {
+  let timeoutId: number | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`[kv_store] ${label} timed out after ${KV_TIMEOUT_MS}ms`));
+    }, KV_TIMEOUT_MS) as unknown as number;
+  });
+
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timeoutId !== undefined) clearTimeout(timeoutId);
+  }
+}
+
 // Set stores a key-value pair in the database.
 export const set = async (key: string, value: any): Promise<void> => {
-  const supabase = client()
-  const { error } = await supabase.from("kv_store_1d6e33e0").upsert({
-    key,
-    value
-  });
+  const supabase = client();
+  const { error } = await withTimeout(
+    supabase.from("kv_store_1d6e33e0").upsert({
+      key,
+      value,
+    }),
+    `set:${key}`,
+  );
   if (error) {
     throw new Error(error.message);
   }
@@ -31,8 +51,11 @@ export const set = async (key: string, value: any): Promise<void> => {
 
 // Get retrieves a key-value pair from the database.
 export const get = async (key: string): Promise<any> => {
-  const supabase = client()
-  const { data, error } = await supabase.from("kv_store_1d6e33e0").select("value").eq("key", key).maybeSingle();
+  const supabase = client();
+  const { data, error } = await withTimeout(
+    supabase.from("kv_store_1d6e33e0").select("value").eq("key", key).maybeSingle(),
+    `get:${key}`,
+  );
   if (error) {
     throw new Error(error.message);
   }
@@ -41,8 +64,11 @@ export const get = async (key: string): Promise<any> => {
 
 // Delete deletes a key-value pair from the database.
 export const del = async (key: string): Promise<void> => {
-  const supabase = client()
-  const { error } = await supabase.from("kv_store_1d6e33e0").delete().eq("key", key);
+  const supabase = client();
+  const { error } = await withTimeout(
+    supabase.from("kv_store_1d6e33e0").delete().eq("key", key),
+    `del:${key}`,
+  );
   if (error) {
     throw new Error(error.message);
   }
@@ -50,8 +76,11 @@ export const del = async (key: string): Promise<void> => {
 
 // Sets multiple key-value pairs in the database.
 export const mset = async (keys: string[], values: any[]): Promise<void> => {
-  const supabase = client()
-  const { error } = await supabase.from("kv_store_1d6e33e0").upsert(keys.map((k, i) => ({ key: k, value: values[i] })));
+  const supabase = client();
+  const { error } = await withTimeout(
+    supabase.from("kv_store_1d6e33e0").upsert(keys.map((k, i) => ({ key: k, value: values[i] }))),
+    `mset:${keys.length}`,
+  );
   if (error) {
     throw new Error(error.message);
   }
@@ -59,8 +88,11 @@ export const mset = async (keys: string[], values: any[]): Promise<void> => {
 
 // Gets multiple key-value pairs from the database.
 export const mget = async (keys: string[]): Promise<any[]> => {
-  const supabase = client()
-  const { data, error } = await supabase.from("kv_store_1d6e33e0").select("value").in("key", keys);
+  const supabase = client();
+  const { data, error } = await withTimeout(
+    supabase.from("kv_store_1d6e33e0").select("value").in("key", keys),
+    `mget:${keys.length}`,
+  );
   if (error) {
     throw new Error(error.message);
   }
@@ -69,8 +101,11 @@ export const mget = async (keys: string[]): Promise<any[]> => {
 
 // Deletes multiple key-value pairs from the database.
 export const mdel = async (keys: string[]): Promise<void> => {
-  const supabase = client()
-  const { error } = await supabase.from("kv_store_1d6e33e0").delete().in("key", keys);
+  const supabase = client();
+  const { error } = await withTimeout(
+    supabase.from("kv_store_1d6e33e0").delete().in("key", keys),
+    `mdel:${keys.length}`,
+  );
   if (error) {
     throw new Error(error.message);
   }
@@ -81,34 +116,39 @@ export const getByPrefix = async (prefix: string): Promise<any[]> => {
   const supabase = client();
   const allData: any[] = [];
   const batchSize = 1000;
-  let from = 0;
-  let hasMore = true;
+  const upperBound = `${prefix}\uffff`;
+  let cursorKey: string | null = null;
 
-  // Buscar em lotes até pegar tudo
-  while (hasMore) {
-    const { data, error } = await supabase
+  while (true) {
+    let query = supabase
       .from("kv_store_1d6e33e0")
-      .select("value")
-      .like("key", prefix + "%")
-      .range(from, from + batchSize - 1);
-    
+      .select("key, value")
+      .gte("key", prefix)
+      .lt("key", upperBound)
+      .order("key", { ascending: true })
+      .limit(batchSize);
+
+    if (cursorKey) {
+      query = query.gt("key", cursorKey);
+    }
+
+    const { data, error } = await withTimeout(
+      query,
+      `getByPrefix:${prefix}:${cursorKey ?? "start"}`,
+    );
+
     if (error) {
       throw new Error(error.message);
     }
 
-    if (!data || data.length === 0) {
-      hasMore = false;
-    } else {
-      allData.push(...data.map((d) => d.value));
-      from += batchSize;
-      
-      // Se retornou menos que o batch size, acabou
-      if (data.length < batchSize) {
-        hasMore = false;
-      }
-    }
+    if (!data || data.length === 0) break;
+
+    allData.push(...data.map((d) => d.value));
+    cursorKey = data[data.length - 1]?.key || null;
+
+    if (!cursorKey) break;
   }
 
-  console.log(`📦 getByPrefix("${prefix}"): ${allData.length} registros`);
+  console.log(`[kv_store] getByPrefix("${prefix}"): ${allData.length} records`);
   return allData;
 };

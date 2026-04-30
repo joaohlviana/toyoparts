@@ -4,6 +4,7 @@
 
 import { useState, useEffect, useRef, useCallback } from 'react';
 import { fetchCepAddress, fetchShippingQuote, FrenetError } from './frenet-api';
+import { getShippingServiceDisplayName } from './shipping-labels';
 import type {
   FrenetCepResponse,
   FrenetQuoteResponse,
@@ -198,7 +199,7 @@ export function useShippingQuote(debounceMs = 500) {
             quotes: result.quotes.map(q => ({
               id: q.serviceCode || q.serviceDescription,
               carrier: q.carrier,
-              name: q.serviceDescription,
+              name: getShippingServiceDisplayName(q.serviceDescription, q.carrier),
               price: q.price,
               originalPrice: q.originalPrice,
               estimatedDays: q.deliveryDays,

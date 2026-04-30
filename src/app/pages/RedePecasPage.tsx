@@ -178,6 +178,21 @@ function matchBadge(matchStatus: string) {
   return { color: 'error' as const, label: 'Sem match' };
 }
 
+function rowStatusBadge(status: string) {
+  if (status === 'synced') return { color: 'success' as const, label: 'Sincronizado' };
+  if (status === 'pending') return { color: 'warning' as const, label: 'Pendente' };
+  return { color: 'error' as const, label: 'Sem match' };
+}
+
+function measureCellTone(status: string, source: 'current' | 'toyota') {
+  const base = 'min-w-[112px] rounded-lg border px-3 py-2';
+  if (status === 'sincronizado') return `${base} border-emerald-200 bg-emerald-50`;
+  if (status === 'sem_dado_toyota') return `${base} border-border bg-secondary/60`;
+  if (source === 'toyota') return `${base} border-primary/25 bg-primary/5`;
+  if (status === 'faltando_no_toyoparts') return `${base} border-amber-200 bg-amber-50`;
+  return `${base} border-rose-200 bg-rose-50`;
+}
+
 function compactMeasureSummary(row: any) {
   const parts: string[] = [];
   if (row.divergentFields?.length) parts.push(`${row.divergentFields.length} divergente(s)`);
@@ -671,7 +686,9 @@ function MeasuresManualPanel({
   const [sku, setSku] = useState('533010K020');
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
   const [comparison, setComparison] = useState<any>(null);
+  const [review, setReview] = useState<any>(null);
   const [selectedFields, setSelectedFields] = useState<Record<string, boolean>>({});
   const autoLoaded = useRef(false);
 
@@ -694,10 +711,12 @@ function MeasuresManualPanel({
       const result = await readAdminJson<any>(response, 'Falha ao comparar medidas');
       if (!result.ok) throw new Error(result.error || 'Falha ao comparar medidas');
       setComparison(result.data?.comparison || null);
+      setReview(result.data?.review || null);
       setSelectedFields(defaultSelectedFields(result.data?.comparison));
     } catch (error: any) {
       toast.error(error.message);
       setComparison(null);
+      setReview(null);
       setSelectedFields({});
     } finally {
       setLoading(false);
@@ -724,6 +743,7 @@ function MeasuresManualPanel({
       const result = await readAdminJson<any>(response, 'Falha ao aplicar medidas');
       if (!result.ok) throw new Error(result.error || 'Falha ao aplicar medidas');
       setComparison(result.data?.comparison || null);
+      setReview({ reviewed: false, reviewStillValid: false, reviewedAt: null, reviewedBy: null });
       setSelectedFields(defaultSelectedFields(result.data?.comparison));
       toast.success(`Medidas sincronizadas para ${comparison.sku}`);
       await onApplied();
@@ -733,6 +753,31 @@ function MeasuresManualPanel({
       setApplying(false);
     }
   }, [backendMessage, backendUnavailable, comparison, onApplied, selectedFields]);
+
+  const handleToggleReviewed = useCallback(async () => {
+    if (backendUnavailable) {
+      toast.error(backendMessage);
+      return;
+    }
+    if (!comparison?.sku) return;
+    setReviewing(true);
+    try {
+      const reviewed = !!review?.reviewed && !!review?.reviewStillValid;
+      const endpoint = reviewed ? 'desmarcar-medidas-conferidas' : 'marcar-medidas-conferidas';
+      const response = await adminFetch(`${API}/${endpoint}`, {
+        method: 'POST',
+        body: JSON.stringify({ skus: [comparison.sku] }),
+      });
+      const result = await readAdminJson<any>(response, reviewed ? 'Falha ao desmarcar conferido' : 'Falha ao marcar conferido');
+      if (!result.ok) throw new Error(result.error || (reviewed ? 'Falha ao desmarcar conferido' : 'Falha ao marcar conferido'));
+      toast.success(reviewed ? `SKU ${comparison.sku} voltou para revisao` : `SKU ${comparison.sku} marcado como conferido`);
+      await handleCompare();
+    } catch (error: any) {
+      toast.error(error.message);
+    } finally {
+      setReviewing(false);
+    }
+  }, [backendMessage, backendUnavailable, comparison, handleCompare, review]);
 
   useEffect(() => {
     if (autoLoaded.current || backendUnavailable) return;
@@ -794,6 +839,11 @@ function MeasuresManualPanel({
                   <Badge variant="pill-color" color={comparison.summary.hasDifferences ? 'warning' : 'success'} size="sm">
                     {comparison.summary.hasDifferences ? 'Com divergencias' : 'Ja sincronizado'}
                   </Badge>
+                  {!!review?.reviewed && !!review?.reviewStillValid && (
+                    <Badge variant="pill-color" color="brand" size="sm">
+                      Conferido sem aplicar
+                    </Badge>
+                  )}
                 </div>
               </div>
             </Card.Header>
@@ -872,16 +922,27 @@ function MeasuresManualPanel({
             <p className="text-sm text-muted-foreground">
               A Toyota e soberana. A aplicacao usa os valores normalizados e atualiza o Toyoparts imediatamente.
             </p>
-            <Button
-              color="primary"
-              size="md"
-              onClick={handleApply}
-              isLoading={applying}
-              iconLeading={<CheckCircle2 className="w-4 h-4" />}
-              disabled={backendUnavailable || !comparison.summary.canApply}
-            >
-              Aplicar selecionados
-            </Button>
+            <div className="flex flex-wrap gap-2">
+              <Button
+                color="secondary"
+                size="md"
+                onClick={handleToggleReviewed}
+                isLoading={reviewing}
+                disabled={backendUnavailable || applying}
+              >
+                {!!review?.reviewed && !!review?.reviewStillValid ? 'Desmarcar conferido' : 'Conferido sem aplicar'}
+              </Button>
+              <Button
+                color="primary"
+                size="md"
+                onClick={handleApply}
+                isLoading={applying}
+                iconLeading={<CheckCircle2 className="w-4 h-4" />}
+                disabled={backendUnavailable || !comparison.summary.canApply || reviewing}
+              >
+                Aplicar selecionados
+              </Button>
+            </div>
           </div>
         </>
       )}
@@ -902,25 +963,79 @@ function MeasuresBulkPanel({
   const [stats, setStats] = useState<any>(null);
   const [loading, setLoading] = useState(false);
   const [applying, setApplying] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
+  const [fieldApplyingKey, setFieldApplyingKey] = useState<string | null>(null);
+  const [rowApplyingSku, setRowApplyingSku] = useState<string | null>(null);
+  const [reviewActionSku, setReviewActionSku] = useState<string | null>(null);
   const [q, setQ] = useState('');
   const [onlyDivergent, setOnlyDivergent] = useState(true);
+  const [inStockOnly, setInStockOnly] = useState(false);
+  const [showReviewed, setShowReviewed] = useState(false);
   const [field, setField] = useState<'all' | MeasureField>('all');
   const [matchStatus, setMatchStatus] = useState<'all' | 'elegivel' | 'sem_match' | 'fuzzy'>('all');
+  const [rowStatus, setRowStatus] = useState<'all' | 'pending' | 'synced' | 'sem_match'>('all');
   const [offset, setOffset] = useState(0);
-  const [limit] = useState(20);
+  const [limit] = useState(50);
   const [totalRows, setTotalRows] = useState(0);
+  const [hasMore, setHasMore] = useState(false);
   const [selectedSkus, setSelectedSkus] = useState<string[]>([]);
+  const [recentlySyncedSkus, setRecentlySyncedSkus] = useState<string[]>([]);
 
   const allSelected = useMemo(
-    () => rows.length > 0 && rows.filter((row) => row.canApply).every((row) => selectedSkus.includes(row.sku)),
+    () => rows.length > 0 && rows.every((row) => selectedSkus.includes(row.sku)),
     [rows, selectedSkus],
   );
 
-  const loadRows = useCallback(async (customOffset = offset) => {
+  const rowMatchesCurrentFilters = useCallback((row: any) => {
+    if (onlyDivergent && !row.hasDifferences) return false;
+    if (inStockOnly && !row.inStock) return false;
+    if (field !== 'all' && ![...row.divergentFields, ...row.missingFields].includes(field)) return false;
+    if (matchStatus !== 'all' && row.matchStatus !== matchStatus) return false;
+    if (rowStatus !== 'all' && row.rowStatus !== rowStatus) return false;
+    if (!showReviewed && row.reviewed && row.reviewStillValid) return false;
+    return true;
+  }, [field, inStockOnly, matchStatus, onlyDivergent, rowStatus, showReviewed]);
+
+  const mergeRows = useCallback((currentRows: any[], incomingRows: any[]) => {
+    const bySku = new Map<string, any>();
+    for (const row of currentRows) bySku.set(row.sku, row);
+    for (const row of incomingRows) bySku.set(row.sku, row);
+    return Array.from(bySku.values());
+  }, []);
+
+  const patchSingleRow = useCallback((nextRow: any) => {
+    setRows((current) => current.flatMap((row) => (
+      row.sku !== nextRow.sku ? [row] : (rowMatchesCurrentFilters(nextRow) ? [nextRow] : [])
+    )));
+    setSelectedSkus((current) => current.filter((sku) => sku !== nextRow.sku || rowMatchesCurrentFilters(nextRow)));
+  }, [rowMatchesCurrentFilters]);
+
+  const patchManyRows = useCallback((nextRows: any[]) => {
+    const patchMap = new Map(nextRows.map((row) => [row.sku, row]));
+    setRows((current) => current.flatMap((row) => {
+      const nextRow = patchMap.get(row.sku);
+      if (!nextRow) return [row];
+      return rowMatchesCurrentFilters(nextRow) ? [nextRow] : [];
+    }));
+    setSelectedSkus((current) => current.filter((sku) => {
+      const nextRow = patchMap.get(sku);
+      return nextRow ? rowMatchesCurrentFilters(nextRow) : true;
+    }));
+  }, [rowMatchesCurrentFilters]);
+
+  const loadRows = useCallback(async ({
+    requestOffset = 0,
+    append = false,
+  }: {
+    requestOffset?: number;
+    append?: boolean;
+  } = {}) => {
     if (backendUnavailable) {
       setRows([]);
       setStats(null);
       setTotalRows(0);
+      setHasMore(false);
+      setOffset(0);
       setSelectedSkus([]);
       return;
     }
@@ -929,34 +1044,99 @@ function MeasuresBulkPanel({
       const response = await adminFetch(`${API}/comparar-medidas-lote`, {
         method: 'POST',
         body: JSON.stringify({
-          offset: customOffset,
+          offset: requestOffset,
           limit,
           q,
           onlyDivergent,
+          inStockOnly,
           field,
           matchStatus,
+          rowStatus,
+          showReviewed,
         }),
       });
       const result = await readAdminJson<any>(response, 'Falha ao carregar analise em massa');
       if (!result.ok) throw new Error(result.error || 'Falha ao carregar analise em massa');
-      setRows(result.data?.rows || []);
+      const incomingRows = result.data?.rows || [];
+      setRows((current) => (append ? mergeRows(current, incomingRows) : incomingRows));
+      setRecentlySyncedSkus((current) => current.filter((sku) => incomingRows.some((row: any) => row.sku === sku)));
       setStats(result.data?.stats || null);
       setTotalRows(result.data?.total_rows || 0);
-      setSelectedSkus([]);
+      setHasMore(Boolean(result.data?.has_more));
+      setOffset(result.data?.nextOffset || 0);
+      if (!append) setSelectedSkus([]);
     } catch (error: any) {
       toast.error(error.message);
       setRows([]);
       setStats(null);
       setTotalRows(0);
+      setHasMore(false);
     } finally {
       setLoading(false);
     }
-  }, [backendUnavailable, field, limit, matchStatus, onlyDivergent, q]);
+  }, [backendUnavailable, field, inStockOnly, limit, matchStatus, mergeRows, onlyDivergent, q, rowStatus, showReviewed]);
 
   useEffect(() => {
-    void loadRows(0);
+    void loadRows({ requestOffset: 0, append: false });
     setOffset(0);
-  }, [field, matchStatus, onlyDivergent, q, loadRows]);
+  }, [field, inStockOnly, loadRows, matchStatus, onlyDivergent, q, rowStatus, showReviewed]);
+
+  const handleApplyField = useCallback(async (row: any, fieldKey: MeasureField) => {
+    if (backendUnavailable) {
+      toast.error(backendMessage);
+      return;
+    }
+    const applyKey = `${row.sku}:${fieldKey}`;
+    setFieldApplyingKey(applyKey);
+    try {
+      const response = await adminFetch(`${API}/aplicar-medidas`, {
+        method: 'POST',
+        body: JSON.stringify({ sku: row.sku, fields: [fieldKey] }),
+      });
+      const result = await readAdminJson<any>(response, 'Falha ao aplicar campo');
+      if (!result.ok) throw new Error(result.error || 'Falha ao aplicar campo');
+      if (result.data?.row) {
+        patchSingleRow(result.data.row);
+        if (!result.data.row.hasDifferences || result.data.row.rowStatus === 'synced') {
+          setRecentlySyncedSkus((current) => [...new Set([...current, result.data.row.sku])]);
+        }
+      }
+      toast.success(`${LABELS[fieldKey]} sincronizado em ${row.sku}`);
+      await onApplied();
+    } catch (error: any) {
+      toast.error(error.message);
+    } finally {
+      setFieldApplyingKey(null);
+    }
+  }, [backendMessage, backendUnavailable, onApplied, patchSingleRow]);
+
+  const handleApplyRow = useCallback(async (row: any) => {
+    if (backendUnavailable) {
+      toast.error(backendMessage);
+      return;
+    }
+    setRowApplyingSku(row.sku);
+    try {
+      const response = await adminFetch(`${API}/aplicar-medidas`, {
+        method: 'POST',
+        body: JSON.stringify({ sku: row.sku }),
+      });
+      const result = await readAdminJson<any>(response, 'Falha ao aplicar linha');
+      if (!result.ok) throw new Error(result.error || 'Falha ao aplicar linha');
+      if (result.data?.row) {
+        patchSingleRow(result.data.row);
+        if (!result.data.row.hasDifferences || result.data.row.rowStatus === 'synced') {
+          setRecentlySyncedSkus((current) => [...new Set([...current, result.data.row.sku])]);
+        }
+      }
+      toast.success(`SKU ${row.sku} sincronizado com Toyota`);
+      await onApplied();
+    } catch (error: any) {
+      toast.error(error.message);
+    } finally {
+      setRowApplyingSku(null);
+    }
+  }, [backendMessage, backendUnavailable, onApplied, patchSingleRow]);
 
   const handleApplySelected = useCallback(async () => {
     if (backendUnavailable) {
@@ -975,29 +1155,126 @@ function MeasuresBulkPanel({
       });
       const result = await readAdminJson<any>(response, 'Falha ao aplicar medidas em massa');
       if (!result.ok) throw new Error(result.error || 'Falha ao aplicar medidas em massa');
-      toast.success(`${result.data?.applied_count || 0} SKU(s) sincronizado(s)`);
+      const appliedRows = new Map<string, any>();
+      for (const entry of result.data?.applied || []) {
+        if (entry?.row?.sku) appliedRows.set(entry.row.sku, entry.row);
+      }
+      if (appliedRows.size) {
+        const nextRows = Array.from(appliedRows.values());
+        patchManyRows(nextRows);
+        const syncedSkus = nextRows
+          .filter((row) => !row.hasDifferences || row.rowStatus === 'synced')
+          .map((row) => row.sku);
+        if (syncedSkus.length) {
+          setRecentlySyncedSkus((current) => [...new Set([...current, ...syncedSkus])]);
+        }
+      }
+      const appliedCount = result.data?.applied_count || 0;
+      const skippedCount = result.data?.skipped_count || 0;
+      toast.success(
+        skippedCount
+          ? `${appliedCount} SKU(s) sincronizado(s) e ${skippedCount} ignorado(s)`
+          : `${appliedCount} SKU(s) sincronizado(s)`,
+      );
+      setSelectedSkus((current) => current.filter((sku) => !appliedRows.has(sku)));
       await onApplied();
-      await loadRows(offset);
     } catch (error: any) {
       toast.error(error.message);
     } finally {
       setApplying(false);
     }
-  }, [backendMessage, backendUnavailable, loadRows, offset, onApplied, selectedSkus]);
+  }, [backendMessage, backendUnavailable, onApplied, patchManyRows, selectedSkus]);
+
+  const handleMarkReviewed = useCallback(async (skus: string[], markReviewed: boolean) => {
+    if (backendUnavailable) {
+      toast.error(backendMessage);
+      return;
+    }
+    const uniqueSkus = [...new Set(skus.map((sku) => String(sku || '').trim()).filter(Boolean))];
+    if (!uniqueSkus.length) {
+      toast.error('Selecione ao menos um SKU');
+      return;
+    }
+    const singleSku = uniqueSkus.length === 1 ? uniqueSkus[0] : null;
+    if (singleSku) setReviewActionSku(singleSku);
+    else setReviewing(true);
+    try {
+      const endpoint = markReviewed ? 'marcar-medidas-conferidas' : 'desmarcar-medidas-conferidas';
+      const response = await adminFetch(`${API}/${endpoint}`, {
+        method: 'POST',
+        body: JSON.stringify({ skus: uniqueSkus }),
+      });
+      const result = await readAdminJson<any>(response, `Falha ao ${markReviewed ? 'marcar' : 'desmarcar'} conferido`);
+      if (!result.ok) throw new Error(result.error || `Falha ao ${markReviewed ? 'marcar' : 'desmarcar'} conferido`);
+
+      if (markReviewed) {
+        const reviewedRows = (result.data?.reviewed || []).map((entry: any) => entry.row).filter(Boolean);
+        if (reviewedRows.length) patchManyRows(reviewedRows);
+        setSelectedSkus((current) => current.filter((sku) => !uniqueSkus.includes(sku)));
+        toast.success(
+          uniqueSkus.length === 1 ? `SKU ${uniqueSkus[0]} marcado como conferido` : `${uniqueSkus.length} SKU(s) marcados como conferidos`,
+        );
+      } else {
+        await loadRows({ requestOffset: 0, append: false });
+        toast.success(
+          uniqueSkus.length === 1 ? `SKU ${uniqueSkus[0]} voltou para revisao` : `${uniqueSkus.length} SKU(s) voltaram para revisao`,
+        );
+      }
+    } catch (error: any) {
+      toast.error(error.message);
+    } finally {
+      setReviewActionSku(null);
+      setReviewing(false);
+    }
+  }, [backendMessage, backendUnavailable, loadRows, patchManyRows]);
+
+  const renderMeasureCell = useCallback((row: any, fieldKey: MeasureField, source: 'current' | 'toyota') => {
+    const fieldState = row.fields?.[fieldKey];
+    const isToyota = source === 'toyota';
+    const applyKey = `${row.sku}:${fieldKey}`;
+    return (
+      <div className={measureCellTone(fieldState?.status || 'sem_dado_toyota', source)}>
+        <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+          {isToyota ? 'Toyota' : 'Site'}
+        </p>
+        <p className="mt-1 text-sm font-semibold text-foreground">
+          {formatMeasureValue(
+            isToyota ? fieldState?.toyotaNormalized : fieldState?.toyopartsValue,
+            fieldKey,
+            isToyota ? 'normalized' : 'toyoparts',
+          )}
+        </p>
+        {isToyota && fieldState?.applyEligible && fieldState?.status !== 'sincronizado' && (
+          <Button
+            type="button"
+            color="secondary"
+            size="xs"
+            className="mt-2"
+            isLoading={fieldApplyingKey === applyKey}
+            disabled={backendUnavailable || rowApplyingSku === row.sku || applying || reviewing || !!reviewActionSku}
+            onClick={() => {
+              void handleApplyField(row, fieldKey);
+            }}
+          >
+            Aprovar
+          </Button>
+        )}
+      </div>
+    );
+  }, [applying, backendUnavailable, fieldApplyingKey, handleApplyField, reviewActionSku, reviewing, rowApplyingSku]);
 
   return (
     <div className="space-y-4">
       <Card.Root>
         <Card.Content className="p-4 space-y-4">
-          <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_180px_180px] gap-3">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-[minmax(0,1.3fr)_180px_180px_180px] gap-3">
             <Input
               placeholder="Buscar SKU ou nome"
               value={q}
               onChange={(e) => setQ(e.target.value)}
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
-                  setOffset(0);
-                  void loadRows(0);
+                  void loadRows({ requestOffset: 0, append: false });
                 }
               }}
               iconLeading={Search}
@@ -1020,23 +1297,60 @@ function MeasuresBulkPanel({
             >
               <option value="all">Todos os matches</option>
               <option value="elegivel">Match elegivel</option>
-              <option value="sem_match">Sem match</option>
               <option value="fuzzy">Match fuzzy</option>
+              <option value="sem_match">Sem match</option>
+            </select>
+            <select
+              value={rowStatus}
+              onChange={(e) => setRowStatus(e.target.value as 'all' | 'pending' | 'synced' | 'sem_match')}
+              className="h-11 rounded-lg border border-border bg-white px-3 text-sm text-foreground"
+            >
+              <option value="all">Todos os status</option>
+              <option value="pending">Pendentes</option>
+              <option value="synced">Sincronizados</option>
+              <option value="sem_match">Sem match Toyota</option>
             </select>
           </div>
 
-          <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
-            <label className="inline-flex items-center gap-2 text-sm text-foreground">
-              <input
-                type="checkbox"
-                className="h-4 w-4 rounded border-border"
-                checked={onlyDivergent}
-                onChange={(e) => setOnlyDivergent(e.target.checked)}
-              />
-              Mostrar apenas linhas com divergencia
-            </label>
+          <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-3">
+            <div className="flex flex-col sm:flex-row sm:flex-wrap gap-3 sm:gap-5">
+              <label className="inline-flex items-center gap-2 text-sm text-foreground">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-border"
+                  checked={onlyDivergent}
+                  onChange={(e) => setOnlyDivergent(e.target.checked)}
+                />
+                Mostrar apenas divergencias
+              </label>
+              <label className="inline-flex items-center gap-2 text-sm text-foreground">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-border"
+                  checked={inStockOnly}
+                  onChange={(e) => setInStockOnly(e.target.checked)}
+                />
+                Somente em estoque
+              </label>
+              <label className="inline-flex items-center gap-2 text-sm text-foreground">
+                <input
+                  type="checkbox"
+                  className="h-4 w-4 rounded border-border"
+                  checked={showReviewed}
+                  onChange={(e) => setShowReviewed(e.target.checked)}
+                />
+                Mostrar conferidos
+              </label>
+            </div>
             <div className="flex flex-wrap gap-2">
-              <Button color="secondary" size="sm" onClick={() => { setOffset(0); void loadRows(0); }} isLoading={loading}>
+              <Button
+                color="secondary"
+                size="sm"
+                onClick={() => {
+                  void loadRows({ requestOffset: 0, append: false });
+                }}
+                isLoading={loading}
+              >
                 Atualizar analise
               </Button>
               <Button
@@ -1049,85 +1363,144 @@ function MeasuresBulkPanel({
               >
                 Aplicar soberano Toyota
               </Button>
+              <Button
+                color="secondary"
+                size="sm"
+                onClick={() => {
+                  void handleMarkReviewed(selectedSkus, true);
+                }}
+                isLoading={reviewing}
+                disabled={backendUnavailable || !selectedSkus.length || applying}
+                iconLeading={<Check className="w-4 h-4" />}
+              >
+                Marcar conferido
+              </Button>
             </div>
           </div>
         </Card.Content>
       </Card.Root>
 
       {stats && (
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-4">
-          <Card.Root><Card.Content className="p-4"><p className="text-xs uppercase tracking-wider text-muted-foreground">Analisados</p><p className="mt-1 text-lg font-semibold">{stats.total_analyzed}</p></Card.Content></Card.Root>
-          <Card.Root><Card.Content className="p-4"><p className="text-xs uppercase tracking-wider text-muted-foreground">Com divergencia</p><p className="mt-1 text-lg font-semibold">{stats.total_with_differences}</p></Card.Content></Card.Root>
-          <Card.Root><Card.Content className="p-4"><p className="text-xs uppercase tracking-wider text-muted-foreground">Match elegivel</p><p className="mt-1 text-lg font-semibold">{stats.total_eligible_matches}</p></Card.Content></Card.Root>
-          <Card.Root><Card.Content className="p-4"><p className="text-xs uppercase tracking-wider text-muted-foreground">Prontos para aplicar</p><p className="mt-1 text-lg font-semibold">{stats.total_eligible_to_apply}</p></Card.Content></Card.Root>
+        <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-5 gap-3">
+          <Card.Root><Card.Content className="p-3 sm:p-4"><p className="text-[11px] uppercase tracking-wide text-muted-foreground">SKUs do site</p><p className="mt-1 text-base sm:text-lg font-semibold">{stats.total_catalog_rows ?? stats.total_analyzed}</p></Card.Content></Card.Root>
+          <Card.Root><Card.Content className="p-3 sm:p-4"><p className="text-[11px] uppercase tracking-wide text-muted-foreground">Com match Toyota</p><p className="mt-1 text-base sm:text-lg font-semibold">{stats.total_eligible_matches}</p></Card.Content></Card.Root>
+          <Card.Root><Card.Content className="p-3 sm:p-4"><p className="text-[11px] uppercase tracking-wide text-muted-foreground">Pendentes</p><p className="mt-1 text-base sm:text-lg font-semibold">{stats.total_pending ?? stats.total_with_differences}</p></Card.Content></Card.Root>
+          <Card.Root><Card.Content className="p-3 sm:p-4"><p className="text-[11px] uppercase tracking-wide text-muted-foreground">Sincronizados</p><p className="mt-1 text-base sm:text-lg font-semibold">{stats.total_synced ?? 0}</p></Card.Content></Card.Root>
+          <Card.Root><Card.Content className="p-3 sm:p-4"><p className="text-[11px] uppercase tracking-wide text-muted-foreground">Sem match Toyota</p><p className="mt-1 text-base sm:text-lg font-semibold">{stats.total_without_match}</p></Card.Content></Card.Root>
         </div>
       )}
 
       <Card.Root>
-        <Card.Content className="p-0">
-          <Table.Root className="border-0 shadow-none rounded-none">
-            <Table.Header>
-              <Table.Row>
-                <Table.HeaderCell className="w-12">
-                  <input
-                    type="checkbox"
-                    className="h-4 w-4 rounded border-border"
-                    checked={allSelected}
-                    onChange={(e) => setSelectedSkus(e.target.checked ? rows.filter((row) => row.canApply).map((row) => row.sku) : [])}
-                  />
-                </Table.HeaderCell>
-                <Table.HeaderCell>SKU</Table.HeaderCell>
-                <Table.HeaderCell>Produto</Table.HeaderCell>
-                <Table.HeaderCell>Match</Table.HeaderCell>
-                <Table.HeaderCell className="whitespace-normal">Divergencias</Table.HeaderCell>
-                <Table.HeaderCell className="whitespace-normal">Campos</Table.HeaderCell>
-              </Table.Row>
-            </Table.Header>
-            <Table.Body>
-              {!loading && rows.length === 0 && (
-                <Table.Row>
-                  <Table.Cell colSpan={6} className="whitespace-normal text-center py-10 text-muted-foreground">
-                    Nenhuma linha encontrada para os filtros atuais.
-                  </Table.Cell>
-                </Table.Row>
-              )}
-              {rows.map((row) => {
-                const badge = matchBadge(row.matchStatus);
-                return (
-                  <Table.Row key={row.sku}>
-                    <Table.Cell>
-                      <input
-                        type="checkbox"
-                        className="h-4 w-4 rounded border-border"
-                        checked={selectedSkus.includes(row.sku)}
-                        disabled={backendUnavailable || !row.canApply}
-                        onChange={(e) => {
-                          setSelectedSkus((current) => (
-                            e.target.checked
-                              ? [...current, row.sku]
-                              : current.filter((sku) => sku !== row.sku)
-                          ));
-                        }}
-                      />
-                    </Table.Cell>
-                    <Table.Cell>
-                      <code className="rounded bg-secondary px-2 py-1 text-xs font-mono">{row.sku}</code>
-                    </Table.Cell>
-                    <Table.Cell className="whitespace-normal max-w-[320px]">
-                      <div className="space-y-1">
-                        <p className="font-medium text-foreground">{row.name || 'Sem nome'}</p>
-                        {row.matchedPartno && <p className="text-xs text-muted-foreground">Toyota: {row.matchedPartno}</p>}
+        <Card.Content className="p-4 space-y-4">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <label className="inline-flex items-center gap-2 text-sm text-foreground">
+              <input
+                type="checkbox"
+                className="h-4 w-4 rounded border-border"
+                checked={allSelected}
+                onChange={(e) => setSelectedSkus(e.target.checked ? rows.map((row) => row.sku) : [])}
+              />
+              Selecionar os {rows.length} itens visiveis
+            </label>
+            <p className="text-sm text-muted-foreground">
+              Carregados {rows.length} de {totalRows} itens filtrados.
+            </p>
+          </div>
+
+          {loading && rows.length === 0 && (
+            <div className="rounded-xl border border-border bg-secondary/30 p-6 text-sm text-muted-foreground">
+              Carregando auditoria de medidas...
+            </div>
+          )}
+
+          {!loading && rows.length === 0 && (
+            <div className="rounded-xl border border-dashed border-border p-8 text-center text-sm text-muted-foreground">
+              Nenhum SKU pendente para os filtros atuais.
+            </div>
+          )}
+
+          <div className="space-y-3">
+            {rows.map((row) => {
+              const badge = matchBadge(row.matchStatus);
+              const statusBadge = rowStatusBadge(row.rowStatus);
+              const isReviewed = !!row.reviewed && !!row.reviewStillValid;
+              const justSynced = recentlySyncedSkus.includes(row.sku) || row.rowStatus === 'synced' || !row.hasDifferences;
+              const rowCanApply = row.canApply && row.hasDifferences && row.rowStatus !== 'synced';
+              return (
+                <Card.Root
+                  key={row.sku}
+                  className={justSynced ? 'border-emerald-300 bg-emerald-50/40 shadow-none' : 'border-border shadow-none'}
+                >
+                  <Card.Content className="p-4 space-y-4">
+                    <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
+                      <div className="flex items-start gap-3 min-w-0">
+                        <input
+                          type="checkbox"
+                          className="mt-1 h-4 w-4 rounded border-border"
+                          checked={selectedSkus.includes(row.sku)}
+                          onChange={(e) => {
+                            setSelectedSkus((current) => (
+                              e.target.checked
+                                ? [...current, row.sku]
+                                : current.filter((sku) => sku !== row.sku)
+                            ));
+                          }}
+                        />
+                        <div className="min-w-0 space-y-1">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <code className="rounded bg-secondary px-2 py-1 text-xs font-mono">{row.sku}</code>
+                            {row.matchedPartno && (
+                              <span className="text-xs text-muted-foreground">Toyota: {row.matchedPartno}</span>
+                            )}
+                          </div>
+                          <p className="text-sm font-semibold text-foreground break-words">{row.name || 'Sem nome'}</p>
+                          <p className="text-xs text-muted-foreground">
+                            {compactMeasureSummary(row)}
+                            {isReviewed && row.reviewedAt ? ` • Conferido em ${new Date(row.reviewedAt).toLocaleString('pt-BR')}` : ''}
+                          </p>
+                        </div>
                       </div>
-                    </Table.Cell>
-                    <Table.Cell>
-                      <Badge variant="pill-color" color={badge.color} size="xs">
-                        {badge.label}
-                      </Badge>
-                    </Table.Cell>
-                    <Table.Cell className="whitespace-normal">
-                      <p className="text-sm text-foreground">{compactMeasureSummary(row)}</p>
-                    </Table.Cell>
-                    <Table.Cell className="whitespace-normal">
+                      <div className="flex flex-wrap gap-2">
+                        <Badge variant="pill-color" color={row.inStock ? 'success' : 'error'} size="xs">
+                          {row.inStock ? `Em estoque${row.qty != null ? ` • Qtd ${row.qty}` : ''}` : 'Sem estoque'}
+                        </Badge>
+                        <Badge variant="pill-color" color={badge.color} size="xs">
+                          {badge.label}
+                        </Badge>
+                        <Badge variant="pill-color" color={statusBadge.color} size="xs">
+                          {statusBadge.label}
+                        </Badge>
+                        {isReviewed && (
+                          <Badge variant="pill-color" color="brand" size="xs">
+                            Conferido
+                          </Badge>
+                        )}
+                        {justSynced && (
+                          <Badge variant="pill-color" color="success" size="xs">
+                            Sincronizado agora
+                          </Badge>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                      {MEASURE_FIELDS.map((fieldKey) => (
+                        <div key={fieldKey} className="rounded-xl border border-border bg-secondary/20 p-3 space-y-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <p className="text-sm font-semibold text-foreground">{LABELS[fieldKey]}</p>
+                            <Badge variant="pill-color" color={statusBadgeColor(row.fields[fieldKey].status)} size="xs">
+                              {statusLabel(row.fields[fieldKey].status)}
+                            </Badge>
+                          </div>
+                          <div className="grid grid-cols-1 min-[420px]:grid-cols-2 gap-2">
+                            {renderMeasureCell(row, fieldKey, 'current')}
+                            {renderMeasureCell(row, fieldKey, 'toyota')}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+
+                    <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
                       <div className="flex flex-wrap gap-1.5">
                         {MEASURE_FIELDS.map((fieldKey) => (
                           <Badge
@@ -1140,43 +1513,68 @@ function MeasuresBulkPanel({
                           </Badge>
                         ))}
                       </div>
-                    </Table.Cell>
-                  </Table.Row>
-                );
-              })}
-            </Table.Body>
-          </Table.Root>
+                      <div className="flex flex-wrap gap-2">
+                        {rowCanApply ? (
+                          <Button
+                            type="button"
+                            color="secondary"
+                            size="xs"
+                            isLoading={rowApplyingSku === row.sku}
+                            disabled={
+                              backendUnavailable ||
+                              !rowCanApply ||
+                              applying ||
+                              reviewing ||
+                              !!(fieldApplyingKey && fieldApplyingKey.startsWith(`${row.sku}:`))
+                            }
+                            onClick={() => {
+                              void handleApplyRow(row);
+                            }}
+                          >
+                            Aprovar linha
+                          </Button>
+                        ) : (
+                          <div className="rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-medium text-emerald-700">
+                            Linha sincronizada
+                          </div>
+                        )}
+                        <Button
+                          type="button"
+                          color="secondary"
+                          size="xs"
+                          isLoading={reviewActionSku === row.sku}
+                          disabled={backendUnavailable || applying || reviewing || rowApplyingSku === row.sku}
+                          onClick={() => {
+                            void handleMarkReviewed([row.sku], !isReviewed);
+                          }}
+                        >
+                          {isReviewed ? 'Desmarcar conferido' : 'Conferido sem aplicar'}
+                        </Button>
+                      </div>
+                    </div>
+                  </Card.Content>
+                </Card.Root>
+              );
+            })}
+          </div>
         </Card.Content>
       </Card.Root>
 
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3">
         <p className="text-sm text-muted-foreground">
-          Total filtrado: {totalRows}. A aplicacao em massa usa apenas SKUs com match elegivel e campos divergentes/faltando.
+          Total filtrado: {totalRows}. A fila carrega 50 por vez e esconde por padrao os SKUs ja conferidos sem alteracao.
         </p>
         <div className="flex items-center gap-2">
           <Button
             color="secondary"
             size="sm"
             onClick={() => {
-              const nextOffset = Math.max(0, offset - limit);
-              setOffset(nextOffset);
-              void loadRows(nextOffset);
+              void loadRows({ requestOffset: offset, append: true });
             }}
-            disabled={backendUnavailable || offset === 0 || loading}
+            isLoading={loading && rows.length > 0}
+            disabled={backendUnavailable || loading || !hasMore}
           >
-            Anterior
-          </Button>
-          <Button
-            color="secondary"
-            size="sm"
-            onClick={() => {
-              const nextOffset = offset + limit;
-              setOffset(nextOffset);
-              void loadRows(nextOffset);
-            }}
-            disabled={backendUnavailable || loading || offset + limit >= totalRows}
-          >
-            Proxima
+            {hasMore ? 'Carregar proximos 50' : 'Todos os itens carregados'}
           </Button>
         </div>
       </div>

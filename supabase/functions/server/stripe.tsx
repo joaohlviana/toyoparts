@@ -17,6 +17,8 @@
 import { Hono } from 'npm:hono';
 import * as kv from './kv_store.tsx';
 import { appendOrderEvent, logAuditEvent } from './audit.tsx';
+import { ensureOrderCustomerIndexes } from './order-indexes.tsx';
+import { syncStoreOrderSummarySafe } from './order-read-model.tsx';
 
 export const stripe = new Hono();
 
@@ -168,7 +170,7 @@ stripe.post('/create-checkout', async (c) => {
 
     // Salvar pedido no KV with discount info
     const now = new Date().toISOString();
-    await kv.set(`order:${orderId}`, {
+    const orderData = {
       orderId,
       payment_provider:           'stripe',
       payment_status:             'waiting_payment',
@@ -185,7 +187,11 @@ stripe.post('/create-checkout', async (c) => {
       shipping: shipping || null,
       createdAt:  now,
       created_at: now,
-    });
+    };
+
+    await kv.set(`order:${orderId}`, orderData);
+    await ensureOrderCustomerIndexes(orderId, orderData);
+    await syncStoreOrderSummarySafe(orderData, 'stripe_checkout_create');
 
     await appendOrderEvent(orderId, 'order.created', {
       payment_provider: 'stripe',
@@ -224,13 +230,16 @@ stripe.get('/redirect-success', async (c) => {
     try {
       const existing = await kv.get(`order:${orderId}`);
       if (existing && existing.payment_status === 'waiting_payment') {
-        await kv.set(`order:${orderId}`, {
+        const updatedOrder = {
           ...existing,
           payment_status:   'paid',
           status:           'paid',
           updatedAt:        new Date().toISOString(),
           last_payment_event: 'redirect_success',
-        });
+        };
+        await kv.set(`order:${orderId}`, updatedOrder);
+        await ensureOrderCustomerIndexes(orderId, updatedOrder);
+        await syncStoreOrderSummarySafe(updatedOrder, 'stripe_redirect_success');
         await appendOrderEvent(orderId, 'payment.status_changed', {
           from: 'waiting_payment', to: 'paid',
           payment_provider: 'stripe', gateway_event: 'redirect_success',
@@ -334,13 +343,15 @@ stripe.post('/refund', async (c) => {
     if (oid) {
       const existing = await kv.get(`order:${oid}`);
       if (existing) {
-        await kv.set(`order:${oid}`, {
+        const updatedOrder = {
           ...existing,
           payment_status:   'refunded',
           status:           'refunded',
           stripe_refund_id: refund.id,
           updatedAt:        new Date().toISOString(),
-        });
+        };
+        await kv.set(`order:${oid}`, updatedOrder);
+        await syncStoreOrderSummarySafe(updatedOrder, 'stripe_refund');
         await appendOrderEvent(oid, 'payment.refunded', {
           stripe_refund_id: refund.id,
           amount: refund.amount / 100,
@@ -422,12 +433,17 @@ stripe.post('/webhook', async (c) => {
 
         if (newStatus !== prevStatus) {
           await kv.set(orderKey, update);
+          await ensureOrderCustomerIndexes(orderId, update);
+          await syncStoreOrderSummarySafe(update, 'stripe_webhook_status_changed');
           console.log(`[Stripe Webhook] Order ${orderId}: ${prevStatus} → ${newStatus}`);
           await appendOrderEvent(orderId, 'payment.status_changed', {
             from: prevStatus, to: newStatus,
             payment_provider: 'stripe', gateway_event: eventType,
           }, 'webhook');
         } else {
+          await kv.set(orderKey, update);
+          await ensureOrderCustomerIndexes(orderId, update);
+          await syncStoreOrderSummarySafe(update, 'stripe_webhook_received');
           await appendOrderEvent(orderId, 'payment.webhook_received', {
             event: eventType, payment_status_unchanged: newStatus,
           }, 'webhook');

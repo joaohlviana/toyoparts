@@ -8,6 +8,7 @@
 
 import { Hono } from 'npm:hono';
 import * as kv from './kv_store.tsx';
+import { sendResendEmail } from './resend-mailer.tsx';
 
 export const abandonedCart = new Hono();
 
@@ -74,8 +75,8 @@ async function sendRecoveryEmail(
   record: AbandonedCartRecord,
   toEmail: string,
 ): Promise<boolean> {
-  const apiKey = (Deno.env.get('RESEND_API') || '').trim();
-  if (!apiKey) {
+  const hasResend = (Deno.env.get('RESEND_API') || '').trim();
+  if (!hasResend) {
     console.warn('[AbandonedCart] RESEND_API not set — skipping email');
     return false;
   }
@@ -164,36 +165,12 @@ async function sendRecoveryEmail(
 </html>`;
 
   try {
-    const payload = {
-      from:    'Toyoparts <noreply@toyoparts.com.br>',
+    const { data } = await sendResendEmail({
       to:      [toEmail],
       subject: `${name}, você deixou itens no carrinho 🛒`,
       html,
-    };
-    const headers = {
-      'Authorization': `Bearer ${apiKey}`,
-      'Content-Type': 'application/json',
-    };
-
-    let res = await fetch('https://api.resend.com/emails', {
-      method: 'POST', headers, body: JSON.stringify(payload),
+      fromEmail: 'noreply@toyoparts.com.br',
     });
-    let data = await res.json();
-
-    // Fallback: if domain not verified, retry with Resend's free domain
-    if (res.status === 403 && /domain.*not verified/i.test(data.message || '')) {
-      console.log('[AbandonedCart] Domain not verified, retrying with onboarding@resend.dev');
-      res = await fetch('https://api.resend.com/emails', {
-        method: 'POST', headers,
-        body: JSON.stringify({ ...payload, from: 'Toyoparts <onboarding@resend.dev>' }),
-      });
-      data = await res.json();
-    }
-
-    if (!res.ok) {
-      console.error('[AbandonedCart] Resend error:', data);
-      return false;
-    }
     console.log('[AbandonedCart] Recovery email sent:', data.id, '→', toEmail);
     return true;
   } catch (e: any) {

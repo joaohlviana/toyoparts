@@ -61,7 +61,7 @@ export function RelatedProductsByView({ sku, limit = 8, className = '' }: Relate
     if (!sku) return;
     let cancelled = false;
 
-    (async () => {
+    const loadRelated = async () => {
       setLoading(true);
       try {
         const data = await siActivation.getRelatedProducts(sku, limit);
@@ -69,14 +69,33 @@ export function RelatedProductsByView({ sku, limit = 8, className = '' }: Relate
           setProducts(data.products);
           setSource(data.source || 'mixed');
         }
-      } catch (err) {
-        console.error('[RelatedProducts] Error:', err);
       } finally {
         if (!cancelled) setLoading(false);
       }
-    })();
+    };
 
-    return () => { cancelled = true; };
+    let timeoutId: number | null = null;
+    let idleId: number | null = null;
+
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      idleId = window.requestIdleCallback(() => {
+        void loadRelated();
+      }, { timeout: 2500 });
+    } else {
+      timeoutId = window.setTimeout(() => {
+        void loadRelated();
+      }, 1200);
+    }
+
+    return () => {
+      cancelled = true;
+      if (idleId != null && typeof window !== 'undefined' && 'cancelIdleCallback' in window) {
+        window.cancelIdleCallback(idleId);
+      }
+      if (timeoutId != null) {
+        window.clearTimeout(timeoutId);
+      }
+    };
   }, [sku, limit]);
 
   const visibleProducts = products

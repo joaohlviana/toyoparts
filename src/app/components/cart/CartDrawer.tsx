@@ -21,12 +21,15 @@ import { Input } from '../ui/input';
 import { Badge } from '../ui/badge';
 import { fetchShippingQuote } from '../../lib/shipping/frenet-api';
 import { maskCEP, isValidCEP } from '../../lib/checkout/checkout-validation';
+import { trackWhatsappBannerLead } from '../../lib/analytics';
 import type {
   ShippingQuote,
   FreeShippingEvaluationRuleSummary,
   FreeShippingWhatsAppOffer,
 } from '../../lib/shipping/shipping-types';
+import { formatShippingTransitTime, getShippingServiceDisplayName } from '../../lib/shipping/shipping-labels';
 import { ToyotaPlaceholder } from '../ToyotaPlaceholder';
+import { WhatsAppOfferBanner } from '../shipping/WhatsAppOfferBanner';
 
 function formatBRL(v: number | undefined | null) {
   if (v === undefined || v === null) return 'R$ 0,00';
@@ -104,7 +107,7 @@ export function CartDrawer({ open, onClose }: CartDrawerProps) {
       const quotes = result.quotes.map((quote) => ({
         id: quote.serviceCode || quote.serviceDescription,
         carrier: quote.carrier,
-        name: quote.serviceDescription,
+        name: getShippingServiceDisplayName(quote.serviceDescription, quote.carrier),
         price: quote.price,
         originalPrice: quote.originalPrice,
         estimatedDays: quote.deliveryDays,
@@ -310,18 +313,25 @@ export function CartDrawer({ open, onClose }: CartDrawerProps) {
               )}
 
               {whatsAppOffer && (
-                <a
+                <WhatsAppOfferBanner
                   href={whatsAppOffer.url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="mt-2.5 flex items-start gap-2 rounded-xl border border-[#25D366]/20 bg-[#25D366]/10 px-3 py-3 text-left transition-colors hover:bg-[#25D366]/15"
-                >
-                  <MessageCircle className="mt-0.5 h-4 w-4 flex-shrink-0 text-[#128C7E]" />
-                  <div>
-                    <p className="text-xs font-bold text-[#128C7E]">Fechar com frete gratis no WhatsApp</p>
-                    <p className="mt-1 text-[11px] text-[#128C7E]/90">{whatsAppOffer.message}</p>
-                  </div>
-                </a>
+                  message={whatsAppOffer.message}
+                  onClick={() => {
+                    void trackWhatsappBannerLead({
+                      source_surface: 'cart_shipping_offer',
+                      page_type: 'cart_drawer',
+                      page_path: window.location.pathname + window.location.search,
+                      cartTotal: totals.total,
+                      href: whatsAppOffer.url,
+                      properties: {
+                        rule_id: whatsAppOffer.ruleId,
+                        rule_name: whatsAppOffer.ruleName,
+                        potential: whatsAppOffer.potential,
+                      },
+                    });
+                  }}
+                  className="mt-2.5"
+                />
               )}
 
               {/* Shipping options */}
@@ -376,9 +386,7 @@ export function CartDrawer({ open, onClose }: CartDrawerProps) {
                               </span>
                             )}
                           </div>
-                          <span className="text-xs text-muted-foreground">
-                            {q.estimatedDays} dia{q.estimatedDays !== 1 ? 's' : ''} {q.estimatedDays === 1 ? 'útil' : 'úteis'}
-                          </span>
+                          <span className="text-xs text-muted-foreground">{formatShippingTransitTime(q.estimatedDays)}</span>
                           {q.message && (
                             <p className="mt-0.5 text-[10px] text-emerald-700">
                               {q.message}

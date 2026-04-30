@@ -52,12 +52,27 @@ function ago(iso?: string) {
   return `${Math.floor(m / 60)}h ${m % 60}m atras`;
 }
 
+function minutesSince(iso?: string) {
+  if (!iso) return 0;
+  const diff = Date.now() - new Date(iso).getTime();
+  return diff > 0 ? Math.floor(diff / 60000) : 0;
+}
+
+const IMAGE_SCOPE_ORDER = ['products', 'categories', 'models', 'banners'] as const;
+const IMAGE_SCOPE_LABELS: Record<string, string> = {
+  products: 'Produtos',
+  categories: 'Categorias',
+  models: 'Modelos',
+  banners: 'Banners',
+};
+
 interface Log { t: string; lvl: 'INF' | 'OK ' | 'WRN' | 'ERR'; msg: string; }
 
 export function SyncPage() {
   const [logs, setLogs] = useState<Log[]>([]);
   const [syncData, setSyncData] = useState<any>(null);
   const [imgData, setImgData] = useState<any>(null);
+  const [imgAuditData, setImgAuditData] = useState<any>(null);
   const [meiliData, setMeiliData] = useState<any>(null);
   const [auditData, setAuditData] = useState<any>(null);
   const [newMeiliData, setNewMeiliData] = useState<any>(null);
@@ -71,6 +86,7 @@ export function SyncPage() {
   const [meiliStepping, setMeiliStepping] = useState(false);
   const [auditStepping, setAuditStepping] = useState(false);
   const [imgStepping, setImgStepping] = useState(false);
+  const [imgAuditLoading, setImgAuditLoading] = useState(false);
   const [newMeiliStepping, setNewMeiliStepping] = useState(false);
 
   // "Connected" = user explicitly clicked to load status
@@ -90,6 +106,25 @@ export function SyncPage() {
   const log = useCallback((lvl: Log['lvl'], msg: string) => {
     setLogs(p => { const n = [...p, { t: now(), lvl, msg }]; return n.length > MAX_LOGS ? n.slice(-MAX_LOGS) : n; });
   }, []);
+
+  const refreshImgAudit = useCallback(async (verbose = false) => {
+    setImgAuditLoading(true);
+    const res = await hit('/images/audit?scope=all', 'GET', 120000);
+    if (res.ok && res.json) {
+      setImgAuditData(res.json);
+      if (verbose) {
+        const products = res.json?.scopes_result?.products;
+        log(
+          'INF',
+          `images/audit ${res.ms}ms -> cutover=${res.json?.cutoverReady ? 'OK' : 'BLOQUEADO'} | produtos ${products?.canonical_storage ?? 0}/${products?.total ?? '?'} canônicos`,
+        );
+      }
+    } else if (verbose) {
+      log('ERR', `images/audit FALHOU ${res.status} ${res.ms}ms`);
+    }
+    setImgAuditLoading(false);
+    return res;
+  }, [log]);
 
   useEffect(() => { endRef.current?.scrollIntoView({ behavior: 'smooth' }); }, [logs]);
 
@@ -153,8 +188,9 @@ export function SyncPage() {
     log(h.ok ? 'OK ' : 'ERR', `Health ${h.status} ${h.ms}ms`);
     setConnected(true);
     await poll(true);
+    await refreshImgAudit(true);
     log('OK ', 'Status carregado. Clique "Executar" em qualquer operação para iniciar.');
-  }, [log, poll]);
+  }, [log, poll, refreshImgAudit]);
 
   // ── Actions ──
   const startSync = async () => {
@@ -299,7 +335,7 @@ export function SyncPage() {
 
     try {
       // Phase 1: Start
-      const forceParam = imgStale ? '?force=1' : '';
+      const forceParam = imgStale ? '?scope=all&force=1' : '?scope=all';
       log('INF', `POST /images/sync/start${forceParam} ...`);
       const startRes = await hit(`/images/sync/start${forceParam}`, 'POST', 60000);
       if (!startRes.ok) {
@@ -396,6 +432,113 @@ export function SyncPage() {
       poll(true);
     }
   };
+  const startImgSyncV2 = async () => {
+    if (imgStepping) {
+      imgAbort.current = true;
+      log('WRN', 'Abortando image sync...');
+      toast.info('Download de imagens pausado');
+      return;
+    }
+
+    imgAbort.current = false;
+    setImgStepping(true);
+
+    try {
+      const forceParam = imgStale ? '?scope=all&force=1' : '?scope=all';
+      log('INF', `POST /images/sync/start${forceParam} ...`);
+      const startRes = await hit(`/images/sync/start${forceParam}`, 'POST', 60000);
+
+      if (!startRes.ok) {
+        if (startRes.status === 409 || startRes.json?.status?.status === 'running') {
+          log('INF', 'Media sync já em andamento - continuando steps...');
+          if (startRes.json?.status) setImgData(startRes.json.status);
+        } else {
+          log('ERR', `start falhou: ${startRes.raw.slice(0, 200)}`);
+          toast.error(startRes.json?.error || 'Falha no start');
+          setImgStepping(false);
+          return;
+        }
+      } else {
+        const startStatus = startRes.json?.status;
+        const scopes = (startStatus?.scopes || []).map((scope: string) => IMAGE_SCOPE_LABELS[scope] || scope).join(', ');
+        setImgData(startStatus || null);
+        log('OK ', `Media sync iniciado: ${scopes || 'sem escopos'} Â· ${startStatus?.progress ?? 0}% geral`);
+        toast.success(`Media sync iniciado: ${scopes || 'escopo vazio'}`);
+      }
+
+      await poll(false);
+
+      let stepCount = 0;
+      let consecutiveErrors = 0;
+      const MAX_CONSECUTIVE_ERRORS = 5;
+
+      while (!imgAbort.current) {
+        stepCount += 1;
+        const stepRes = await hit('/images/sync/step', 'POST', 120000);
+
+        if (!stepRes.ok) {
+          consecutiveErrors += 1;
+          log('ERR', `Step ${stepCount} falhou (${consecutiveErrors}/${MAX_CONSECUTIVE_ERRORS}): ${(stepRes.json?.error || stepRes.raw).slice(0, 150)}`);
+          if (consecutiveErrors >= MAX_CONSECUTIVE_ERRORS) {
+            log('ERR', 'Erros consecutivos demais - abortando');
+            toast.error('Download de imagens abortado por erros');
+            break;
+          }
+          await new Promise(r => setTimeout(r, 1000 * consecutiveErrors));
+          continue;
+        }
+
+        consecutiveErrors = 0;
+        const msg = stepRes.json?.message;
+        const stepStatus = stepRes.json?.status;
+        const batch = stepRes.json?.batch || {};
+        const currentScope = stepStatus?.current_scope;
+        const scopeState = currentScope ? stepStatus?.scope_results?.[currentScope] : null;
+        if (stepStatus) setImgData(stepStatus);
+
+        if (msg === 'batch_done' || msg === 'scope_completed') {
+          log('INF', [
+            `Media step ${stepCount}: ${IMAGE_SCOPE_LABELS[currentScope || ''] || currentScope || 'Finalizando'}`,
+            `Â· ${scopeState?.processed ?? 0}/${scopeState?.total ?? '?'} (${scopeState?.progress ?? 0}%)`,
+            `Â· synced=${batch?.synced ?? 0} skip=${batch?.skipped ?? 0} missing=${batch?.missing ?? 0} err=${batch?.errors ?? 0}`,
+            `Â· geral ${stepStatus?.progress ?? 0}%`,
+          ].join(' '));
+          if (stepStatus?.status !== 'completed') continue;
+        }
+
+        if (stepStatus?.status === 'completed') {
+          const totals = IMAGE_SCOPE_ORDER.reduce((acc, scope) => {
+            const value = stepStatus?.scope_results?.[scope];
+            acc.synced += value?.synced ?? 0;
+            acc.skipped += value?.skipped ?? 0;
+            acc.missing += value?.missing ?? 0;
+            acc.errors += value?.errors ?? 0;
+            return acc;
+          }, { synced: 0, skipped: 0, missing: 0, errors: 0 });
+          log('OK ', `✅ Media sync concluído: ${totals.synced} sincronizados, ${totals.skipped} pulados, ${totals.missing} sem imagem, ${totals.errors} erros.`);
+          toast.success(`Media sync concluído: ${totals.synced} sincronizados`);
+          await refreshImgAudit(true);
+          break;
+        }
+
+        log('WRN', `Step resposta inesperada: ${msg}`);
+        break;
+      }
+
+      if (imgAbort.current) {
+        log('WRN', 'Image sync loop abortado - cursor salvo, pode continuar');
+      }
+    } catch (error: any) {
+      log('ERR', `Erro no image sync step loop: ${error.message}`);
+      toast.error('Erro no download de imagens');
+    } finally {
+      setImgStepping(false);
+      imgAbort.current = false;
+      await refreshImgAudit(false);
+      poll(true);
+    }
+  };
+
   const startMeiliIndex = async () => {
     if (meiliStepping) {
       // Abort running step loop
@@ -612,7 +755,7 @@ export function SyncPage() {
 
   // ── Resets ──
   const resetSync = async () => { const r = await hit('/sync/reset', 'POST'); log(r.ok ? 'OK ' : 'ERR', `sync/reset ${r.status}`); if (r.ok) toast.success('Reset'); poll(true); };
-  const resetImgSync = async () => { const r = await hit('/images/reset', 'POST'); log(r.ok ? 'OK ' : 'ERR', `images/reset ${r.status}`); if (r.ok) toast.success('Reset'); poll(true); };
+  const resetImgSync = async () => { const r = await hit('/images/reset', 'POST'); log(r.ok ? 'OK ' : 'ERR', `images/reset ${r.status}`); if (r.ok) { toast.success('Reset'); setImgData(null); setImgAuditData(null); } poll(true); };
   const resetMeili = async () => { const r = await hit('/meili/reset', 'POST'); log(r.ok ? 'OK ' : 'ERR', `meili/reset ${r.status}`); if (r.ok) toast.success('Reset'); poll(true); };
 
   // ── Audit actions (step-based, same architecture as MeiliSearch) ──
@@ -856,7 +999,38 @@ export function SyncPage() {
   const imgStatus = imgData?.status ?? 'idle';
   const imgPct = imgData?.progress ?? 0;
   const imgRunning = imgStatus === 'running';
-  const imgStale = imgRunning && (imgData?._elapsed_minutes ?? 0) > 10;
+  const imgStale = imgRunning && minutesSince(imgData?.updated_at) > 10;
+  const imgCurrentScope = imgData?.current_scope ?? null;
+  const imgScopeResults = imgData?.scope_results ?? {};
+  const imgCurrentScopeData = imgCurrentScope ? imgScopeResults?.[imgCurrentScope] : null;
+  const imgTotals = IMAGE_SCOPE_ORDER.reduce((acc, scope) => {
+    const value = imgScopeResults?.[scope];
+    acc.synced += value?.synced ?? 0;
+    acc.skipped += value?.skipped ?? 0;
+    acc.missing += value?.missing ?? 0;
+    acc.errors += value?.errors ?? 0;
+    return acc;
+  }, { synced: 0, skipped: 0, missing: 0, errors: 0 });
+  const imgAuditProducts = imgAuditData?.scopes_result?.products;
+  const imgAuditLine = imgAuditProducts
+    ? `Audit produtos: ${imgAuditProducts.canonical_storage ?? 0}/${imgAuditProducts.total ?? '?'} canônicos · ${imgAuditProducts.legacy_domain ?? 0} legadas · ${imgAuditProducts.broken_storage_refs ?? 0} quebradas`
+    : 'Use Auditar mídia para validar corte e pendências reais.';
+  const imgCardLine1 = imgStale
+    ? `TRAVADO há ${minutesSince(imgData?.updated_at)}min - clique Executar (force=1)`
+    : imgRunning
+    ? `${IMAGE_SCOPE_LABELS[imgCurrentScope || ''] || imgCurrentScope || 'Preparando'} Â· ${imgCurrentScopeData?.processed ?? 0}/${imgCurrentScopeData?.total ?? '?'} (${imgCurrentScopeData?.progress ?? 0}%) Â· ${imgData?.progress ?? 0}% geral`
+    : imgStatus === 'completed'
+    ? `âœ… ${imgTotals.synced} sincronizados Â· ${imgTotals.missing} sem imagem Â· ${imgTotals.errors} erros`
+    : imgStatus === 'error'
+    ? `âŒ Erro: ${(imgData?.error ?? '?').slice(0, 80)}`
+    : 'Magento â†’ Supabase Storage por escopo (produtos, categorias, modelos e banners)';
+  const imgCardLine2 = imgRunning
+    ? `Escopos: ${(imgData?.scopes || []).map((scope: string) => `${IMAGE_SCOPE_LABELS[scope] || scope} ${imgScopeResults?.[scope]?.processed ?? 0}/${imgScopeResults?.[scope]?.total ?? '?'}`).join(' Â· ')}`
+    : imgStatus === 'completed'
+    ? `${imgAuditLine} Â· ${ago(imgData?.completed_at)}`
+    : imgStatus === 'error' && imgCurrentScopeData?.processed
+    ? `${IMAGE_SCOPE_LABELS[imgCurrentScope || ''] || imgCurrentScope || 'Escopo'} ${imgCurrentScopeData?.processed ?? 0}/${imgCurrentScopeData?.total ?? '?'} antes do erro`
+    : imgAuditLine;
 
   const meiliStatus = meiliData?.status ?? 'idle';
   const meiliRunning = meiliStatus === 'running';
@@ -997,7 +1171,21 @@ export function SyncPage() {
         <OpCard
           title="Sync Imagens (v3 Turbo)" icon={<Download className="w-4 h-4" />}
           status={imgStale ? 'error' : imgStatus} pct={imgPct} running={(imgRunning && !imgStale) || imgStepping}
-          onStart={startImgSync} onReset={resetImgSync}
+          onStart={startImgSyncV2} onReset={resetImgSync}
+          startLabel={imgStepping ? 'Pausar' : undefined}
+          startDisabled={false}
+          line1={imgCardLine1}
+          line2={imgCardLine2}
+          extraButton={
+            <Button size="sm" color="tertiary" onClick={() => refreshImgAudit(true)} disabled={imgAuditLoading}>
+              {imgAuditLoading ? 'Auditando...' : 'Auditar mídia'}
+            </Button>
+          }
+        />
+        {false && <OpCard
+          title="Sync Imagens (v3 Turbo)" icon={<Download className="w-4 h-4" />}
+          status={imgStale ? 'error' : imgStatus} pct={imgPct} running={(imgRunning && !imgStale) || imgStepping}
+          onStart={startImgSyncV2} onReset={resetImgSync}
           startLabel={imgStepping ? 'Pausar' : undefined}
           startDisabled={false}
           line1={imgStale
@@ -1014,7 +1202,7 @@ export function SyncPage() {
             : imgStatus === 'error' && imgData?.processed
             ? `${imgData.processed} processados antes do erro · ${imgData?.downloaded ?? 0} baixadas`
             : 'Download + atualiza URLs no KV e MeiliSearch → Storage'}
-        />
+        />}
         {/* <OpCard
           title="MeiliSearch Index (Legacy)" icon={<Search className="w-4 h-4" />}
           status={meiliStale ? 'error' : meiliStatus}

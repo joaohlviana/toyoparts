@@ -96,11 +96,10 @@ export function ModeloLandingPage() {
   useEffect(() => {
     if (!modelData) return;
     setLoading(true);
-    const modeloId = modelData.modeloIds[0];
 
     const params = new URLSearchParams({
       q: activeCategorySlug ? activeCategorySlug.replace(/-/g, ' ') : '',
-      modelos: modeloId,
+      modelo_slug: modelData.slug,
       limit: '20',
       offset: '0',
     });
@@ -192,7 +191,11 @@ export function ModeloLandingPage() {
         <div className="bg-gradient-to-br from-primary/5 via-background to-primary/3 rounded-2xl border border-border p-6 sm:p-8 mb-8">
           <div className="flex flex-col sm:flex-row items-center gap-6">
             <div className="w-28 h-28 sm:w-36 sm:h-36 flex-shrink-0 bg-white rounded-xl border border-border flex items-center justify-center p-4 shadow-sm">
-              <img src={modelData.imgSrc} alt={modelData.name} className="max-w-full max-h-full object-contain" />
+              <img
+                src={modelData.imgSrc}
+                alt={modelData.name}
+                className="max-w-full max-h-full object-contain brightness-0 opacity-70"
+              />
             </div>
             <div className="flex-1 text-center sm:text-left">
               <h1 className="text-2xl sm:text-3xl font-bold text-foreground mb-2">
@@ -251,7 +254,7 @@ export function ModeloLandingPage() {
         <div className="mb-8">
           <div className="flex items-center justify-between mb-4">
             <h2 className="text-lg font-semibold text-foreground">Produtos em Destaque</h2>
-            <Link to={`/busca?modelos=${modelData.modeloIds[0]}`}>
+            <Link to={`/busca?modelo_slug=${modelData.slug}`}>
               <Button variant="outline" size="sm" className="gap-1">
                 Ver todos <ArrowRight className="w-3.5 h-3.5" />
               </Button>
@@ -286,7 +289,11 @@ export function ModeloLandingPage() {
                 to={`/pecas/${m.slug}`}
                 className="flex items-center gap-3 px-4 py-3 bg-card border border-border rounded-lg hover:border-primary/40 hover:bg-primary/5 transition-all group"
               >
-                <img src={m.imgSrc} alt={m.name} className="w-10 h-10 object-contain" />
+                <img
+                  src={m.imgSrc}
+                  alt={m.name}
+                  className="w-10 h-10 object-contain brightness-0 opacity-70"
+                />
                 <span className="text-sm font-medium text-foreground group-hover:text-primary transition-colors">{m.name}</span>
               </Link>
             ))}

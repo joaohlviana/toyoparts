@@ -56,7 +56,7 @@ interface Order {
   delivered_at?: string;
   customer: { name: string; email: string; document?: string; phone?: string };
   address?: { street?: string; number?: string; complement?: string; district?: string; city?: string; state?: string; cep?: string };
-  items?: Array<{ id?: string; description?: string; quantity?: number; price?: number; qty?: number; name?: string; unitPrice?: number }>;
+  items?: Array<{ id?: string; sku?: string; description?: string; quantity?: number; price?: number; qty?: number; name?: string; unitPrice?: number }>;
   totals?: { total: number };
   shipping?: { carrier?: string; service?: string; estimatedDays?: number; price?: number };
   asaas_invoice_url?: string;
@@ -453,9 +453,17 @@ export function OrderDetailDrawer({ orderId, onClose, onUpdated }: Props) {
                     const name  = item.description || item.name || item.id || `Item ${i + 1}`;
                     const qty   = item.quantity ?? item.qty ?? 1;
                     const price = item.price ?? item.unitPrice ?? 0;
+                    const sku = String(item.sku || item.id || '').trim();
                     return (
-                      <div key={i} className="flex justify-between text-sm">
-                        <span className="text-foreground truncate mr-2">{qty}× {name}</span>
+                      <div key={i} className="flex items-start justify-between gap-2 text-sm">
+                        <div className="min-w-0">
+                          <span className="text-foreground truncate mr-2 block">{qty}× {name}</span>
+                          {sku && (
+                            <span className="text-[11px] text-muted-foreground font-mono block">
+                              SKU: {sku}
+                            </span>
+                          )}
+                        </div>
                         <span className="font-semibold text-foreground flex-shrink-0">{fmtBRL(price * qty)}</span>
                       </div>
                     );

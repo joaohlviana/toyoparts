@@ -12,6 +12,7 @@ const HEADERS: HeadersInit = {
   'Content-Type': 'application/json',
   Authorization: `Bearer ${publicAnonKey}`,
 };
+const SHOULD_LOG_SI_ERRORS = import.meta.env.DEV;
 
 // Session ID (persisted in sessionStorage)
 const SESSION_KEY = 'toyoparts_session_id';
@@ -36,12 +37,16 @@ async function post(path: string, body: any): Promise<any> {
     });
     if (!res.ok) {
       const text = await res.text();
-      console.error(`[SI API] POST ${path} ${res.status}: ${text}`);
+      if (SHOULD_LOG_SI_ERRORS) {
+        console.error(`[SI API] POST ${path} ${res.status}: ${text}`);
+      }
       return null;
     }
     return res.json();
   } catch (err) {
-    console.error(`[SI API] POST ${path} error:`, err);
+    if (SHOULD_LOG_SI_ERRORS) {
+      console.error(`[SI API] POST ${path} error:`, err);
+    }
     return null;
   }
 }
@@ -51,12 +56,16 @@ async function get(path: string): Promise<any> {
     const res = await fetch(`${BASE}${path}`, { headers: HEADERS });
     if (!res.ok) {
       const text = await res.text();
-      console.error(`[SI API] GET ${path} ${res.status}: ${text}`);
+      if (SHOULD_LOG_SI_ERRORS) {
+        console.error(`[SI API] GET ${path} ${res.status}: ${text}`);
+      }
       return null;
     }
     return res.json();
   } catch (err) {
-    console.error(`[SI API] GET ${path} error:`, err);
+    if (SHOULD_LOG_SI_ERRORS) {
+      console.error(`[SI API] GET ${path} error:`, err);
+    }
     return null;
   }
 }

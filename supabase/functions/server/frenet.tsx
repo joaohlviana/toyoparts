@@ -325,30 +325,43 @@ frenet.post('/quote', async (c) => {
     }));
 
     const resolvedUf = await resolveUf(body.recipientUf, recipientCep);
-    const evaluation = await evaluateFreeShippingRules({
-      subtotal: invoiceValue,
-      recipientCep,
-      recipientUf: resolvedUf,
-      paymentMethodIntent,
-      evaluationMode: paymentMethodIntent ? 'final' : 'potential',
-      items: items.map((item: any, index: number) => ({
-        sku: item.sku || `item-${index}`,
-        quantity: Math.max(1, Number(item.quantity) || 1),
-        price: Number(invoiceValue) || 0,
-        name: item.name || item.productName || item.title || item.sku || `Item ${index + 1}`,
-      })),
-      services: quotes.map((q: any) => ({
-        serviceCode: q.serviceCode,
-        serviceDescription: q.serviceDescription,
-        carrier: q.carrier,
-        carrierCode: q.carrierCode,
-        price: q.price,
-        originalPrice: q.originalPrice,
-        deliveryDays: q.deliveryDays,
-        error: q.error,
-        message: q.message,
-      })),
-    });
+    let evaluation;
+    try {
+      evaluation = await evaluateFreeShippingRules({
+        subtotal: invoiceValue,
+        recipientCep,
+        recipientUf: resolvedUf,
+        paymentMethodIntent,
+        evaluationMode: paymentMethodIntent ? 'final' : 'potential',
+        items: items.map((item: any, index: number) => ({
+          sku: item.sku || `item-${index}`,
+          quantity: Math.max(1, Number(item.quantity) || 1),
+          price: Number(invoiceValue) || 0,
+          name: item.name || item.productName || item.title || item.sku || `Item ${index + 1}`,
+        })),
+        services: quotes.map((q: any) => ({
+          serviceCode: q.serviceCode,
+          serviceDescription: q.serviceDescription,
+          carrier: q.carrier,
+          carrierCode: q.carrierCode,
+          price: q.price,
+          originalPrice: q.originalPrice,
+          deliveryDays: q.deliveryDays,
+          error: q.error,
+          message: q.message,
+        })),
+      });
+    } catch (evaluationError: any) {
+      console.error('[FRENET] Free shipping evaluation degraded:', evaluationError?.message || evaluationError);
+      evaluation = {
+        evaluationMode: paymentMethodIntent ? 'final' : 'potential',
+        appliedRule: null,
+        potentialRules: [],
+        whatsappOffer: null,
+        eligibleFreeShippingServiceIds: [],
+        legacyApplied: false,
+      };
+    }
 
     if (Array.isArray(evaluation.eligibleFreeShippingServiceIds) && evaluation.eligibleFreeShippingServiceIds.length > 0) {
       const freeServiceIds = new Set(evaluation.eligibleFreeShippingServiceIds);

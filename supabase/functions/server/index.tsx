@@ -26,6 +26,7 @@ import { newsletter } from './newsletter.tsx';
 import { resend } from './resend.tsx';
 import { carriers } from './carriers.tsx';
 import { orders } from './orders.tsx';
+import { ordersAdmin } from './orders-admin.tsx';
 import { vindi } from './vindi.tsx';
 import { audit } from './audit.tsx';
 import { health } from './health.tsx';
@@ -36,16 +37,27 @@ import { coupons } from './coupons.tsx';
 import { priceUpdate } from './price-update.tsx';
 import { adminAuth, adminMiddleware } from './admin-auth.tsx';
 import { seoAdmin } from './seo-admin.tsx';
-import { banners } from './banners.tsx';
+import { publicBanners } from './banners.tsx';
 import { freeShippingAdmin } from './free-shipping.tsx';
 import { readyStockAdmin } from './ready-stock.tsx';
+import { discounts } from './discounts.tsx';
+import { homeConfigAdmin, homeConfigPublic, homePagePublic } from './home-admin.tsx';
 
 import { sitemapGenerator } from './sitemap-generator.tsx';
 import { snapshotGenerator } from './snapshot-generator.tsx';
 import { tracking } from './tracking.tsx';
 import { searchIntelligence } from './search-intelligence.tsx';
 import { analytics } from './analytics.tsx';
+import { adminAnalytics } from './admin-analytics.tsx';
+import { campaignGoalsAdmin, campaignGoalsPublic } from './campaign-goals.tsx';
 import { recommendations } from './recommendations.tsx';
+import { imageMigration } from './image-migration.tsx';
+import { googleAdsAdmin } from './google-ads.tsx';
+import { googleMerchantAdmin } from './google-merchant.tsx';
+import { whatsappLeadsAdmin } from './whatsapp-leads.tsx';
+import { contactLeads, contactLeadsAdmin } from './contact-leads.tsx';
+import { categoryEngineAdmin, categoryEngineCron } from './category-engine.tsx';
+import { catalogPublic } from './catalog-public.tsx';
 
 const app = new Hono();
 
@@ -69,10 +81,14 @@ app.route('/make-server-1d6e33e0/payments', payments);
 app.route('/make-server-1d6e33e0/checkout', checkout);
 app.route('/make-server-1d6e33e0/search-ops', searchOps);
 app.route('/make-server-1d6e33e0/search', search);
+app.route('/make-server-1d6e33e0/catalog', catalogPublic);
 app.route('/make-server-1d6e33e0/categories', categories);
+app.route('/make-server-1d6e33e0/home-config', homeConfigPublic);
+app.route('/make-server-1d6e33e0/home-page', homePagePublic);
 app.route('/make-server-1d6e33e0/models', models);
 app.route('/make-server-1d6e33e0/admin/catalogo', catalogo); // Mount catalogo router
 app.route('/make-server-1d6e33e0/newsletter', newsletter);
+app.route('/make-server-1d6e33e0/contact-leads', contactLeads);
 app.route('/make-server-1d6e33e0/resend', resend);
 app.route('/make-server-1d6e33e0/magento', magento);
 app.route('/make-server-1d6e33e0/magento-sync', magentoSync);
@@ -81,9 +97,12 @@ app.route('/make-server-1d6e33e0/customer', customerPortal);
 app.route('/make-server-1d6e33e0/access-links', accessLinks); // Mount accessLinks
 app.route('/make-server-1d6e33e0/si', searchIntelligence); // Search Intelligence
 app.route('/make-server-1d6e33e0/analytics', analytics);
+app.route('/make-server-1d6e33e0/campaign-goals', campaignGoalsPublic);
 app.route('/make-server-1d6e33e0/recommendations', recommendations);
+app.route('/make-server-1d6e33e0/images', imageMigration);
 app.route('/make-server-1d6e33e0/carriers', carriers);
 app.route('/make-server-1d6e33e0/orders', orders);
+app.route('/make-server-1d6e33e0/admin/orders', ordersAdmin);
 app.route('/make-server-1d6e33e0/vindi', vindi);
 app.route('/make-server-1d6e33e0/audit', audit);
 app.route('/make-server-1d6e33e0/health', health);
@@ -93,9 +112,19 @@ app.route('/make-server-1d6e33e0/checkout/abandoned', abandonedCart);
 app.route('/make-server-1d6e33e0/coupons', coupons);
 app.route('/make-server-1d6e33e0/admin/price-update', priceUpdate);
 app.route('/make-server-1d6e33e0/admin/seo', seoAdmin);
-app.route('/make-server-1d6e33e0/banners', banners);
+app.route('/make-server-1d6e33e0/banners', publicBanners);
 app.route('/make-server-1d6e33e0/admin/free-shipping', freeShippingAdmin);
 app.route('/make-server-1d6e33e0/admin/ready-stock', readyStockAdmin);
+app.route('/make-server-1d6e33e0/admin/discounts', discounts);
+app.route('/make-server-1d6e33e0/admin/home-config', homeConfigAdmin);
+app.route('/make-server-1d6e33e0/admin/analytics', adminAnalytics);
+app.route('/make-server-1d6e33e0/admin/campaign-goals', campaignGoalsAdmin);
+app.route('/make-server-1d6e33e0/admin/google-ads', googleAdsAdmin);
+app.route('/make-server-1d6e33e0/admin/google-merchant', googleMerchantAdmin);
+app.route('/make-server-1d6e33e0/admin/whatsapp-leads', whatsappLeadsAdmin);
+app.route('/make-server-1d6e33e0/admin/contact-leads', contactLeadsAdmin);
+app.route('/make-server-1d6e33e0/admin/catalogo/category-engine', categoryEngineAdmin);
+app.route('/make-server-1d6e33e0/cron/category-engine', categoryEngineCron);
 
 // ─── Configurações ───────────────────────────────────────────────────────────
 const MAGENTO_TOKEN = (Deno.env.get('MAGENTO_TOKEN') || '').trim();
@@ -143,16 +172,16 @@ async function kvRetry<T>(fn: () => Promise<T>, maxAttempts = 3, delayMs = 500):
 // ─── Category image source URLs ──────────────────────────────────────────────
 const CATEGORY_IMAGE_SOURCES: Record<string, string> = {
   // Generic categories (toyoparts catalog)
-  'acessorios-externos-cromados': 'https://toyoparts.com.br/pub/media/catalog/category/33.jpg',
-  'aerofolios-spoilers-e-antenas': 'https://toyoparts.com.br/pub/media/catalog/category/34.jpg',
-  'alarme-e-seguranca': 'https://toyoparts.com.br/pub/media/catalog/category/35.jpg',
-  'engates-e-chicotes': 'https://toyoparts.com.br/pub/media/catalog/category/38.jpg',
-  'ferramentas-e-equipamentos': 'https://toyoparts.com.br/pub/media/catalog/category/39.jpg',
-  'frisos-e-apliques': 'https://toyoparts.com.br/pub/media/catalog/category/40.jpg',
-  'ponteiras': 'https://toyoparts.com.br/pub/media/catalog/category/41.jpg',
-  'rodas-e-calotas': 'https://toyoparts.com.br/pub/media/catalog/category/42.jpg',
-  'sensor-de-estacionamento': 'https://toyoparts.com.br/pub/media/catalog/category/43.jpg',
-  'suporte-racks-e-bagageiros': 'https://toyoparts.com.br/pub/media/catalog/category/44.jpg',
+  'acessorios-externos-cromados': 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/corolla-menu-acessorios-externos.jpg?v=1770635254',
+  'aerofolios-spoilers-e-antenas': 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/hilux-menu-acessorios-externos.jpg?v=1770635254',
+  'alarme-e-seguranca': 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/corolla-menu-acessorios-internos.jpg?v=1770635254',
+  'engates-e-chicotes': 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/sw4-menu-pickup-suv.jpg?v=1770635254',
+  'ferramentas-e-equipamentos': 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/hilux-menu-pecas.jpg?v=1770635254',
+  'frisos-e-apliques': 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/banner-departamento-corolla-cross-acessorio-externo.jpg?v=1770635254',
+  'ponteiras': 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/sw4-menu-pickup-suv.jpg?v=1770635254',
+  'rodas-e-calotas': 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/rav4-menu-acessorios-externos.jpg?v=1770635254',
+  'sensor-de-estacionamento': 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/corolla-menu-acessorios-internos.jpg?v=1770635254',
+  'suporte-racks-e-bagageiros': 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/hilux-menu-santo-antonio.jpg?v=1770635254',
   // Corolla
   'corolla:acessorios-externos': 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/corolla-menu-acessorios-externos.jpg?v=1770635254',
   'corolla:acessorios-internos': 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/corolla-menu-acessorios-internos.jpg?v=1770635254',
@@ -904,89 +933,6 @@ app.get('/make-server-1d6e33e0/categories/images', (c) => {
   return c.json({ images: CATEGORY_IMAGE_SOURCES });
 });
 
-// GET /categories/tree — returns cached Magento category tree
-// IMPORTANTE: Todos os componentes frontend (CategoryTreeFilter, CategoryTree,
-// MegaMenu, VehicleMenuBar) esperam `children_data` nos nós da árvore.
-app.get('/make-server-1d6e33e0/categories/tree', async (c) => {
-  try {
-    let tree = await kv.get(CATEGORY_TREE_CACHE_KEY).catch(() => null);
-
-    // Migration helper: se o cache antigo usa 'children' ao invés de 'children_data',
-    // renomeia recursivamente para o formato que o frontend espera.
-    const migrateChildren = (node: any): any => {
-      if (!node) return node;
-      const kids = node.children_data || node.children || [];
-      const migrated = { ...node };
-      delete migrated.children; // remove a key antiga
-      migrated.children_data = Array.isArray(kids) ? kids.map(migrateChildren) : [];
-      return migrated;
-    };
-
-    // Se cache existe mas usa key antiga 'children', migra e re-salva
-    if (tree && !tree.children_data && tree.children) {
-      console.log('[categories/tree] Migrando cache: children → children_data');
-      tree = migrateChildren(tree);
-      await kv.set(CATEGORY_TREE_CACHE_KEY, tree).catch(() => {});
-    }
-
-    if (!tree || (Array.isArray(tree) && tree.length === 0)) {
-      if (MAGENTO_TOKEN) {
-        try {
-          const res = await fetch(`${MAGENTO_BASE_URL}/rest/V1/categories`, {
-            headers: { 'Authorization': `Bearer ${MAGENTO_TOKEN}` },
-            signal: AbortSignal.timeout(15000),
-          });
-          if (res.ok) {
-            const root = await res.json();
-            const xform = (node: any): any => ({
-              id: node.id, name: node.name, level: node.level,
-              is_active: node.is_active !== false,
-              product_count: node.product_count || 0,
-              children_data: Array.isArray(node.children_data)
-                ? node.children_data.filter((ch: any) => ch.is_active !== false).map(xform)
-                : [],
-            });
-            tree = xform(root);
-            await kv.set(CATEGORY_TREE_CACHE_KEY, tree);
-          }
-        } catch (e: any) {
-          console.warn('[categories/tree] Magento fetch failed:', e.message);
-        }
-      }
-    }
-
-    // Filter by visibility (unless ?all=true)
-    const showHidden = c.req.query('all') === 'true';
-    if (!showHidden && tree) {
-      const visibility = await kv.get('meta:category_visibility') || {};
-      
-      const filterNode = (node: any): any | null => {
-        // Se marcado como false no mapa, oculta
-        if (visibility[String(node.id)] === false) return null;
-
-        // Processa filhos
-        const children = node.children_data || node.children || [];
-        const filteredChildren = children
-          .map((child: any) => filterNode(child))
-          .filter((child: any) => child !== null);
-        
-        return {
-          ...node,
-          children_data: filteredChildren,
-          children: filteredChildren // mantém compatibilidade
-        };
-      };
-
-      // Root nunca deve ser ocultado totalmente, mas aplicamos filtro
-      tree = filterNode(tree);
-    }
-
-    return c.json(tree || { id: 1, name: 'Root', children_data: [] });
-  } catch (e: any) {
-    return c.json({ error: e.message }, 500);
-  }
-});
-
 // GET /admin/categories/full-tree — flattened tree with facet counts from Meili
 app.get('/make-server-1d6e33e0/admin/categories/full-tree', async (c) => {
   try {
@@ -1206,6 +1152,11 @@ app.post('/make-server-1d6e33e0/sync/reset', async (c) => {
 
 async function loadAttributeMaps() {
   const tree = await kv.get(CATEGORY_TREE_CACHE_KEY).catch(() => null);
+  const meiliMeta = await kv.get('meili:sync:meta').catch(() => null) as {
+    modelos?: Record<string, string>;
+    anos?: Record<string, string>;
+    colors?: Record<string, string>;
+  } | null;
   const maps: Parameters<typeof meili.transformProduct>[1] = {};
 
   if (tree) {
@@ -1225,9 +1176,9 @@ async function loadAttributeMaps() {
     maps.categoryParents = parentMap;
   }
 
-  const modelosMap = await kv.get('meta:attr_modelos').catch(() => null);
-  const anosMap = await kv.get('meta:attr_anos').catch(() => null);
-  const colorsMap = await kv.get('meta:attr_colors').catch(() => null);
+  const modelosMap = await kv.get('meta:attr_modelos').catch(() => null) || meiliMeta?.modelos || null;
+  const anosMap = await kv.get('meta:attr_anos').catch(() => null) || meiliMeta?.anos || null;
+  const colorsMap = await kv.get('meta:attr_colors').catch(() => null) || meiliMeta?.colors || null;
   if (modelosMap && typeof modelosMap === 'object') maps.modelos = new Map(Object.entries(modelosMap));
   if (anosMap && typeof anosMap === 'object') maps.anos = new Map(Object.entries(anosMap));
   if (colorsMap && typeof colorsMap === 'object') maps.colors = new Map(Object.entries(colorsMap));
@@ -1455,13 +1406,14 @@ app.post('/make-server-1d6e33e0/meili/index/finalize', async (c) => {
     try {
       const testSearch = await meili.search('', {
         limit: 0,
-        facets: ['category_ids', 'category_names', 'modelos', 'in_stock'],
+        facets: ['category_ids', 'category_names', 'modelos', 'modelo_slugs', 'in_stock'],
       });
       smokeTest = {
         totalHits: testSearch.estimatedTotalHits || testSearch.totalHits || 0,
         facetsReturned: Object.keys(testSearch.facetDistribution || {}),
         categoryIdsFacetCount: Object.keys(testSearch.facetDistribution?.category_ids || {}).length,
         categoryNamesFacetCount: Object.keys(testSearch.facetDistribution?.category_names || {}).length,
+        modelSlugsFacetCount: Object.keys(testSearch.facetDistribution?.modelo_slugs || {}).length,
       };
     } catch (e: any) {
       smokeTest = { error: e.message };

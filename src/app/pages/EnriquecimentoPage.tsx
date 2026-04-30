@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useRef } from 'react';
+import React, { useState, useCallback, useEffect, useRef } from 'react';
 import {
   Search, Sparkles, ArrowRight, Loader2, AlertCircle, CheckCircle2,
   Copy, Check, BarChart3, ArrowUpDown, Zap, FileText,
@@ -13,6 +13,7 @@ import { Badge } from '../components/base/badge';
 import { Input } from '../components/base/input';
 import { Card } from '../components/base/card';
 import { copyToClipboard } from '../utils/clipboard';
+import { CategoryEngineSummaryCard } from '../components/admin/CategoryEngineConsole';
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0`;
 
@@ -52,6 +53,97 @@ interface BatchResult {
   products: BatchProduct[];
   total_analyzed: number; total_products: number; offset: number; has_more: boolean;
   stats: { total_matched: number; total_unmatched: number; avg_quality_pct: number; distribution: { excellent: number; good: number; fair: number; poor: number; }; };
+}
+
+type CategoryEnrichmentField = 'category' | 'weight' | 'compatibility' | 'modelYear' | 'name';
+
+interface CategoryEnrichmentCategory {
+  id: string;
+  name: string;
+  path: string;
+}
+
+interface CategoryEnrichmentRow {
+  sku: string;
+  status: 'ready' | 'already_correct' | 'needs_review' | 'no_product' | 'no_toyota_match' | 'error';
+  statusLabel: string;
+  productFound: boolean;
+  toyotaFound: boolean;
+  product: null | {
+    sku: string;
+    name: string;
+    weight: number | null;
+    status: number;
+    category_ids: string[];
+    category_names: { id: string; name: string; path: string }[];
+    modelo: string;
+    ano: string;
+    compatibilidade: string;
+    image_count: number;
+  };
+  toyota: {
+    found: boolean;
+    matchedPartno?: string | null;
+    cat?: string;
+    categoria?: string;
+    subcategoria?: string;
+    name?: string;
+    seo_title?: string;
+    description?: string;
+    weight?: number | null;
+    compatibilityLines?: string[];
+    compatibilityModels?: { codigo: string; descricao: string; modelo: string; anos: string[] }[];
+  };
+  suggestion: null | {
+    categoryId: string | null;
+    categoryName: string | null;
+    categoryPath: string | null;
+    confidence: number;
+    method: string;
+    reason: string;
+    alternatives: { categoryId: string; categoryName: string; categoryPath: string; confidence: number; reason: string }[];
+  };
+  fieldSuggestions: Record<string, { label: string; canApply: boolean; applyDefault: boolean; current: any; suggested: any }>;
+}
+
+interface CategoryEnrichmentResult {
+  rows: CategoryEnrichmentRow[];
+  categories: CategoryEnrichmentCategory[];
+  summary: {
+    total: number;
+    product_found: number;
+    toyota_found: number;
+    ready: number;
+    needs_review: number;
+    already_correct: number;
+    no_product: number;
+    no_toyota_match: number;
+  };
+  limits?: { max_skus: number; received: number; analyzed: number };
+}
+
+interface CategoryApplyResponse {
+  success: boolean;
+  applied_count: number;
+  skipped_count: number;
+  error_count: number;
+  applied: Array<{ sku: string; success: boolean; appliedFields?: string[] }>;
+  skipped: Array<{ sku: string; success?: boolean; error?: string }>;
+  errors: Array<{ sku: string; error?: string }>;
+}
+
+interface CategoryApplyRowState {
+  state: 'pending' | 'success' | 'error';
+  message: string;
+}
+
+interface CategoryApplyProgress {
+  key: string;
+  total: number;
+  completed: number;
+  success: number;
+  failed: number;
+  currentSku: string | null;
 }
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -100,6 +192,54 @@ function FieldIcon({ field }: { field: string }) {
 const FIELD_NAMES: Record<string, string> = { name: 'Nome / Título SEO', category: 'Categoria', weight: 'Peso', compatibility: 'Compatibilidade', description: 'Descrição' };
 
 // ─── Compare Result Panel ────────────────────────────────────────────────────
+
+const CATEGORY_FIELD_LABELS: Record<CategoryEnrichmentField, string> = {
+  category: 'Categoria',
+  weight: 'Peso',
+  compatibility: 'Compatibilidade Toyota',
+  modelYear: 'Modelo/Ano',
+  name: 'Nome',
+};
+
+function parseSkuTextarea(value: string) {
+  const raw = String(value || '').split(/[\r\n,;]+/g);
+  const normalized = raw
+    .map((sku) => sku.trim().toUpperCase().replace(/[\s-]/g, ''))
+    .filter(Boolean);
+  const unique = [...new Set(normalized)];
+  return {
+    rawCount: normalized.length,
+    skus: unique,
+    duplicateCount: Math.max(0, normalized.length - unique.length),
+  };
+}
+
+function categoryStatusColor(status: CategoryEnrichmentRow['status']) {
+  if (status === 'ready') return 'success';
+  if (status === 'already_correct') return 'brand';
+  if (status === 'needs_review') return 'warning';
+  if (status === 'no_product' || status === 'no_toyota_match' || status === 'error') return 'error';
+  return 'gray';
+}
+
+function formatValue(value: any) {
+  if (value == null || value === '') return 'Vazio';
+  if (Array.isArray(value)) return value.length ? value.join(', ') : 'Vazio';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+async function readApiErrorMessage(res: Response) {
+  const text = await res.text();
+  let msg = `HTTP ${res.status}`;
+  try {
+    const j = JSON.parse(text);
+    msg = j.error || msg;
+  } catch {
+    msg = text.slice(0, 200) || msg;
+  }
+  return msg;
+}
 
 function ComparePanel({ data, onEnrichAI }: { data: CompareResult; onEnrichAI: () => void }) {
   const pct = Math.round((data.quality.score / data.quality.maxScore) * 100);
@@ -663,8 +803,587 @@ function BatchPanel({ onSelectSku }: { onSelectSku: (sku: string) => void }) {
 
 // ─── Main Component ──────────────────────────────────────────────────────────
 
-export function EnriquecimentoPage() {
-  const [tab, setTab] = useState<'compare' | 'batch'>('compare');
+function CategoryEnrichmentPanel({ onSelectSku }: { onSelectSku: (sku: string) => void }) {
+  const [input, setInput] = useState('');
+  const [result, setResult] = useState<CategoryEnrichmentResult | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [loadingCandidates, setLoadingCandidates] = useState(false);
+  const [applyingKey, setApplyingKey] = useState<string | null>(null);
+  const [applyProgress, setApplyProgress] = useState<CategoryApplyProgress | null>(null);
+  const [rowApplyState, setRowApplyState] = useState<Record<string, CategoryApplyRowState>>({});
+  const [error, setError] = useState('');
+  const [expandedSku, setExpandedSku] = useState<string | null>(null);
+  const [selection, setSelection] = useState<Record<string, { fields: CategoryEnrichmentField[]; categoryId: string }>>({});
+  const [history, setHistory] = useState<any[]>([]);
+  const parsed = parseSkuTextarea(input);
+
+  const loadHistory = useCallback(async () => {
+    try {
+      const res = await adminFetch(`${API}/admin/catalogo/category-enrichment/history?limit=12`);
+      if (!res.ok) return;
+      const json = await res.json();
+      setHistory(Array.isArray(json.items) ? json.items : []);
+    } catch {
+      // Historico e auxiliar; nao deve quebrar a aba.
+    }
+  }, []);
+
+  useEffect(() => {
+    loadHistory();
+  }, [loadHistory]);
+
+  const initializeSelection = (rows: CategoryEnrichmentRow[]) => {
+    const next: Record<string, { fields: CategoryEnrichmentField[]; categoryId: string }> = {};
+    rows.forEach((row) => {
+      const fields = (Object.keys(CATEGORY_FIELD_LABELS) as CategoryEnrichmentField[])
+        .filter((field) => row.fieldSuggestions?.[field]?.applyDefault);
+      next[row.sku] = {
+        fields,
+        categoryId: row.suggestion?.categoryId || '',
+      };
+    });
+    setSelection(next);
+  };
+
+  const analyze = async (showToast = true) => {
+    const skus = parsed.skus;
+    if (!skus.length) {
+      toast.error('Cole ao menos um SKU');
+      return;
+    }
+    if (skus.length > 200) {
+      toast.error('Analise no maximo 200 SKUs por vez');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+    try {
+      const res = await adminFetch(`${API}/admin/catalogo/category-enrichment/preview`, {
+        method: 'POST',
+        body: JSON.stringify({ skus }),
+      });
+      if (!res.ok) {
+        throw new Error(await readApiErrorMessage(res));
+      }
+      const json = await res.json();
+      setResult(json);
+      initializeSelection(json.rows || []);
+      if (showToast) toast.success(`${json.summary?.total || skus.length} SKUs analisados`);
+    } catch (err: any) {
+      setError(err.message || 'Falha ao analisar SKUs');
+      toast.error('Falha na analise de categorias');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const toggleField = (sku: string, field: CategoryEnrichmentField) => {
+    setSelection((current) => {
+      const existing = current[sku] || { fields: [], categoryId: '' };
+      const fields = existing.fields.includes(field)
+        ? existing.fields.filter((item) => item !== field)
+        : [...existing.fields, field];
+      return { ...current, [sku]: { ...existing, fields } };
+    });
+  };
+
+  const setCategory = (sku: string, categoryId: string) => {
+    setSelection((current) => {
+      const existing = current[sku] || { fields: [], categoryId: '' };
+      const fields = existing.fields.includes('category') ? existing.fields : [...existing.fields, 'category' as CategoryEnrichmentField];
+      return { ...current, [sku]: { ...existing, fields, categoryId } };
+    });
+  };
+
+  const buildUpdate = (row: CategoryEnrichmentRow) => {
+    const selected = selection[row.sku];
+    if (!selected?.fields?.length) return null;
+    const fields = selected.fields.filter((field) => row.fieldSuggestions?.[field]?.canApply);
+    if (!fields.length) return null;
+    return {
+      sku: row.sku,
+      fields,
+      categoryId: selected.categoryId || row.suggestion?.categoryId || '',
+    };
+  };
+
+  const applyRows = async (rows: CategoryEnrichmentRow[], key: string) => {
+    const updates = rows.map(buildUpdate).filter(Boolean) as Array<{ sku: string; fields: CategoryEnrichmentField[]; categoryId: string }>;
+    if (!updates.length) {
+      toast.error('Selecione ao menos um campo aplicavel');
+      return;
+    }
+
+    setApplyingKey(key);
+    setApplyProgress({
+      key,
+      total: updates.length,
+      completed: 0,
+      success: 0,
+      failed: 0,
+      currentSku: updates[0]?.sku || null,
+    });
+    setRowApplyState((current) => {
+      const next = { ...current };
+      updates.forEach((update) => {
+        next[update.sku] = { state: 'pending', message: 'Atualizando...' };
+      });
+      return next;
+    });
+
+    let successCount = 0;
+    let failedCount = 0;
+    try {
+      for (const [index, update] of updates.entries()) {
+        setApplyProgress((current) => current && current.key === key ? {
+          ...current,
+          currentSku: update.sku,
+        } : current);
+
+        try {
+          const res = await adminFetch(`${API}/admin/catalogo/category-enrichment/apply`, {
+            method: 'POST',
+            body: JSON.stringify({ updates: [update] }),
+          });
+          if (!res.ok) {
+            throw new Error(await readApiErrorMessage(res));
+          }
+
+          const json = await res.json() as CategoryApplyResponse;
+          const appliedEntry = (json.applied || []).find((item) => item?.sku === update.sku && item?.success);
+          const skippedEntry = (json.skipped || []).find((item) => item?.sku === update.sku);
+          const errorEntry = (json.errors || []).find((item) => item?.sku === update.sku);
+
+          if (appliedEntry) {
+            successCount += 1;
+            setRowApplyState((current) => ({
+              ...current,
+              [update.sku]: {
+                state: 'success',
+                message: 'Atualizado com sucesso',
+              },
+            }));
+          } else {
+            failedCount += 1;
+            setRowApplyState((current) => ({
+              ...current,
+              [update.sku]: {
+                state: 'error',
+                message: skippedEntry?.error || errorEntry?.error || 'Nao foi possivel atualizar este SKU',
+              },
+            }));
+          }
+        } catch (err: any) {
+          failedCount += 1;
+          setRowApplyState((current) => ({
+            ...current,
+            [update.sku]: {
+              state: 'error',
+              message: err.message || 'Falha ao atualizar este SKU',
+            },
+          }));
+        }
+
+        setApplyProgress((current) => current && current.key === key ? {
+          ...current,
+          completed: index + 1,
+          success: successCount,
+          failed: failedCount,
+          currentSku: index + 1 < updates.length ? updates[index + 1].sku : null,
+        } : current);
+      }
+
+      if (successCount > 0) {
+        await analyze(false);
+      }
+      await loadHistory();
+
+      if (failedCount > 0) {
+        toast.warning(`Atualizado ${successCount} de ${updates.length}. ${failedCount} SKU(s) exigem revisao.`);
+      } else {
+        toast.success(`Atualizado ${successCount} de ${updates.length} com sucesso.`);
+      }
+    } catch (err: any) {
+      toast.error(err.message || 'Falha ao atualizar');
+    } finally {
+      setApplyingKey(null);
+      setApplyProgress((current) => current && current.key === key ? {
+        ...current,
+        currentSku: null,
+      } : current);
+    }
+  };
+
+  const loadCandidates = async () => {
+    setLoadingCandidates(true);
+    try {
+      const res = await adminFetch(`${API}/admin/catalogo/category-enrichment/candidates?limit=200`);
+      if (!res.ok) {
+        throw new Error(await readApiErrorMessage(res));
+      }
+      const json = await res.json() as {
+        skus?: string[];
+        total_candidates?: number;
+        selected_count?: number;
+      };
+      const skus = Array.isArray(json.skus) ? json.skus.filter(Boolean) : [];
+      if (!skus.length) {
+        toast.warning('Nenhum produto ativo, em estoque e sem categoria foi encontrado.');
+        return;
+      }
+      setInput(skus.join('\n'));
+      setResult(null);
+      setSelection({});
+      setExpandedSku(null);
+      setError('');
+      setApplyProgress(null);
+      setRowApplyState({});
+      toast.success(`${json.selected_count || skus.length} SKU(s) colocados no textarea.`);
+    } catch (err: any) {
+      toast.error(err.message || 'Falha ao buscar produtos sem categoria');
+    } finally {
+      setLoadingCandidates(false);
+    }
+  };
+
+  const readyRows = result?.rows?.filter((row) => row.status === 'ready') || [];
+  const selectedRows = result?.rows?.filter((row) => !!buildUpdate(row)) || [];
+
+  return (
+    <div className="space-y-5">
+      <Card.Root>
+        <div className="p-5 space-y-4">
+          <div className="flex items-start justify-between gap-4">
+            <div>
+              <h3 className="text-base font-semibold text-foreground flex items-center gap-2">
+                <Tag className="w-5 h-5 text-primary" /> Categorias Toyota
+              </h3>
+              <p className="text-sm text-muted-foreground mt-1">
+                Cole SKUs para comparar Toyoparts x Toyota e sugerir categorias existentes do site.
+              </p>
+            </div>
+            <Badge variant="pill-color" color="brand" size="sm">Max. 200 SKUs</Badge>
+          </div>
+
+          <textarea
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            placeholder={'2367039475\n2368230020\n8987120080'}
+            className="w-full min-h-[150px] rounded-xl border border-border bg-input-background p-3 text-sm font-mono outline-none transition-colors focus:border-primary focus:ring-4 focus:ring-primary/10"
+          />
+
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span><strong className="text-foreground">{parsed.skus.length}</strong> SKUs unicos</span>
+              {parsed.duplicateCount > 0 && <span><strong className="text-foreground">{parsed.duplicateCount}</strong> duplicados removidos</span>}
+              {result?.limits && <span><strong className="text-foreground">{result.limits.analyzed}</strong> analisados</span>}
+            </div>
+            <div className="flex items-center gap-2">
+              <Button color="tertiary" size="sm" onClick={() => { setInput(''); setResult(null); setSelection({}); setExpandedSku(null); setError(''); setApplyProgress(null); setRowApplyState({}); }}>Limpar</Button>
+              <Button color="secondary" size="sm" onClick={loadCandidates} isLoading={loadingCandidates} disabled={loading || loadingCandidates}>
+                Pegar 200 produtos
+              </Button>
+              <Button color="primary" size="sm" onClick={() => analyze()} isLoading={loading} iconLeading={<Search className="w-4 h-4" />}>
+                Analisar SKUs
+              </Button>
+            </div>
+          </div>
+        </div>
+      </Card.Root>
+
+      {error && (
+        <Card.Root>
+          <div className="p-4 flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 text-destructive shrink-0" />
+            <div>
+              <p className="text-sm font-semibold text-foreground">Erro localizado</p>
+              <p className="text-sm text-muted-foreground">{error}</p>
+            </div>
+          </div>
+        </Card.Root>
+      )}
+
+      {result?.summary && (
+        <div className="grid grid-cols-2 lg:grid-cols-6 gap-3">
+          {[
+            ['SKUs', result.summary.total, 'text-foreground'],
+            ['Toyoparts OK', result.summary.product_found, 'text-green-600'],
+            ['Toyota OK', result.summary.toyota_found, 'text-green-600'],
+            ['Prontos', result.summary.ready, 'text-primary'],
+            ['Revisar', result.summary.needs_review, 'text-yellow-600'],
+            ['Corretos', result.summary.already_correct, 'text-blue-600'],
+          ].map(([label, value, color]) => (
+            <Card.Root key={String(label)}>
+              <div className="p-4 text-center">
+                <p className={cn("text-2xl font-bold", String(color))}>{String(value)}</p>
+                <p className="text-xs text-muted-foreground mt-1">{String(label)}</p>
+              </div>
+            </Card.Root>
+          ))}
+        </div>
+      )}
+
+      {applyProgress && (
+        <Card.Root>
+          <div className="px-4 py-3 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <p className="text-sm font-semibold text-foreground">
+                Atualizado {applyProgress.success} de {applyProgress.total}
+              </p>
+              <p className="text-xs text-muted-foreground mt-1">
+                {applyProgress.currentSku
+                  ? `Processando SKU ${applyProgress.currentSku}`
+                  : applyProgress.failed > 0
+                    ? `${applyProgress.failed} SKU(s) com erro ou revisao necessaria`
+                    : 'Lote concluido com sucesso'}
+              </p>
+            </div>
+            <div className="sm:min-w-[240px]">
+              <div className="h-2 rounded-full bg-border overflow-hidden">
+                <div
+                  className="h-full rounded-full bg-primary transition-all duration-300"
+                  style={{ width: `${applyProgress.total > 0 ? (applyProgress.completed / applyProgress.total) * 100 : 0}%` }}
+                />
+              </div>
+              <div className="mt-1 flex items-center justify-between text-[10px] text-muted-foreground">
+                <span>{applyProgress.completed}/{applyProgress.total} processados</span>
+                <span>{applyProgress.failed} erro(s)</span>
+              </div>
+            </div>
+          </div>
+        </Card.Root>
+      )}
+
+      {result?.rows?.length ? (
+        <Card.Root>
+          <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-border bg-secondary/20">
+            <div>
+              <h4 className="text-sm font-semibold text-foreground">Comparacao em massa</h4>
+              <p className="text-xs text-muted-foreground">Revise as sugestoes antes de aplicar. Nome e modelo/ano ficam desmarcados por padrao.</p>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button color="secondary" size="sm" onClick={() => applyRows(selectedRows, 'selected')} isLoading={applyingKey === 'selected'} disabled={!selectedRows.length || (!!applyingKey && applyingKey !== 'selected')}>
+                {applyingKey === 'selected' && applyProgress?.key === 'selected'
+                  ? `Atualizado ${applyProgress.success} de ${applyProgress.total}`
+                  : 'Atualizar selecionados'}
+              </Button>
+              <Button color="primary" size="sm" onClick={() => applyRows(readyRows, 'ready')} isLoading={applyingKey === 'ready'} disabled={!readyRows.length || (!!applyingKey && applyingKey !== 'ready')}>
+                {applyingKey === 'ready' && applyProgress?.key === 'ready'
+                  ? `Atualizado ${applyProgress.success} de ${applyProgress.total}`
+                  : 'Atualizar tudo pronto'}
+              </Button>
+            </div>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead>
+                <tr className="border-b border-border bg-secondary/30">
+                  <th className="text-left py-2.5 px-3 font-medium text-muted-foreground">SKU</th>
+                  <th className="text-left py-2.5 px-3 font-medium text-muted-foreground min-w-[220px]">Produto atual</th>
+                  <th className="text-left py-2.5 px-3 font-medium text-muted-foreground min-w-[180px]">Categoria atual</th>
+                  <th className="text-left py-2.5 px-3 font-medium text-muted-foreground min-w-[180px]">Toyota</th>
+                  <th className="text-left py-2.5 px-3 font-medium text-muted-foreground min-w-[240px]">Categoria sugerida</th>
+                  <th className="text-center py-2.5 px-3 font-medium text-muted-foreground">Conf.</th>
+                  <th className="text-center py-2.5 px-3 font-medium text-muted-foreground">Status</th>
+                  <th className="text-right py-2.5 px-3 font-medium text-muted-foreground">Acoes</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {result.rows.map((row) => {
+                  const selected = selection[row.sku] || { fields: [], categoryId: row.suggestion?.categoryId || '' };
+                  const confidence = Math.round((row.suggestion?.confidence || 0) * 100);
+                  const applyState = rowApplyState[row.sku];
+                  const rowIsPending = applyState?.state === 'pending';
+                  return (
+                    <React.Fragment key={row.sku}>
+                      <tr className="hover:bg-secondary/20 transition-colors align-top">
+                        <td className="py-3 px-3 font-mono text-foreground whitespace-nowrap">
+                          <button type="button" onClick={() => onSelectSku(row.sku)} className="text-primary hover:underline">
+                            {row.sku}
+                          </button>
+                        </td>
+                        <td className="py-3 px-3">
+                          <p className="font-medium text-foreground line-clamp-2">{row.product?.name || 'Produto nao encontrado'}</p>
+                          {row.product && (
+                            <p className="text-[10px] text-muted-foreground mt-1">
+                              Peso: {row.product.weight ?? 'vazio'} kg | Imagens: {row.product.image_count}
+                            </p>
+                          )}
+                        </td>
+                        <td className="py-3 px-3">
+                          {row.product?.category_names?.length ? (
+                            <div className="space-y-1">
+                              {row.product.category_names.slice(0, 2).map((category) => (
+                                <p key={category.id} className="text-muted-foreground line-clamp-1">{category.path}</p>
+                              ))}
+                            </div>
+                          ) : <span className="text-destructive">Sem categoria</span>}
+                        </td>
+                        <td className="py-3 px-3">
+                          {row.toyotaFound ? (
+                            <div>
+                              <p className="font-medium text-foreground line-clamp-2">{row.toyota.categoria || row.toyota.name || 'Toyota'}</p>
+                              {row.toyota.subcategoria && <p className="text-muted-foreground line-clamp-1">{row.toyota.subcategoria}</p>}
+                              <p className="text-[10px] text-muted-foreground mt-1">Match: {row.toyota.matchedPartno || row.sku}</p>
+                            </div>
+                          ) : <span className="text-muted-foreground">Sem match</span>}
+                        </td>
+                        <td className="py-3 px-3">
+                          {row.suggestion?.categoryId ? (
+                            <select
+                              value={selected.categoryId || row.suggestion.categoryId || ''}
+                              onChange={(event) => setCategory(row.sku, event.target.value)}
+                              className="w-full rounded-lg border border-border bg-background px-2 py-1.5 text-xs outline-none focus:border-primary"
+                            >
+                              {row.suggestion.alternatives?.map((alt) => (
+                                <option key={`alt-${alt.categoryId}`} value={alt.categoryId}>
+                                  {alt.categoryPath} ({Math.round(alt.confidence * 100)}%)
+                                </option>
+                              ))}
+                              <option disabled>--- todas as categorias ---</option>
+                              {result.categories.map((category) => (
+                                <option key={`cat-${category.id}`} value={category.id}>{category.path}</option>
+                              ))}
+                            </select>
+                          ) : <span className="text-muted-foreground">Sem sugestao</span>}
+                          {row.suggestion?.reason && <p className="text-[10px] text-muted-foreground mt-1 line-clamp-2">{row.suggestion.reason}</p>}
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <span className={cn("font-bold", confidence >= 70 ? 'text-green-600' : confidence >= 45 ? 'text-yellow-600' : 'text-red-600')}>
+                            {confidence}%
+                          </span>
+                          {row.suggestion?.method && <p className="text-[10px] text-muted-foreground">{row.suggestion.method}</p>}
+                        </td>
+                        <td className="py-3 px-3 text-center">
+                          <Badge variant="pill-color" color={categoryStatusColor(row.status) as any} size="xs">
+                            {row.statusLabel}
+                          </Badge>
+                          {applyState?.state === 'success' && (
+                            <p className="mt-1 flex items-center justify-center gap-1 text-[10px] font-medium text-green-600">
+                              <CheckCircle2 className="w-3 h-3" />
+                              Atualizado com sucesso
+                            </p>
+                          )}
+                          {applyState?.state === 'pending' && (
+                            <p className="mt-1 flex items-center justify-center gap-1 text-[10px] text-primary">
+                              <Loader2 className="w-3 h-3 animate-spin" />
+                              Atualizando...
+                            </p>
+                          )}
+                          {applyState?.state === 'error' && (
+                            <p className="mt-1 text-[10px] text-destructive leading-tight">
+                              {applyState.message}
+                            </p>
+                          )}
+                        </td>
+                        <td className="py-3 px-3 text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            <Button color="tertiary" size="xs" onClick={() => setExpandedSku(expandedSku === row.sku ? null : row.sku)}>
+                              Detalhes
+                            </Button>
+                            <Button color="primary" size="xs" onClick={() => applyRows([row], row.sku)} isLoading={applyingKey === row.sku || rowIsPending} disabled={!buildUpdate(row) || (!!applyingKey && applyingKey !== row.sku)}>
+                              UPDATE
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
+                      {expandedSku === row.sku && (
+                        <tr className="bg-secondary/10">
+                          <td colSpan={8} className="p-4">
+                            <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+                              <div className="space-y-2">
+                                <h5 className="text-xs font-semibold text-foreground uppercase">Campos para update</h5>
+                                {(Object.keys(CATEGORY_FIELD_LABELS) as CategoryEnrichmentField[]).map((field) => {
+                                  const fieldSuggestion = row.fieldSuggestions?.[field];
+                                  const disabled = !fieldSuggestion?.canApply;
+                                  return (
+                                    <label key={field} className={cn("flex items-start gap-2 rounded-lg border border-border bg-card p-2", disabled && "opacity-50")}>
+                                      <input
+                                        type="checkbox"
+                                        checked={selected.fields.includes(field)}
+                                        disabled={disabled}
+                                        onChange={() => toggleField(row.sku, field)}
+                                        className="mt-0.5"
+                                      />
+                                      <span className="min-w-0">
+                                        <span className="block text-xs font-medium text-foreground">{CATEGORY_FIELD_LABELS[field]}</span>
+                                        <span className="block text-[10px] text-muted-foreground truncate">
+                                          {formatValue(fieldSuggestion?.current)} -&gt; {formatValue(fieldSuggestion?.suggested)}
+                                        </span>
+                                      </span>
+                                    </label>
+                                  );
+                                })}
+                              </div>
+                              <div className="space-y-2">
+                                <h5 className="text-xs font-semibold text-foreground uppercase">Toyota</h5>
+                                <div className="rounded-lg border border-border bg-card p-3 text-xs space-y-1.5">
+                                  <p><span className="text-muted-foreground">Nome:</span> {row.toyota.seo_title || row.toyota.name || 'N/A'}</p>
+                                  <p><span className="text-muted-foreground">Categoria:</span> {row.toyota.categoria || 'N/A'} {row.toyota.subcategoria ? `> ${row.toyota.subcategoria}` : ''}</p>
+                                  <p><span className="text-muted-foreground">Peso:</span> {row.toyota.weight ?? 'N/A'} kg</p>
+                                  <p><span className="text-muted-foreground">Compatibilidade:</span> {row.toyota.compatibilityLines?.length || 0} linhas</p>
+                                </div>
+                              </div>
+                              <div className="space-y-2">
+                                <h5 className="text-xs font-semibold text-foreground uppercase">Alternativas</h5>
+                                <div className="rounded-lg border border-border bg-card divide-y divide-border">
+                                  {(row.suggestion?.alternatives || []).slice(0, 5).map((alt) => (
+                                    <button
+                                      key={alt.categoryId}
+                                      type="button"
+                                      onClick={() => setCategory(row.sku, alt.categoryId)}
+                                      className={cn("w-full text-left px-3 py-2 text-xs hover:bg-secondary/40", selected.categoryId === alt.categoryId && "bg-primary/5 text-primary")}
+                                    >
+                                      <span className="block font-medium">{alt.categoryPath}</span>
+                                      <span className="text-[10px] text-muted-foreground">{Math.round(alt.confidence * 100)}% | {alt.reason}</span>
+                                    </button>
+                                  ))}
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </Card.Root>
+      ) : null}
+
+      <Card.Root>
+        <div className="p-4">
+          <div className="flex items-center justify-between gap-3 mb-3">
+            <h4 className="text-sm font-semibold text-foreground">Historico de updates</h4>
+            <Button color="tertiary" size="xs" onClick={loadHistory} iconLeading={<RefreshCw className="w-3.5 h-3.5" />}>Atualizar</Button>
+          </div>
+          {history.length ? (
+            <div className="divide-y divide-border rounded-lg border border-border overflow-hidden">
+              {history.slice(0, 8).map((item) => (
+                <div key={item.id || `${item.sku}-${item.applied_at}`} className="px-3 py-2 text-xs flex flex-wrap items-center justify-between gap-2">
+                  <div>
+                    <span className="font-mono font-semibold text-foreground">{item.sku}</span>
+                    <span className="text-muted-foreground ml-2">{item.applied_fields?.join(', ') || 'update'}</span>
+                  </div>
+                  <span className="text-muted-foreground">{item.applied_at ? new Date(item.applied_at).toLocaleString('pt-BR') : ''}</span>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-muted-foreground">Nenhum update de categoria registrado ainda.</p>
+          )}
+        </div>
+      </Card.Root>
+    </div>
+  );
+}
+
+export function EnriquecimentoPage({ onOpenCategoryEngine }: { onOpenCategoryEngine?: () => void } = {}) {
+  const [tab, setTab] = useState<'compare' | 'batch' | 'category'>('compare');
   const [searchInput, setSearchInput] = useState('');
   const [compareLoading, setCompareLoading] = useState(false);
   const [compareResult, setCompareResult] = useState<CompareResult | null>(null);
@@ -710,6 +1429,7 @@ export function EnriquecimentoPage() {
           {[
             { id: 'compare' as const, label: 'Comparar SKU', icon: ArrowUpDown },
             { id: 'batch' as const, label: 'Análise em Lote', icon: BarChart3 },
+            { id: 'category' as const, label: 'Categorias Toyota', icon: Tag },
           ].map(t => (
             <button key={t.id} type="button" onClick={() => setTab(t.id)}
               className={cn(
@@ -789,6 +1509,13 @@ export function EnriquecimentoPage() {
           {/* Tab: Batch */}
           {tab === 'batch' && (
             <BatchPanel onSelectSku={(sku) => { setTab('compare'); handleCompare(sku); }} />
+          )}
+
+          {tab === 'category' && (
+            <div className="space-y-5">
+              <CategoryEngineSummaryCard onOpenConsole={onOpenCategoryEngine} />
+              <CategoryEnrichmentPanel onSelectSku={(sku) => { setTab('compare'); handleCompare(sku); }} />
+            </div>
           )}
         </div>
       </main>

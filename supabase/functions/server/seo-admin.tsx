@@ -8,6 +8,7 @@
 import { Hono } from 'npm:hono';
 import * as kv from './kv_store.tsx';
 import * as meili from './meilisearch.tsx';
+import { buildCanonicalVehicleFacetTargets } from '../../../shared/canonical-vehicle-models.ts';
 
 var OPENAI_API_KEY = (Deno.env.get('OPENAI_API_KEY') || '').trim();
 var PRODUCT_PREFIX = 'product:';
@@ -17,17 +18,6 @@ var SNAPSHOT_PRODUCT_PREFIX = 'snapshot:product:';
 var SNAPSHOT_CATEGORY_PREFIX = 'snapshot:category:';
 var SITEMAP_STATUS_KEY = 'meta:sitemap_status';
 var CATEGORY_TREE_CACHE_KEY = 'meta:category_tree';
-var VEHICLE_SNAPSHOT_TARGETS = [
-  { slug: 'hilux', name: 'Hilux', aliases: ['Hilux', '35'] },
-  { slug: 'corolla', name: 'Corolla', aliases: ['Corolla', '38'] },
-  { slug: 'corolla-cross', name: 'Corolla Cross', aliases: ['Corolla Cross', '206'] },
-  { slug: 'yaris', name: 'Yaris', aliases: ['Yaris', '205'] },
-  { slug: 'sw4', name: 'SW4', aliases: ['SW4', '204'] },
-  { slug: 'etios', name: 'Etios', aliases: ['Etios', '37', '207'] },
-  { slug: 'rav4', name: 'RAV4', aliases: ['RAV4', 'Rav4', '36'] },
-  { slug: 'prius', name: 'Prius', aliases: ['Prius', '40'] },
-];
-
 export var seoAdmin = new Hono();
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -44,15 +34,6 @@ function slugify(text: any): string {
     .replace(/[^\w-]+/g, '')
     .replace(/--+/g, '-')
     || 'sem-nome';
-}
-
-function normalizeVehicleFacetValue(value: string | null | undefined): string {
-  return String(value || '')
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/[^a-zA-Z0-9]+/g, ' ')
-    .trim()
-    .toLowerCase();
 }
 
 async function callOpenAI(messages: any[], temperature: number) {
@@ -124,41 +105,15 @@ function getTopCategoryNodes(tree: any): any[] {
 
 function resolveSnapshotVehicleTargets(
   modelFacetCounts: Record<string, number>,
-  modelMeta?: Record<string, string>,
 ) {
-  var facetEntries = Object.entries(modelFacetCounts).map(function(entry: any) {
+  return buildCanonicalVehicleFacetTargets(modelFacetCounts).map(function(target: any) {
     return {
-      value: entry[0],
-      normalized: normalizeVehicleFacetValue(entry[0]),
-      count: Number(entry[1] || 0),
+      slug: target.slug,
+      name: target.displayName,
+      facetValue: target.slug,
+      productCount: target.productCount,
     };
   });
-  var metaEntries = Object.entries(modelMeta || {});
-
-  return VEHICLE_SNAPSHOT_TARGETS
-    .map(function(target: any) {
-      var dynamicAliases = metaEntries.flatMap(function(entry: any) {
-        var id = entry[0];
-        var name = entry[1];
-        if (normalizeVehicleFacetValue(name) !== normalizeVehicleFacetValue(target.name)) return [];
-        return [id, String(name)];
-      });
-      var candidateAliases = Array.from(new Set([].concat(target.aliases, dynamicAliases as any)));
-      var matchingFacet = facetEntries.find(function(entry: any) {
-        return candidateAliases.some(function(alias: string) {
-          return normalizeVehicleFacetValue(alias) === entry.normalized;
-        });
-      });
-      if (!matchingFacet) return null;
-
-      return {
-        slug: target.slug,
-        name: target.name,
-        facetValue: matchingFacet.value,
-        productCount: matchingFacet.count,
-      };
-    })
-    .filter(Boolean);
 }
 
 async function computeSeoStatsSnapshot() {
@@ -471,9 +426,9 @@ seoAdmin.get('/health', async (c) => {
     var modelFacetCounts: Record<string, number> = {};
     if (meili.isConfigured()) {
       try {
-        var facetResult = await meili.search('', { limit: 0, filter: ['in_stock = true'], facets: ['category_ids', 'modelos'] });
+        var facetResult = await meili.search('', { limit: 0, filter: ['in_stock = true'], facets: ['category_ids', 'modelo_slugs'] });
         facetCounts = facetResult.facetDistribution?.category_ids || {};
-        modelFacetCounts = facetResult.facetDistribution?.modelos || {};
+        modelFacetCounts = facetResult.facetDistribution?.modelo_slugs || {};
       } catch (facetErr: any) {
         console.warn('[seo-admin/health] category facet fetch failed:', facetErr.message);
       }
@@ -492,7 +447,7 @@ seoAdmin.get('/health', async (c) => {
 
     var eligibleVehicleRoutes = 0;
     var eligibleVehicleCategoryRoutes = 0;
-    var snapshotVehicleTargets = resolveSnapshotVehicleTargets(modelFacetCounts, meiliMeta?.modelos || {}) as any[];
+    var snapshotVehicleTargets = resolveSnapshotVehicleTargets(modelFacetCounts) as any[];
     for (var vehicleIdx = 0; vehicleIdx < snapshotVehicleTargets.length; vehicleIdx++) {
       var vehicle = snapshotVehicleTargets[vehicleIdx];
       if (!vehicle || vehicle.productCount <= 0) continue;
@@ -501,7 +456,7 @@ seoAdmin.get('/health', async (c) => {
       try {
         var vehicleFacetResult = await meili.search('', {
           limit: 0,
-          filter: ['in_stock = true', 'modelos = "' + vehicle.facetValue + '"'],
+          filter: ['in_stock = true', 'modelo_slugs = "' + vehicle.facetValue + '"'],
           facets: ['category_names'],
         });
         var vehicleCategoryFacetCounts = vehicleFacetResult.facetDistribution?.category_names || {};

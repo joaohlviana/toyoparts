@@ -3,6 +3,62 @@
   "framework": "vite",
   "routes": [
     {
+      "src": "/sitemap_index.xml",
+      "dest": "https://hkxjnykrnhjtkkabgece.supabase.co/storage/v1/object/public/make-1d6e33e0-sitemaps/sitemap_index.xml"
+    },
+    {
+      "src": "/(sitemap_(?:products|categories|filters|out_of_stock)(?:_[0-9]+)?\\.xml)",
+      "dest": "https://hkxjnykrnhjtkkabgece.supabase.co/storage/v1/object/public/make-1d6e33e0-sitemaps/$1"
+    },
+    {
+      "src": "/sitemap_static.xml",
+      "dest": "https://hkxjnykrnhjtkkabgece.supabase.co/storage/v1/object/public/make-1d6e33e0-sitemaps/sitemap_static.xml"
+    },
+    {
+      "src": "/media/model-menu-icons/(.*)",
+      "dest": "https://hkxjnykrnhjtkkabgece.supabase.co/storage/v1/object/public/make-1d6e33e0-model-images/$1"
+    },
+    {
+      "src": "/media/vehicle-menu/(.*)",
+      "dest": "https://hkxjnykrnhjtkkabgece.supabase.co/storage/v1/object/public/make-1d6e33e0-model-images/$1"
+    },
+    {
+      "src": "/media/home-banners/(.*)",
+      "dest": "https://hkxjnykrnhjtkkabgece.supabase.co/functions/v1/home-config-1d6e33e0/banners/asset/$1"
+    },
+    {
+      "src": "/media/product-images/(.*)",
+      "dest": "https://hkxjnykrnhjtkkabgece.supabase.co/functions/v1/make-server-1d6e33e0/images/product-assets/synced/$1"
+    },
+    {
+      "src": "/media/product-uploads/(.*)",
+      "dest": "https://hkxjnykrnhjtkkabgece.supabase.co/functions/v1/make-server-1d6e33e0/images/product-assets/uploads/$1"
+    },
+    {
+      "src": "/catalog/navigation",
+      "dest": "https://hkxjnykrnhjtkkabgece.supabase.co/functions/v1/make-server-1d6e33e0/catalog/navigation"
+    },
+    {
+      "src": "/catalog/seo",
+      "dest": "https://hkxjnykrnhjtkkabgece.supabase.co/functions/v1/make-server-1d6e33e0/catalog/seo"
+    },
+    {
+      "src": "/$",
+      "dest": "/api/catalog-shell"
+    },
+    {
+      "src": "/(busca|pecas(?:/.*)?|produto(?:/.*)?|sobre|fale-conosco|loja-fisica|privacidade|politica-de-privacidade|entrega|politica-de-entrega|troca-devolucoes|trocas-e-devolucoes|rastreamento-correios|rastreamento)",
+      "dest": "/api/catalog-shell?path=$1"
+    },
+    {
+      "src": "/pub/media/icons/whatsapp\\.png",
+      "dest": "/brand/whatsapp-icon.svg"
+    },
+    {
+      "src": "/pub/media/icons/whatsapp\\.svg",
+      "dest": "/brand/whatsapp-icon.svg"
+    },
+    {
       "src": "/adesivo-4x4-turbo-cod-75998044ti",
       "status": 301,
       "headers": {
@@ -836,11 +892,21 @@
       }
     },
     {
+      "src": "/pub/media/(.*)",
+      "dest": "http://72.60.255.223/pub/media/$1"
+    },
+    {
       "handle": "filesystem"
     },
     {
-      "src": "/(.*)",
+      "src": "/(admin(?:/.*)?|checkout|acesso|auth(?:/.*)?|minha-conta(?:/.*)?|pedido(?:/.*)?)",
       "dest": "/index.html"
+    },
+    {
+      "src": "/(.*)",
+      "dest": "/api/catalog-shell?path=$1"
     }
   ]
 }
+
+

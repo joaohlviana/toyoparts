@@ -2,6 +2,10 @@ import { Hono } from 'npm:hono';
 import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
 import * as kv from './kv_store.tsx';
 import { appendOrderEvent } from './audit.tsx';
+import { ensureOrderCustomerIndexes } from './order-indexes.tsx';
+import { extractAttributionSnapshot } from './marketing.tsx';
+import { syncStoreOrderSummarySafe } from './order-read-model.tsx';
+import { recordPurchasePaidFromOrder } from './tracking.tsx';
 
 const ASAAS_API_KEY = Deno.env.get('ASAAS_API_KEY') || '';
 
@@ -109,6 +113,10 @@ asaas.post('/create-asaas-checkout', async (c) => {
   try {
     const body = await c.req.json();
     const { customer, orderId, items, totals, address, shipping } = body;
+    const attributionSnapshot = {
+      ...extractAttributionSnapshot(body?.attribution || {}),
+      user_agent: String(body?.attribution?.user_agent || '').trim() || null,
+    };
 
     console.log(`[Asaas] Creating checkout for order ${orderId}`);
 
@@ -163,11 +171,14 @@ asaas.post('/create-asaas-checkout', async (c) => {
       items,
       totals,
       shipping: shipping || null,
+      attribution_snapshot: attributionSnapshot,
       createdAt: now,
       created_at: now,
     };
     
     await kv.set(`order:${orderId}`, orderData);
+    await ensureOrderCustomerIndexes(orderId, orderData);
+    await syncStoreOrderSummarySafe(orderData, 'asaas_checkout_create');
 
     // Order event: created
     await appendOrderEvent(orderId, 'order.created', {
@@ -237,14 +248,20 @@ asaas.post('/webhook', async (c) => {
       }
 
       const prevStatus = existing.payment_status || existing.status;
+      const updatedOrder = {
+        ...existing,
+        payment_status:     newPaymentStatus,
+        status:             newPaymentStatus,   // legacy compatibility
+        updatedAt:          new Date().toISOString(),
+        last_payment_event: event,
+        ...(newPaymentStatus === 'paid' ? { paid_at: new Date().toISOString() } : {}),
+      };
+
+      await ensureOrderCustomerIndexes(orderId, updatedOrder);
+
       if (newPaymentStatus !== prevStatus) {
-        await kv.set(orderKey, {
-          ...existing,
-          payment_status:     newPaymentStatus,
-          status:             newPaymentStatus,   // legacy compatibility
-          updatedAt:          new Date().toISOString(),
-          last_payment_event: event,
-        });
+        await kv.set(orderKey, updatedOrder);
+        await syncStoreOrderSummarySafe(updatedOrder, 'asaas_webhook_status_changed');
         console.log(`[Asaas Webhook] Order ${orderId} payment_status → ${newPaymentStatus}`);
 
         // Order event: payment status changed
@@ -255,7 +272,22 @@ asaas.post('/webhook', async (c) => {
           gateway_event:  event,
           payment_id:     payment?.id,
         }, 'webhook');
+
+        if (newPaymentStatus === 'paid') {
+          const trackingResult = await recordPurchasePaidFromOrder({
+            order: updatedOrder,
+            transactionId: String(payment?.id || orderId),
+            gatewayEvent: event,
+            paidAt: updatedOrder.paid_at || updatedOrder.updatedAt,
+          });
+
+          if (!trackingResult.ok) {
+            console.warn(`[Asaas Webhook] purchase_paid relay failed for ${orderId}:`, trackingResult.body);
+          }
+        }
       } else {
+        await kv.set(orderKey, updatedOrder);
+        await syncStoreOrderSummarySafe(updatedOrder, 'asaas_webhook_received');
         await appendOrderEvent(orderId, 'payment.webhook_received', {
           event,
           payment_status_unchanged: newPaymentStatus,

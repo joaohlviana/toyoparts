@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { Link } from 'react-router';
-import { Package, Truck, ShoppingCart, Phone } from 'lucide-react';
+import { ShoppingCart, Phone } from 'lucide-react';
 import { Card, CardContent } from './ui/card';
 import { Button } from './ui/button';
 import { Badge } from './ui/badge';
@@ -32,6 +32,8 @@ export interface ProductCardHit {
   image_url?: string;
   url_key?: string;
   in_stock?: boolean;
+  skuMatchType?: 'exact' | 'similar';
+  searchedSku?: string;
   _formatted?: { name?: string; sku?: string; description?: string };
   [key: string]: any;
 }
@@ -58,7 +60,9 @@ export function ProductCard({ hit, className }: ProductCardProps) {
   const discount = sp ? calcDiscount(hit.price, sp) : 0;
   const slug = hit.url_key || slugify(hit.name || '');
   const installment = activePrice > 0 ? activePrice / 10 : 0;
-  const displayName = hit._formatted?.name || hit.seo_title || hit.name;
+  const displayName = hit.skuMatchType === 'similar'
+    ? (hit.seo_title || hit.name)
+    : (hit._formatted?.name || hit.seo_title || hit.name);
 
   const handleBuy = (e: React.MouseEvent) => {
     e.preventDefault();
@@ -122,11 +126,30 @@ export function ProductCard({ hit, className }: ProductCardProps) {
             {hit.sku}
           </span>
 
+          {hit.skuMatchType === 'similar' && (
+            <div className="mb-2.5 space-y-1">
+              <Badge variant="outline" className="h-5 rounded-md border-amber-200 bg-amber-50 px-1.5 text-[10px] font-bold text-amber-700">
+                SKU similar
+              </Badge>
+              {hit.searchedSku ? (
+                <p className="text-[10px] text-amber-700/90">
+                  Buscado: <span className="font-mono font-semibold">{hit.searchedSku}</span>
+                </p>
+              ) : null}
+            </div>
+          )}
+
           {/* Name */}
-          <p
-            className="text-xs font-medium text-muted-foreground leading-snug line-clamp-2 mb-2.5 min-h-[32px] group-hover:text-foreground transition-colors"
-            dangerouslySetInnerHTML={{ __html: displayName }}
-          />
+          {hit.skuMatchType === 'similar' ? (
+            <p className="text-xs font-medium text-muted-foreground leading-snug line-clamp-2 mb-2.5 min-h-[32px] group-hover:text-foreground transition-colors">
+              {displayName}
+            </p>
+          ) : (
+            <p
+              className="text-xs font-medium text-muted-foreground leading-snug line-clamp-2 mb-2.5 min-h-[32px] group-hover:text-foreground transition-colors"
+              dangerouslySetInnerHTML={{ __html: displayName }}
+            />
+          )}
 
           {/* Price area */}
           <div className="mt-auto space-y-0.5">
@@ -143,17 +166,6 @@ export function ProductCard({ hit, className }: ProductCardProps) {
                 ou 10x de{' '}
                 <span className="font-medium">{formatBRL(installment)}</span>
               </p>
-            )}
-            {activePrice >= 299 && (
-              <div className="flex items-center gap-1 pt-0.5">
-                <Badge
-                  variant="secondary"
-                  className="bg-green-50 text-green-700 border-green-200 text-[9px] px-1.5 py-0 font-semibold gap-0.5"
-                >
-                  <Truck className="w-2.5 h-2.5" />
-                  Frete Grátis
-                </Badge>
-              </div>
             )}
           </div>
 

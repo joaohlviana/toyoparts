@@ -1,13 +1,14 @@
 import React from 'react';
 import { Clock, MapPin, Phone, CarFront, ArrowRight, PackageCheck } from 'lucide-react';
 import { SEOHead } from '../components/seo/SEOHead';
+import { buildToyopartsWhatsAppUrl } from '../lib/whatsapp';
 
 export function StorePage() {
   return (
     <>
       <SEOHead
-        title="Loja Fisica (Toyopar) - Toyoparts"
-        description="Conheca a loja fisica Toyopar em Londrina e veja endereco, horario, retirada e canais de atendimento."
+        title="Loja Física (Toyopar) - Toyoparts"
+        description="Conheça a loja física Toyopar em Londrina e veja endereço, horário, retirada e canais de atendimento."
         canonical="https://www.toyoparts.com.br/loja-fisica"
       />
 
@@ -18,10 +19,10 @@ export function StorePage() {
               Toyopar Londrina
             </p>
             <h1 className="text-3xl md:text-5xl font-black leading-tight max-w-3xl">
-              Loja Fisica (Toyopar)
+              Loja Física (Toyopar)
             </h1>
             <p className="text-white/70 text-[15px] md:text-[17px] max-w-2xl mt-4 leading-relaxed">
-              Retire pedidos, fale com nossa equipe e conte com apoio especializado para encontrar a peca certa para o seu Toyota.
+              Retire pedidos, fale com nossa equipe e conte com apoio especializado para encontrar a peça certa para o seu Toyota.
             </p>
           </div>
         </section>
@@ -29,28 +30,28 @@ export function StorePage() {
         <section className="py-12 md:py-16">
           <div className="max-w-6xl mx-auto px-6 lg:px-8 grid lg:grid-cols-[1fr_0.9fr] gap-10">
             <div className="bg-card border border-border rounded-3xl p-6 md:p-8">
-              <h2 className="text-2xl font-black text-foreground mb-6">Informacoes da unidade</h2>
+              <h2 className="text-2xl font-black text-foreground mb-6">Informações da unidade</h2>
               <div className="space-y-4">
                 {[
                   {
                     icon: MapPin,
-                    label: 'Endereco',
+                    label: 'Endereço',
                     value: 'Av. Tiradentes, 2333, Londrina - PR, CEP 86071-000',
                   },
                   {
                     icon: Phone,
                     label: 'Telefone',
-                    value: '(43) 3294-1144 | Ramal: 1126 | 1196',
+                    value: '(43) 3294-1144',
                   },
                   {
                     icon: Clock,
-                    label: 'Horario',
-                    value: 'Seg a Sex: 8h as 18h | Sab: 8h as 12h.',
+                    label: 'Horário',
+                    value: 'Seg a Sex: 8h às 18h | Sáb: 8h às 12h.',
                   },
                   {
                     icon: PackageCheck,
                     label: 'Retirada',
-                    value: 'Pedidos confirmados podem ser retirados na unidade apos orientacao da equipe.',
+                    value: 'Pedidos confirmados podem ser retirados na unidade após orientação da equipe.',
                   },
                 ].map((item) => (
                   <div key={item.label} className="flex items-start gap-4 rounded-2xl border border-border p-4">
@@ -75,7 +76,7 @@ export function StorePage() {
                   Abrir no mapa <ArrowRight className="w-4 h-4" />
                 </a>
                 <a
-                  href="https://wa.me/554332941144"
+                  href={buildToyopartsWhatsAppUrl('Quero falar com a equipe da loja física.')}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="inline-flex items-center gap-2 rounded-2xl border border-border px-5 py-3 text-sm font-semibold text-foreground transition-colors hover:bg-secondary"
@@ -94,8 +95,8 @@ export function StorePage() {
                   <div>
                     <h2 className="text-xl font-black text-foreground">Atendimento especializado Toyota</h2>
                     <p className="text-sm text-muted-foreground mt-3 leading-relaxed">
-                      Nossa equipe atende clientes de todo o Brasil e tambem oferece apoio presencial
-                      para retirada e orientacao comercial em Londrina.
+                      Nossa equipe atende clientes de todo o Brasil e também oferece apoio presencial
+                      para retirada e orientação comercial em Londrina.
                     </p>
                   </div>
                 </div>

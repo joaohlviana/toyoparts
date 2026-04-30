@@ -19,6 +19,7 @@ import { MagentoMigrationPage } from './admin/MagentoMigrationPage';
 import { NewsletterAdminPage } from './admin/NewsletterAdminPage';
 import { AdminShell } from '../components/layout/AdminShell';
 import { SearchIntelligenceDashboard } from '../components/admin/analytics/SearchIntelligenceDashboard';
+import { AdminAnalyticsDashboard } from '../components/admin/analytics/AdminAnalyticsDashboard';
 import { ResendAdmin } from './admin/ResendAdmin';
 import { CarriersPage } from './admin/CarriersPage';
 import { AuditLogPage } from './admin/AuditLogPage';
@@ -32,11 +33,19 @@ import { SnapshotAdminPage } from './SnapshotAdminPage';
 import { LegacyRedirectsPage } from './admin/LegacyRedirectsPage';
 import { FreeShippingAdminPage } from './admin/FreeShippingAdminPage';
 import { ReadyStockAdminPage } from './admin/ReadyStockAdminPage';
+import { DiscountsAdminPage } from './admin/DiscountsAdminPage';
+import { HomeAdminPage } from './admin/HomeAdminPage';
+import { GoogleAdsAdminPage } from './admin/GoogleAdsAdminPage';
+import { GoogleMerchantAdminPage } from './admin/GoogleMerchantAdminPage';
+import { WhatsAppLeadsAdminPage } from './admin/WhatsAppLeadsAdminPage';
+import { ContactLeadsAdminPage } from './admin/ContactLeadsAdminPage';
+import { CategoryEngineAdminPage } from './admin/CategoryEngineAdminPage';
 
 // ─── Props ───────────────────────────────────────────────────────────────────
 
 type SectionId = 
   | 'dashboard'
+  | 'analytics'
   | 'stored_orders'
   | 'stored_customers'
   | 'orders' 
@@ -46,9 +55,13 @@ type SectionId =
   | 'products' 
   | 'rede_pecas' 
   | 'price_update'
+  | 'discounts'
+  | 'homepage'
   | 'enriquecimento' 
+  | 'category_engine'
   | 'magento_migration'
   | 'newsletter'
+  | 'contact_leads'
   | 'search_ops' 
   | 'search_ops_dashboard'
   | 'search_ops_lab'
@@ -70,6 +83,9 @@ type SectionId =
   | 'coupons'
   | 'growth_plan'
   | 'search_intelligence'
+  | 'google_ads'
+  | 'google_merchant'
+  | 'whatsapp_leads'
   | 'resend'
   | 'audit_log'
   | 'integration_health'
@@ -112,6 +128,12 @@ export function AdminDashboard({ initialSection = 'dashboard', onBackToStore, on
         {activeSection === 'dashboard' && (
             <div className="h-full min-h-0 overflow-y-auto">
                 <DashboardPage />
+            </div>
+        )}
+
+        {activeSection === 'analytics' && (
+            <div className="h-full min-h-0 overflow-y-auto">
+                <AdminAnalyticsDashboard />
             </div>
         )}
 
@@ -172,9 +194,27 @@ export function AdminDashboard({ initialSection = 'dashboard', onBackToStore, on
             </div>
         )}
 
+        {activeSection === 'discounts' && (
+            <div className="h-full min-h-0 overflow-y-auto">
+                <DiscountsAdminPage />
+            </div>
+        )}
+
+        {activeSection === 'homepage' && (
+            <div className="h-full min-h-0 overflow-y-auto">
+                <HomeAdminPage />
+            </div>
+        )}
+
         {activeSection === 'enriquecimento' && (
             <div className="h-full min-h-0">
-                <EnriquecimentoPage />
+                <EnriquecimentoPage onOpenCategoryEngine={() => handleNavigate('category_engine')} />
+            </div>
+        )}
+
+        {activeSection === 'category_engine' && (
+            <div className="h-full min-h-0 overflow-y-auto">
+                <CategoryEngineAdminPage />
             </div>
         )}
 
@@ -187,6 +227,12 @@ export function AdminDashboard({ initialSection = 'dashboard', onBackToStore, on
         {activeSection === 'newsletter' && (
             <div className="h-full min-h-0">
                 <NewsletterAdminPage />
+            </div>
+        )}
+
+        {activeSection === 'contact_leads' && (
+            <div className="h-full min-h-0 overflow-y-auto">
+                <ContactLeadsAdminPage />
             </div>
         )}
 
@@ -295,6 +341,24 @@ export function AdminDashboard({ initialSection = 'dashboard', onBackToStore, on
         {activeSection === 'search_intelligence' && (
             <div className="h-full min-h-0">
                 <SearchIntelligenceDashboard />
+            </div>
+        )}
+
+        {activeSection === 'google_ads' && (
+            <div className="h-full min-h-0 overflow-y-auto">
+                <GoogleAdsAdminPage />
+            </div>
+        )}
+
+        {activeSection === 'google_merchant' && (
+            <div className="h-full min-h-0 overflow-y-auto">
+                <GoogleMerchantAdminPage />
+            </div>
+        )}
+
+        {activeSection === 'whatsapp_leads' && (
+            <div className="h-full min-h-0 overflow-y-auto">
+                <WhatsAppLeadsAdminPage />
             </div>
         )}
 

@@ -15,7 +15,7 @@ import { OrderDetailDrawer } from '../components/admin/OrderDetailDrawer';
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0`;
 const H = { Authorization: `Bearer ${publicAnonKey}` };
 
-type PaymentStatus     = 'waiting_payment' | 'paid' | 'overdue' | 'canceled' | 'refunded';
+type PaymentStatus = 'waiting_payment' | 'paid' | 'overdue' | 'canceled' | 'refunded';
 type FulfillmentStatus = 'pending' | 'in_preparation' | 'shipped' | 'delivered' | 'canceled';
 
 interface Order {
@@ -31,15 +31,26 @@ interface Order {
   vindi_url?: string;
   stripe_checkout_url?: string;
   tracking_code?: string;
+  item_skus?: string[];
+  items?: Array<{ sku?: string; id?: string }>;
+}
+
+function getOrderSkuList(order: Order): string[] {
+  const fromSummary = Array.isArray(order.item_skus) ? order.item_skus : [];
+  const fromItems = Array.isArray(order.items)
+    ? order.items.map((item) => String(item?.sku || item?.id || '').trim()).filter(Boolean)
+    : [];
+  const unique = Array.from(new Set([...fromSummary, ...fromItems].map((value) => String(value || '').trim()).filter(Boolean)));
+  return unique;
 }
 
 function PaymentBadge({ status }: { status: string }) {
   const map: Record<string, { label: string; cls: string }> = {
-    waiting_payment: { label: 'Aguardando',  cls: 'bg-amber-100 text-amber-700 border-amber-200' },
-    paid:            { label: 'Pago',         cls: 'bg-green-100 text-green-700 border-green-200' },
-    overdue:         { label: 'Vencido',      cls: 'bg-red-100 text-red-700 border-red-200' },
-    canceled:        { label: 'Cancelado',    cls: 'bg-gray-100 text-gray-600 border-gray-200' },
-    refunded:        { label: 'Reembolsado',  cls: 'bg-purple-100 text-purple-700 border-purple-200' },
+    waiting_payment: { label: 'Aguardando', cls: 'bg-amber-100 text-amber-700 border-amber-200' },
+    paid: { label: 'Pago', cls: 'bg-green-100 text-green-700 border-green-200' },
+    overdue: { label: 'Vencido', cls: 'bg-red-100 text-red-700 border-red-200' },
+    canceled: { label: 'Cancelado', cls: 'bg-gray-100 text-gray-600 border-gray-200' },
+    refunded: { label: 'Reembolsado', cls: 'bg-purple-100 text-purple-700 border-purple-200' },
   };
   const { label, cls } = map[status] ?? { label: status, cls: 'bg-gray-100 text-gray-600 border-gray-200' };
   return <Badge variant="outline" className={`border text-[11px] ${cls}`}>{label}</Badge>;
@@ -47,29 +58,42 @@ function PaymentBadge({ status }: { status: string }) {
 
 function FulfillmentBadge({ status }: { status: string }) {
   const map: Record<string, { label: string; cls: string }> = {
-    pending:        { label: 'Pendente',      cls: 'bg-gray-100 text-gray-500 border-gray-200' },
-    in_preparation: { label: 'Em Separação',  cls: 'bg-blue-100 text-blue-700 border-blue-200' },
-    shipped:        { label: 'Enviado',        cls: 'bg-indigo-100 text-indigo-700 border-indigo-200' },
-    delivered:      { label: 'Entregue',       cls: 'bg-green-100 text-green-700 border-green-200' },
-    canceled:       { label: 'Cancelado',      cls: 'bg-red-100 text-red-600 border-red-200' },
+    pending: { label: 'Pendente', cls: 'bg-gray-100 text-gray-500 border-gray-200' },
+    in_preparation: { label: 'Em Separacao', cls: 'bg-blue-100 text-blue-700 border-blue-200' },
+    shipped: { label: 'Enviado', cls: 'bg-indigo-100 text-indigo-700 border-indigo-200' },
+    delivered: { label: 'Entregue', cls: 'bg-green-100 text-green-700 border-green-200' },
+    canceled: { label: 'Cancelado', cls: 'bg-red-100 text-red-600 border-red-200' },
   };
   const { label, cls } = map[status] ?? { label: status, cls: 'bg-gray-100 text-gray-500 border-gray-200' };
   return <Badge variant="outline" className={`border text-[11px] ${cls}`}>{label}</Badge>;
 }
 
 export function OrdersPage() {
-  const [orders, setOrders]         = useState<Order[]>([]);
-  const [loading, setLoading]       = useState(true);
-  const [search, setSearch]         = useState('');
+  const [orders, setOrders] = useState<Order[]>([]);
+  const [total, setTotal] = useState(0);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState('');
+  const [page, setPage] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(null);
+  const limit = 50;
 
-  const fetchOrders = useCallback(async () => {
+  const fetchOrders = useCallback(async (searchTerm = '', targetPage = 1) => {
     setLoading(true);
     try {
-      const res  = await fetch(`${API}/orders`, { headers: H });
+      const params = new URLSearchParams({
+        page: String(targetPage),
+        limit: String(limit),
+      });
+      if (searchTerm.trim()) {
+        params.set('search', searchTerm.trim());
+      }
+
+      const res = await fetch(`${API}/orders?${params.toString()}`, { headers: H });
       const data = await res.json();
       if (data.success) {
         setOrders(data.orders || []);
+        setTotal(Number(data.total || 0));
+        setPage(Number(data.page || targetPage || 1));
       } else {
         throw new Error(data.error || 'Erro ao carregar pedidos');
       }
@@ -81,40 +105,45 @@ export function OrdersPage() {
     }
   }, []);
 
-  useEffect(() => { fetchOrders(); }, [fetchOrders]);
+  useEffect(() => {
+    const timeoutId = window.setTimeout(() => {
+      fetchOrders(search, page);
+    }, 250);
+    return () => window.clearTimeout(timeoutId);
+  }, [fetchOrders, page, search]);
 
-  const filtered = orders.filter(o =>
-    o.orderId.toLowerCase().includes(search.toLowerCase()) ||
-    o.customer.name.toLowerCase().includes(search.toLowerCase()) ||
-    o.customer.email.toLowerCase().includes(search.toLowerCase())
-  );
+  const startRow = total === 0 ? 0 : (page - 1) * limit + 1;
+  const endRow = total === 0 ? 0 : Math.min(page * limit, total);
+  const hasPreviousPage = page > 1;
+  const hasNextPage = page * limit < total;
 
   return (
     <div className="p-6 space-y-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-bold text-foreground flex items-center gap-2">
             <ShoppingBag className="w-6 h-6" /> Pedidos
           </h1>
           <p className="text-sm text-muted-foreground mt-0.5">
-            {orders.length} pedido{orders.length !== 1 ? 's' : ''} · PAL: Asaas · Vindi · Stripe
+            {total} pedido{total !== 1 ? 's' : ''} · PAL: Asaas · Vindi · Stripe
           </p>
         </div>
-        <Button onClick={fetchOrders} variant="outline" size="sm" className="gap-2">
+        <Button onClick={() => fetchOrders(search, page)} variant="outline" size="sm" className="gap-2">
           <RefreshCcw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
           Atualizar
         </Button>
       </div>
 
-      {/* Search */}
       <div className="flex items-center gap-4 bg-card p-3 rounded-xl border border-border">
         <div className="relative flex-1">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-muted-foreground" />
           <Input
             placeholder="Buscar por ID, nome ou e-mail..."
             value={search}
-            onChange={e => setSearch(e.target.value)}
+            onChange={e => {
+              setSearch(e.target.value);
+              setPage(1);
+            }}
             className="pl-10 h-9"
           />
         </div>
@@ -123,7 +152,6 @@ export function OrdersPage() {
         </Button>
       </div>
 
-      {/* Table */}
       <div className="bg-card rounded-xl border border-border overflow-hidden">
         <div className="overflow-x-auto">
           <table className="w-full text-left text-sm">
@@ -140,11 +168,11 @@ export function OrdersPage() {
                 </th>
                 <th className="p-4 font-semibold text-muted-foreground text-xs uppercase tracking-wider">
                   <div className="flex items-center gap-1.5">
-                    <Truck className="w-3.5 h-3.5" /> Expedição
+                    <Truck className="w-3.5 h-3.5" /> Expedicao
                   </div>
                 </th>
                 <th className="p-4 font-semibold text-muted-foreground text-xs uppercase tracking-wider">Total</th>
-                <th className="p-4 font-semibold text-muted-foreground text-xs uppercase tracking-wider text-right">Ações</th>
+                <th className="p-4 font-semibold text-muted-foreground text-xs uppercase tracking-wider text-right">Acoes</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-border">
@@ -156,13 +184,17 @@ export function OrdersPage() {
                     </td>
                   </tr>
                 ))
-              ) : filtered.length === 0 ? (
+              ) : orders.length === 0 ? (
                 <tr>
                   <td colSpan={8} className="p-12 text-center text-muted-foreground">
                     {search ? 'Nenhum resultado para a busca.' : 'Nenhum pedido encontrado.'}
                   </td>
                 </tr>
-              ) : filtered.map(order => (
+              ) : orders.map(order => {
+                  const skuList = getOrderSkuList(order);
+                  const skuPreview = skuList.slice(0, 3);
+                  const skuOverflow = Math.max(0, skuList.length - skuPreview.length);
+                  return (
                 <tr
                   key={order.orderId}
                   className="hover:bg-muted/30 transition-colors cursor-pointer"
@@ -186,6 +218,11 @@ export function OrdersPage() {
                       <span className="text-[10px] text-muted-foreground uppercase tracking-wide">
                         {order.payment_provider}
                       </span>
+                      {skuList.length > 0 && (
+                        <span className="text-[10px] text-muted-foreground leading-relaxed">
+                          SKU: {skuPreview.join(', ')}{skuOverflow > 0 ? ` +${skuOverflow}` : ''}
+                        </span>
+                      )}
                     </div>
                   </td>
                   <td className="p-4">
@@ -203,7 +240,7 @@ export function OrdersPage() {
                         )}
                       </div>
                     ) : (
-                      <span className="text-xs text-muted-foreground/50">—</span>
+                      <span className="text-xs text-muted-foreground/50">-</span>
                     )}
                   </td>
                   <td className="p-4">
@@ -218,7 +255,7 @@ export function OrdersPage() {
                     </div>
                   </td>
                   <td className="p-4 font-bold text-foreground text-sm">
-                    {order.totals?.total?.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) ?? '—'}
+                    {order.totals?.total?.toLocaleString('pt-BR', { style: 'currency', currency: 'BRL' }) ?? '-'}
                   </td>
                   <td className="p-4 text-right" onClick={e => e.stopPropagation()}>
                     <div className="flex items-center justify-end gap-1">
@@ -246,18 +283,41 @@ export function OrdersPage() {
                     </div>
                   </td>
                 </tr>
-              ))}
+                  );
+                })}
             </tbody>
           </table>
         </div>
+        <div className="flex items-center justify-between gap-3 border-t border-border px-4 py-3 text-xs text-muted-foreground">
+          <span>
+            Mostrando {startRow} a {endRow} de {total}
+          </span>
+          <div className="flex items-center gap-2">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loading || !hasPreviousPage}
+              onClick={() => setPage((current) => Math.max(1, current - 1))}
+            >
+              Anterior
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={loading || !hasNextPage}
+              onClick={() => setPage((current) => current + 1)}
+            >
+              Próxima
+            </Button>
+          </div>
+        </div>
       </div>
 
-      {/* Drawer */}
       {selectedId && (
         <OrderDetailDrawer
           orderId={selectedId}
           onClose={() => setSelectedId(null)}
-          onUpdated={fetchOrders}
+          onUpdated={() => fetchOrders(search)}
         />
       )}
     </div>

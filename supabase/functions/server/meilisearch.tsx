@@ -1,6 +1,9 @@
 // ─── MeiliSearch Integration Helper ──────────────────────────────────────────
 // Provides MeiliSearch client functions for indexing and searching products.
 // Gracefully handles missing configuration (returns nulls/errors).
+import { resolveProductMedia } from './media-utils.tsx';
+import { resolveCanonicalVehicleSlugs } from '../../../shared/canonical-vehicle-models.ts';
+import { resolveProductCompatibility } from '../../../shared/product-compatibility.ts';
 
 const MEILI_HOST = (Deno.env.get('MEILISEARCH_HOST') || '').trim().replace(/\/$/, '');
 const MEILI_KEY = (Deno.env.get('MEILISEARCH_API_KEY') || '').trim();
@@ -94,15 +97,23 @@ export function transformProduct(
 ) {
   const customAttrs = product.custom_attributes || [];
   const getAttr = (code: string) => customAttrs.find((a: any) => a.attribute_code === code)?.value;
+  const compatibility = resolveProductCompatibility(product, {
+    modelIdToLabel: maps?.modelos || {},
+    yearIdToLabel: maps?.anos || {},
+  });
 
   // Stock
   let inStock = false;
-  const stockData = product.extension_attributes?.stock;
-  if (stockData) {
-    try {
-      const stock = typeof stockData === 'string' ? JSON.parse(stockData) : stockData;
-      inStock = stock.is_in_stock === '1' || stock.is_in_stock === true || stock.is_in_stock === 1;
-    } catch {}
+  if (typeof product?.in_stock === 'boolean') {
+    inStock = product.in_stock;
+  } else {
+    const stockData = product.extension_attributes?.stock;
+    if (stockData) {
+      try {
+        const stock = typeof stockData === 'string' ? JSON.parse(stockData) : stockData;
+        inStock = stock.is_in_stock === '1' || stock.is_in_stock === true || stock.is_in_stock === 1;
+      } catch {}
+    }
   }
 
   // Category IDs — unificar AMBAS as fontes (custom_attributes + extension_attributes)
@@ -153,20 +164,40 @@ export function transformProduct(
       .map(id => maps.categories!.get(id))
       .filter((name): name is string => !!name);
   }
-
-  // Modelo (CSV values) -> Map to Names
-  const modeloRaw = getAttr('modelo');
-  let modelos = modeloRaw ? String(modeloRaw).split(',').map(s => s.trim()).filter(Boolean) : [];
-  if (maps?.modelos && maps.modelos.size > 0) {
-    modelos = modelos.map(id => maps.modelos!.get(id) || id); // Fallback to ID if not found
+  if (category_names.length === 0 && Array.isArray(product?.category_names)) {
+    category_names = product.category_names
+      .map((entry: any) => {
+        if (typeof entry === 'string') return entry;
+        if (entry && typeof entry === 'object') return String(entry.name || entry.label || '').trim();
+        return '';
+      })
+      .filter(Boolean);
   }
 
-  // Ano (CSV values) -> Map to Names
-  const anoRaw = getAttr('ano');
-  let anos = anoRaw ? String(anoRaw).split(',').map(s => s.trim()).filter(Boolean) : [];
-  if (maps?.anos && maps.anos.size > 0) {
-    anos = anos.map(id => maps.anos!.get(id) || id);
-  }
+  const modelos = compatibility.modelLabels.length > 0
+    ? compatibility.modelLabels
+    : (() => {
+        const modeloRaw = getAttr('modelo');
+        let values = modeloRaw ? String(modeloRaw).split(',').map(s => s.trim()).filter(Boolean) : [];
+        if (maps?.modelos && maps.modelos.size > 0) {
+          values = values.map(id => maps.modelos!.get(id) || id);
+        }
+        return values;
+      })();
+  const modelo_slugs = compatibility.modelSlugs.length > 0
+    ? compatibility.modelSlugs
+    : resolveCanonicalVehicleSlugs(modelos);
+
+  const anos = compatibility.yearLabels.length > 0
+    ? compatibility.yearLabels
+    : (() => {
+        const anoRaw = getAttr('ano');
+        let values = anoRaw ? String(anoRaw).split(',').map(s => s.trim()).filter(Boolean) : [];
+        if (maps?.anos && maps.anos.size > 0) {
+          values = values.map(id => maps.anos!.get(id) || id);
+        }
+        return values;
+      })();
 
   // Color -> Map to Name
   const colorRaw = getAttr('color');
@@ -186,25 +217,7 @@ export function transformProduct(
   const regularPrice = parseFloat(product.price || '0');
   const validSpecialPrice = (specialPrice && specialPrice > 0 && specialPrice < regularPrice) ? specialPrice : null;
 
-  // Images
-  let image_url: string | null = null;
-  const MAGENTO_BASE_URL = 'https://www.toyoparts.com.br';
-  
-  // Try media_gallery_entries first
-  if (product.media_gallery_entries && Array.isArray(product.media_gallery_entries)) {
-    const mainImage = product.media_gallery_entries.find((m: any) => m.media_type === 'image' && !m.disabled);
-    if (mainImage && mainImage.file) {
-      image_url = `${MAGENTO_BASE_URL}/pub/media/catalog/product${mainImage.file}`;
-    }
-  }
-
-  // Fallback to custom_attributes (image)
-  if (!image_url) {
-    const imageAttr = getAttr('image');
-    if (imageAttr && imageAttr !== 'no_selection') {
-      image_url = `${MAGENTO_BASE_URL}/pub/media/catalog/product${imageAttr}`;
-    }
-  }
+  const media = resolveProductMedia(product, { allowLegacy: false });
 
   return {
     id: sanitizeSku(product.sku),
@@ -216,17 +229,28 @@ export function transformProduct(
     type_id: product.type_id || 'simple',
     in_stock: inStock,
     category_ids: categoryIds,
+    category_path_ids: categoryIds,
     category_names,
     modelos,
+    modelo_slugs,
     anos,
+    compat_years: compatibility.compatYears,
+    compat_versions: compatibility.compatVersions,
+    compatibility_display: compatibility.compatibilityDisplay,
+    compatibility_entries: compatibility.entries,
+    compatibility_review_required: compatibility.reviewRequired,
+    compat_models: compatibility.compatModels,
     color,
-    image_url,
+    image_url: media.image_url,
+    images: media.images,
     description,
     short_description: shortDescription,
     created_at: product.created_at || '',
     updated_at: product.updated_at || '',
     special_price: validSpecialPrice,
-    has_image: !!image_url,
+    has_image: media.has_image,
+    _image_source: media._image_source,
+    _image_sync_status: media._image_sync_status,
     has_promotion: validSpecialPrice != null,
   };
 }
@@ -246,7 +270,7 @@ const MEILI_SETTINGS = {
   ],
 
   filterableAttributes: [
-    'category_ids', 'category_names', 'modelos', 'anos', 'color',
+    'category_ids', 'category_path_ids', 'category_names', 'modelos', 'modelo_slugs', 'anos', 'compat_years', 'compat_versions', 'color',
     'price', 'in_stock', 'status', 'type_id',
     'special_price', 'has_image', 'has_promotion',
   ],
@@ -583,13 +607,18 @@ export async function search(query: string, options: SearchOptions = {}) {
     // OTIMIZADO: Apenas os facets usados na sidebar do frontend.
     // Removidos: "status" (sempre filtrado por status=1).
     // category_names incluso para exibir nomes legíveis na sidebar (ao invés de IDs numéricos).
-    facets: options.facets || ['category_ids', 'category_names', 'modelos', 'anos', 'color', 'in_stock', 'price'],
+    facets: options.facets || ['category_ids', 'category_names', 'modelos', 'modelo_slugs', 'anos', 'compat_years', 'compat_versions', 'color', 'in_stock', 'price'],
 
     // OTIMIZADO: Retornar APENAS campos necessários para os cards do frontend.
     // Reduz payload ~70% vs retornar tudo (description sozinha = 1000 chars por hit).
     attributesToRetrieve: [
       'id', 'sku', 'name', 'price', 'special_price', 'status', 'in_stock', 'type_id',
-      'image_url', 'category_ids', 'category_names', 'modelos', 'anos', 'color',
+      'image_url',
+      'category_ids', 'category_path_ids', 'category_names',
+      'modelos', 'modelo_slugs',
+      'anos', 'compat_years', 'compat_versions',
+      'compatibility_display',
+      'color',
       'description', 'short_description',  // Usado no modal de detalhe
     ],
 

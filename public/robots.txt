@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /minha-conta/
+Disallow: /checkout/
+Disallow: /admin/
+Disallow: /acesso
+
+Sitemap: https://www.toyoparts.com.br/sitemap.xml

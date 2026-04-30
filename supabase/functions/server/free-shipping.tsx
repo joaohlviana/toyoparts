@@ -1,13 +1,14 @@
 import { Hono } from 'npm:hono';
 import * as kv from './kv_store.tsx';
+import { buildCustomerWhatsAppUrl, ensureCustomerWhatsAppMessage } from './customer-links.tsx';
 
 export const freeShippingAdmin = new Hono();
 
 const RULES_KEY = 'meta:free_shipping_rules';
 const SETTINGS_KEY = 'meta:free_shipping_settings';
 const FRENET_CONFIG_KEY = 'meta:frenet_config';
-const WHATSAPP_PHONE = '554332941144';
 const PRODUCT_PREFIX = 'product:';
+const FREE_SHIPPING_CACHE_TTL_MS = Math.max(30_000, Number(Deno.env.get('FREE_SHIPPING_CACHE_TTL_MS') || 120_000));
 
 export type PaymentMethodIntent = 'pix' | 'credit_card' | 'boleto';
 export type FreeShippingConditionType =
@@ -108,6 +109,11 @@ interface ProductFact {
   flags: Record<string, boolean>;
 }
 
+interface CacheEntry<T> {
+  value: T;
+  ts: number;
+}
+
 export interface FreeShippingEvaluationInput {
   subtotal: number;
   recipientCep?: string;
@@ -127,6 +133,10 @@ export interface FreeShippingEvaluationInput {
 const DEFAULT_SETTINGS: FreeShippingSettings = {
   legacyFallbackEnabled: false,
 };
+
+let rulesCache: CacheEntry<FreeShippingRule[]> | null = null;
+let settingsCache: CacheEntry<FreeShippingSettings> | null = null;
+let legacyConfigCache: CacheEntry<any> | null = null;
 
 const REGION_GROUPS: Record<string, string[]> = {
   norte: ['AC', 'AP', 'AM', 'PA', 'RO', 'RR', 'TO'],
@@ -274,27 +284,75 @@ function sanitizeSettings(settings: any): FreeShippingSettings {
 }
 
 async function getRules(): Promise<FreeShippingRule[]> {
-  const raw = await kv.get(RULES_KEY);
-  return sanitizeRules(raw);
+  const freshCache = rulesCache && Date.now() - rulesCache.ts < FREE_SHIPPING_CACHE_TTL_MS
+    ? rulesCache.value
+    : null;
+  if (freshCache) return freshCache;
+
+  try {
+    const raw = await kv.get(RULES_KEY);
+    const rules = sanitizeRules(raw);
+    rulesCache = { value: rules, ts: Date.now() };
+    return rules;
+  } catch (error) {
+    if (rulesCache?.value) {
+      console.warn('[free-shipping] getRules fallback to stale cache:', error instanceof Error ? error.message : String(error));
+      return rulesCache.value;
+    }
+    console.warn('[free-shipping] getRules fallback to empty rules:', error instanceof Error ? error.message : String(error));
+    return [];
+  }
 }
 
 async function saveRules(rules: FreeShippingRule[]): Promise<void> {
-  await kv.set(RULES_KEY, rules.map(sanitizeRule));
+  const sanitized = rules.map(sanitizeRule);
+  await kv.set(RULES_KEY, sanitized);
+  rulesCache = { value: sanitized, ts: Date.now() };
 }
 
 async function getSettings(): Promise<FreeShippingSettings> {
-  const raw = await kv.get(SETTINGS_KEY);
-  return { ...DEFAULT_SETTINGS, ...sanitizeSettings(raw) };
+  const freshCache = settingsCache && Date.now() - settingsCache.ts < FREE_SHIPPING_CACHE_TTL_MS
+    ? settingsCache.value
+    : null;
+  if (freshCache) return freshCache;
+
+  try {
+    const raw = await kv.get(SETTINGS_KEY);
+    const settings = { ...DEFAULT_SETTINGS, ...sanitizeSettings(raw) };
+    settingsCache = { value: settings, ts: Date.now() };
+    return settings;
+  } catch (error) {
+    if (settingsCache?.value) {
+      console.warn('[free-shipping] getSettings fallback to stale cache:', error instanceof Error ? error.message : String(error));
+      return settingsCache.value;
+    }
+    console.warn('[free-shipping] getSettings fallback to defaults:', error instanceof Error ? error.message : String(error));
+    return DEFAULT_SETTINGS;
+  }
 }
 
 async function saveSettings(settings: FreeShippingSettings): Promise<void> {
-  await kv.set(SETTINGS_KEY, sanitizeSettings(settings));
+  const sanitized = sanitizeSettings(settings);
+  await kv.set(SETTINGS_KEY, sanitized);
+  settingsCache = { value: sanitized, ts: Date.now() };
 }
 
 async function getLegacyFrenetConfig(): Promise<any> {
+  const freshCache = legacyConfigCache && Date.now() - legacyConfigCache.ts < FREE_SHIPPING_CACHE_TTL_MS
+    ? legacyConfigCache.value
+    : null;
+  if (freshCache) return freshCache;
+
   try {
-    return await kv.get(FRENET_CONFIG_KEY);
-  } catch {
+    const config = await kv.get(FRENET_CONFIG_KEY);
+    legacyConfigCache = { value: config, ts: Date.now() };
+    return config;
+  } catch (error) {
+    if (legacyConfigCache) {
+      console.warn('[free-shipping] getLegacyFrenetConfig fallback to stale cache:', error instanceof Error ? error.message : String(error));
+      return legacyConfigCache.value;
+    }
+    console.warn('[free-shipping] getLegacyFrenetConfig fallback to null:', error instanceof Error ? error.message : String(error));
     return null;
   }
 }
@@ -520,7 +578,7 @@ function interpolateWhatsAppTemplate(template: string, input: FreeShippingEvalua
 
 function buildWhatsAppMessage(rule: FreeShippingRule, input: FreeShippingEvaluationInput, uf: string | null, potential: boolean): string {
   const defaultMessage = [
-    'Ola! Quero fechar meu pedido com a condicao de frete gratis.',
+    'Ola! Toyoparts. Quero fechar meu pedido com a condicao de frete gratis.',
     `Regra: ${rule.name}`,
     `Subtotal: ${formatBRL(input.subtotal)}`,
     input.recipientCep ? `CEP: ${input.recipientCep}` : '',
@@ -533,10 +591,12 @@ function buildWhatsAppMessage(rule: FreeShippingRule, input: FreeShippingEvaluat
     .join('\n');
 
   if (rule.action.whatsappMessageTemplate?.trim()) {
-    return interpolateWhatsAppTemplate(rule.action.whatsappMessageTemplate, input, rule, uf);
+    return ensureCustomerWhatsAppMessage(
+      interpolateWhatsAppTemplate(rule.action.whatsappMessageTemplate, input, rule, uf),
+    );
   }
 
-  return defaultMessage;
+  return ensureCustomerWhatsAppMessage(defaultMessage);
 }
 
 function buildWhatsAppOffer(rule: FreeShippingRule, input: FreeShippingEvaluationInput, uf: string | null, specificity: number, potential: boolean) {
@@ -545,7 +605,7 @@ function buildWhatsAppOffer(rule: FreeShippingRule, input: FreeShippingEvaluatio
     ...summarizeRule(rule, specificity),
     potential,
     text,
-    url: `https://wa.me/${WHATSAPP_PHONE}?text=${encodeURIComponent(text)}`,
+    url: buildCustomerWhatsAppUrl(text),
     message: potential
       ? 'Existe uma condicao especial de frete para este pedido. Fale com o atendimento para fechar via WhatsApp.'
       : 'Este pedido tem frete gratis exclusivo no fechamento via WhatsApp.',

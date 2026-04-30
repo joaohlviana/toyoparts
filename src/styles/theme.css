@@ -406,3 +406,11 @@
   border: 2px solid transparent !important;
   transition: box-shadow 0.5s ease-out, background-color 0.5s ease-out;
 }
+
+/* Hide legacy floating WhatsApp widget injected outside the React app. */
+#whatsapp.new-chat {
+  display: none !important;
+  visibility: hidden !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}

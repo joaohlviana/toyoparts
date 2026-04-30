@@ -9,6 +9,7 @@ import { motion, AnimatePresence } from 'motion/react';
 import { useForm, Controller, useFieldArray } from 'react-hook-form';
 import { projectId } from '../../../../utils/supabase/info';
 import { adminFetch } from '../../lib/admin-auth';
+import { getRelativeLegacyProductImageUrl } from '../../lib/media-urls';
 import { cn } from '../ui/utils';
 import { Button } from '../base/button';
 import { Badge } from '../base/badge';
@@ -89,10 +90,7 @@ function slugifyAssetName(value: string): string {
 }
 
 function normalizeMediaPreviewUrl(file: string): string {
-  if (!file) return '';
-  if (file.startsWith('http')) return file;
-  if (file.startsWith('/')) return `https://www.toyoparts.com.br/pub/media/catalog/product${file}`;
-  return file;
+  return getRelativeLegacyProductImageUrl(file);
 }
 
 function buildEditorMediaEntries(product: any, customMap: Record<string, any>) {
@@ -177,6 +175,7 @@ function createEmptyProductForm() {
     } as any,
     extension_attributes: {} as any,
     media_gallery_entries: [] as any[],
+    compatibility_entries: [] as any[],
     additional_attributes: [] as any[],
   };
 }
@@ -206,6 +205,10 @@ interface EditorSchema {
   categoryTree: CategoryNode[];
   attributeDefinitions: AttributeDefinition[];
   fixedAttributeCodes: string[];
+  compatibilityOptions?: {
+    models: Array<{ slug: string; label: string; modelId: string }>;
+    years: Array<{ id: string; label: string }>;
+  };
 }
 
 interface StagedMediaItem {
@@ -328,8 +331,48 @@ function buildFormValues(product: any, schema: EditorSchema = FALLBACK_EDITOR_SC
       ...(stockData || {}),
     },
     media_gallery_entries: buildEditorMediaEntries(product, customMap),
+    compatibility_entries: Array.isArray(product?.compatibility_entries)
+      ? product.compatibility_entries.map((entry: any) => ({
+          model_slug: String(entry?.model_slug || '').trim(),
+          model_id: String(entry?.model_id || '').trim(),
+          model_label: String(entry?.model_label || '').trim(),
+          year_ids: Array.isArray(entry?.year_ids) ? entry.year_ids.map(String) : [],
+          year_labels: Array.isArray(entry?.year_labels) ? entry.year_labels.map(String) : [],
+          version_ids: Array.isArray(entry?.version_ids) ? entry.version_ids.map(String) : [],
+          version_labels: Array.isArray(entry?.version_labels) ? entry.version_labels.map(String) : [],
+          raw_source: String(entry?.raw_source || '').trim(),
+          source_type: String(entry?.source_type || 'manual') || 'manual',
+          confidence: typeof entry?.confidence === 'number' ? entry.confidence : 1,
+        }))
+      : [],
     additional_attributes: buildAdditionalAttributes(customMap, schema),
   };
+}
+
+function createEmptyCompatibilityEntry() {
+  return {
+    model_slug: '',
+    model_id: '',
+    model_label: '',
+    year_ids: [] as string[],
+    year_labels: [] as string[],
+    version_ids: [] as string[],
+    version_labels: [] as string[],
+    raw_source: '',
+    source_type: 'manual',
+    confidence: 1,
+  };
+}
+
+function buildCompatibilityPreview(entry: any) {
+  const model = String(entry?.model_label || entry?.model_slug || '').trim();
+  const versions = Array.isArray(entry?.version_labels) && entry.version_labels.length > 0
+    ? ` - ${entry.version_labels.join(', ')}`
+    : '';
+  const years = Array.isArray(entry?.year_labels) && entry.year_labels.length > 0
+    ? ` (${entry.year_labels.join(', ')})`
+    : '';
+  return `${model}${versions}${years}`.trim();
 }
 
 function hasAttributeValue(value: any, type: AttributeFieldType) {
@@ -414,17 +457,23 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
   const { control, register, handleSubmit, reset, watch, setValue, getValues, formState: { errors, isSubmitting } } = useForm({
     defaultValues: createEmptyProductForm()
   });
+  const { fields: compatibilityFields, append: appendCompatibilityEntry, remove: removeCompatibilityEntry, replace: replaceCompatibilityEntries } = useFieldArray({
+    control,
+    name: 'compatibility_entries',
+  });
   const { fields: additionalAttributeFields, append: appendAdditionalAttribute, remove: removeAdditionalAttribute, replace: replaceAdditionalAttributes } = useFieldArray({
     control,
     name: 'additional_attributes',
   });
 
   const mediaEntries = watch('media_gallery_entries') || [];
+  const compatibilityEntries = watch('compatibility_entries') || [];
   const additionalAttributes = watch('additional_attributes') || [];
   const productName = watch('name') || currentSku || 'produto';
   const watchedSku = watch('sku') || currentSku;
   const canUploadMedia = editorMode === 'edit' && !!currentSku;
   const categoryTree = schema.categoryTree || [];
+  const compatibilityOptions = schema.compatibilityOptions || { models: [], years: [] };
   const selectedAdditionalCodes = new Set(
     (Array.isArray(additionalAttributes) ? additionalAttributes : [])
       .map((attribute: any) => String(attribute?.attribute_code || '').trim())
@@ -492,17 +541,23 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
   const loadData = async (targetSku?: string) => {
     setLoading(true);
     try {
+      let nextSchema = FALLBACK_EDITOR_SCHEMA;
       const schemaRes = await adminFetch(`${API}/admin/products/schema`);
-      if (!schemaRes.ok) throw new Error('Falha ao carregar schema do editor');
-      const loadedSchema = await schemaRes.json().catch(() => FALLBACK_EDITOR_SCHEMA);
+      if (!schemaRes.ok) {
+        toast.warning('Schema do editor indisponivel no momento. Abrindo em modo seguro.');
+      } else {
+        nextSchema = await schemaRes.json().catch(() => FALLBACK_EDITOR_SCHEMA);
+      }
       setSchema({
-        categoryTree: Array.isArray(loadedSchema?.categoryTree) ? loadedSchema.categoryTree : [],
-        attributeDefinitions: Array.isArray(loadedSchema?.attributeDefinitions) ? loadedSchema.attributeDefinitions : [],
-        fixedAttributeCodes: Array.isArray(loadedSchema?.fixedAttributeCodes) ? loadedSchema.fixedAttributeCodes : [],
+        categoryTree: Array.isArray(nextSchema?.categoryTree) ? nextSchema.categoryTree : [],
+        attributeDefinitions: Array.isArray(nextSchema?.attributeDefinitions) ? nextSchema.attributeDefinitions : [],
+        fixedAttributeCodes: Array.isArray(nextSchema?.fixedAttributeCodes) ? nextSchema.fixedAttributeCodes : [],
+        compatibilityOptions: nextSchema?.compatibilityOptions || { models: [], years: [] },
       });
 
       if (!targetSku) {
         reset(createEmptyProductForm());
+        replaceCompatibilityEntries([]);
         replaceAdditionalAttributes([]);
         return;
       }
@@ -510,8 +565,9 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
       const productRes = await adminFetch(`${API}/admin/products/${targetSku}/detail`);
       if (!productRes.ok) throw new Error('Falha ao carregar produto');
       const product = await productRes.json();
-      const formValues = buildFormValues(product, loadedSchema);
+      const formValues = buildFormValues(product, nextSchema);
       reset(formValues);
+      replaceCompatibilityEntries(formValues.compatibility_entries || []);
       replaceAdditionalAttributes(formValues.additional_attributes || []);
 
     } catch (err: any) {
@@ -635,6 +691,26 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
 
   const onSubmit = async (data: any) => {
     try {
+      const sanitizedCompatibilityEntries = (Array.isArray(data.compatibility_entries) ? data.compatibility_entries : [])
+        .map((entry: any) => ({
+          model_slug: String(entry?.model_slug || '').trim(),
+          model_id: String(entry?.model_id || '').trim(),
+          model_label: String(entry?.model_label || '').trim(),
+          year_ids: Array.isArray(entry?.year_ids) ? entry.year_ids.map(String).filter(Boolean) : [],
+          year_labels: Array.isArray(entry?.year_labels) ? entry.year_labels.map(String).filter(Boolean) : [],
+          version_ids: Array.isArray(entry?.version_ids) ? entry.version_ids.map(String).filter(Boolean) : [],
+          version_labels: Array.isArray(entry?.version_labels)
+            ? entry.version_labels.map(String).filter(Boolean)
+            : String(entry?.version_labels || '')
+                .split(',')
+                .map((item) => item.trim())
+                .filter(Boolean),
+          raw_source: String(entry?.raw_source || '').trim(),
+          source_type: String(entry?.source_type || 'manual') || 'manual',
+          confidence: typeof entry?.confidence === 'number' ? entry.confidence : 1,
+        }))
+        .filter((entry: any) => entry.model_slug || entry.model_id || entry.model_label);
+
       const customAttributeMap = new Map<string, any>();
       Object.entries(data.custom_attributes_map || {}).forEach(([code, value]) => {
         customAttributeMap.set(code, value);
@@ -657,6 +733,7 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
 
       const payload = {
         ...data,
+        compatibility_entries: sanitizedCompatibilityEntries,
         custom_attributes: customAttributesArray,
         extension_attributes: {
           ...data.extension_attributes,
@@ -854,7 +931,7 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
             <h2 className="text-lg font-semibold text-foreground leading-tight">{editorMode === 'create' ? 'Novo Produto' : 'Editar Produto'}</h2>
             <p className="text-sm text-muted-foreground font-mono">
               {currentSku || 'Preencha os dados principais para criar o produto'}
-            </p>
+                        </p>
           </div>
         </div>
         <Button 
@@ -1216,7 +1293,171 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
                  <Card.Content className="p-6">
                    <FormSection title="I. Compatibilidade Automotiva">
                      <div className="space-y-4">
-                        <FormField label="Modelos (IDs CSV)">
+                       <div className="flex flex-col gap-3 rounded-xl border border-border bg-card/50 p-4 md:flex-row md:items-center md:justify-between">
+                         <div>
+                           <p className="text-sm font-semibold text-foreground">Compatibilidade estruturada</p>
+                           <p className="text-xs text-muted-foreground">
+                             Cadastre a compatibilidade real do produto por modelo, ano e versão.
+                           </p>
+                         </div>
+                         <Button
+                           type="button"
+                           size="sm"
+                           variant="outline"
+                           iconLeading={<Plus className="w-4 h-4" />}
+                           onClick={() => appendCompatibilityEntry(createEmptyCompatibilityEntry())}
+                         >
+                           Adicionar compatibilidade
+                         </Button>
+                       </div>
+
+                       {compatibilityFields.length > 0 ? (
+                         <div className="space-y-4">
+                           {compatibilityFields.map((field, index) => {
+                             const currentEntry = compatibilityEntries[index] || field;
+                             const selectedYearIds = Array.isArray(currentEntry?.year_ids) ? currentEntry.year_ids.map(String) : [];
+                             const preview = buildCompatibilityPreview(currentEntry);
+
+                             return (
+                               <div key={field.id} className="space-y-4 rounded-2xl border border-border bg-card p-4">
+                                 <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                                   <div>
+                                     <p className="text-sm font-semibold text-foreground">Compatibilidade #{index + 1}</p>
+                                     <p className="text-xs text-muted-foreground">
+                                       {preview || 'Selecione o modelo e os anos compatíveis.'}
+                                     </p>
+                                   </div>
+                                   <Button
+                                     type="button"
+                                     size="sm"
+                                     variant="outline"
+                                     iconLeading={<Trash2 className="w-4 h-4" />}
+                                     onClick={() => removeCompatibilityEntry(index)}
+                                   >
+                                     Remover
+                                   </Button>
+                                 </div>
+
+                                 <div className="grid gap-4 lg:grid-cols-2">
+                                   <FormField label="Modelo" required>
+                                     <Controller
+                                       name={`compatibility_entries.${index}.model_slug` as const}
+                                       control={control}
+                                       render={({ field: modelField }) => (
+                                         <select
+                                           className="w-full h-10 rounded-lg border border-border bg-card px-3 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+                                           value={modelField.value || ''}
+                                           onChange={(event) => {
+                                             const selected = compatibilityOptions.models.find((option) => option.slug === event.target.value);
+                                             modelField.onChange(selected?.slug || '');
+                                             setValue(`compatibility_entries.${index}.model_label`, selected?.label || '', { shouldDirty: true });
+                                             setValue(`compatibility_entries.${index}.model_id`, selected?.modelId || '', { shouldDirty: true });
+                                             setValue(`compatibility_entries.${index}.source_type`, 'manual', { shouldDirty: true });
+                                             setValue(`compatibility_entries.${index}.confidence`, 1, { shouldDirty: true });
+                                           }}
+                                         >
+                                           <option value="">Selecione um modelo</option>
+                                           {compatibilityOptions.models.map((option) => (
+                                             <option key={option.slug} value={option.slug}>
+                                               {option.label}
+                                             </option>
+                                           ))}
+                                         </select>
+                                       )}
+                                     />
+                                   </FormField>
+
+                                   <FormField label="Versões / motor (opcional)">
+                                     <Controller
+                                       name={`compatibility_entries.${index}.version_labels` as const}
+                                       control={control}
+                                       render={({ field: versionField }) => (
+                                         <Input
+                                           value={Array.isArray(versionField.value) ? versionField.value.join(', ') : ''}
+                                           onChange={(event) => {
+                                             const nextValues = event.target.value
+                                               .split(',')
+                                               .map((item) => item.trim())
+                                               .filter(Boolean);
+                                             versionField.onChange(nextValues);
+                                             setValue(`compatibility_entries.${index}.version_ids`, nextValues, { shouldDirty: true });
+                                             setValue(`compatibility_entries.${index}.source_type`, 'manual', { shouldDirty: true });
+                                           }}
+                                           placeholder="Ex.: SRV 3.0, 2.8 Turbo"
+                                         />
+                                       )}
+                                     />
+                                   </FormField>
+                                 </div>
+
+                                 <FormField label="Anos compatíveis" required>
+                                   <Controller
+                                     name={`compatibility_entries.${index}.year_ids` as const}
+                                     control={control}
+                                     render={({ field: yearField }) => (
+                                       <select
+                                         multiple
+                                         className="min-h-[140px] w-full rounded-lg border border-border bg-card px-3 py-2 text-sm outline-none focus:ring-2 focus:ring-primary/20"
+                                         value={selectedYearIds}
+                                         onChange={(event) => {
+                                           const selectedOptions = Array.from(event.target.selectedOptions).map((option) => ({
+                                             id: option.value,
+                                             label: option.text,
+                                           }));
+                                           yearField.onChange(selectedOptions.map((option) => option.id));
+                                           setValue(`compatibility_entries.${index}.year_labels`, selectedOptions.map((option) => option.label), { shouldDirty: true });
+                                           setValue(`compatibility_entries.${index}.source_type`, 'manual', { shouldDirty: true });
+                                         }}
+                                       >
+                                         {compatibilityOptions.years.map((option) => (
+                                           <option key={option.id} value={option.id}>
+                                             {option.label}
+                                           </option>
+                                         ))}
+                                       </select>
+                                     )}
+                                   />
+                                   <p className="text-[11px] text-muted-foreground">
+                                     Segure Ctrl para selecionar mais de um ano.
+                                   </p>
+                                 </FormField>
+
+                                 <FormField label="Origem técnica (opcional)">
+                                   <Controller
+                                     name={`compatibility_entries.${index}.raw_source` as const}
+                                     control={control}
+                                     render={({ field: rawField }) => (
+                                       <textarea
+                                         className="w-full min-h-[70px] rounded-lg border border-border bg-input-background p-3 text-xs font-mono outline-none focus:ring-2 focus:ring-primary/20"
+                                         value={rawField.value || ''}
+                                         onChange={(event) => rawField.onChange(event.target.value)}
+                                         placeholder="Observação técnica, linha legada ou anotação Toyota"
+                                       />
+                                     )}
+                                   />
+                                 </FormField>
+                               </div>
+                             );
+                           })}
+                         </div>
+                       ) : (
+                         <div className="rounded-xl border border-dashed border-border bg-secondary/30 p-5 text-sm text-muted-foreground">
+                           Nenhuma compatibilidade estruturada adicionada ainda.
+                         </div>
+                       )}
+
+                      <details className="rounded-xl border border-border bg-card/40 p-4">
+                        <summary className="cursor-pointer list-none text-sm font-semibold text-foreground">
+                          Campos legados (avancado)
+                        </summary>
+                        <div className="mt-2 space-y-1">
+                         <p className="text-sm font-semibold text-foreground">Campos legados (avançado)</p>
+                         <p className="mt-1 text-xs text-muted-foreground">
+                           Esses campos continuam disponíveis por compatibilidade técnica, mas não são mais o fluxo principal.
+                         </p>
+                      </div>
+                      <div className="mt-4 space-y-4">
+                       <FormField label="Modelos (IDs CSV)">
                            <Input {...register('custom_attributes_map.modelo')} />
                         </FormField>
                         <FormField label="Anos (IDs CSV)">
@@ -1225,14 +1466,16 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
                         <FormField label="Versões (IDs CSV)">
                            <Input {...register('custom_attributes_map.versao')} />
                         </FormField>
-                        <FormField label="String de Compatibilidade Completa">
-                           <textarea 
-                             className="w-full min-h-[100px] p-3 rounded-lg border border-border bg-input-background text-xs font-mono"
-                             {...register('custom_attributes_map.compatibilidade')}
-                             placeholder="Modelo=Versao:Ano-Ano..."
-                           />
-                        </FormField>
-                     </div>
+                       <FormField label="String de Compatibilidade Completa">
+                          <textarea 
+                            className="w-full min-h-[100px] p-3 rounded-lg border border-border bg-input-background text-xs font-mono"
+                            {...register('custom_attributes_map.compatibilidade')}
+                            placeholder="Modelo=Versao:Ano-Ano..."
+                          />
+                       </FormField>
+                      </div>
+                    </details>
+                    </div>
                    </FormSection>
                  </Card.Content>
                </Card.Root>
@@ -1258,7 +1501,7 @@ export function ProductEditor({ sku, mode = 'edit', onClose, onSave }: ProductEd
                         <FormField label="Texto Garantia">
                           <Input {...register('custom_attributes_map.garantia_texto_anymarket')} />
                         </FormField>
-                      </div>
+                     </div>
                    </FormSection>
                  </Card.Content>
                </Card.Root>

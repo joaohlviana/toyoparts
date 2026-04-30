@@ -9,21 +9,29 @@ const supabase = createClient(
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!
 );
 
-// ─── Configurações de SEO (The "Velvet Rope") ──────────────────────────────
+// Configurações de SEO (The "Velvet Rope")
 const SUPABASE_URL = (Deno.env.get("SUPABASE_URL") || '').replace(/\/$/, '');
 const CONFIG = {
-  MIN_PRODUCTS: 3,        // Mínimo de produtos EM ESTOQUE para indexar a URL
-  DOMINANCE_THRESHOLD: 0.8, // Se o filtro tem >80% dos produtos da categoria, não gera (canoniza pai)
-  TOP_N_BRANDS: 50,       // Top 50 categorias por modelo (evita cauda longa inútil)
+  MIN_PRODUCTS: 3,        // MÃ­nimo de produtos EM ESTOQUE para indexar a URL
+  DOMINANCE_THRESHOLD: 0.8, // Se o filtro tem >80% dos produtos da categoria, nÃ£o gera (canoniza pai)
+  TOP_N_BRANDS: 50,       // Top 50 categorias por modelo (evita cauda longa inÃºtil)
   TOP_N_MODELS: 20,       // Top 20 modelos (safety limit)
   BASE_URL: 'https://www.toyoparts.com.br', // Domínio do site
   BUCKET_NAME: 'make-1d6e33e0-sitemaps',    // Bucket no Supabase Storage (prefixo obrigatório)
 };
 
-// ─── Interfaces ──────────────────────────────────────────────────────────────
+function getStorageSitemapUrl(filename: string): string {
+  return `${SUPABASE_URL}/storage/v1/object/public/${CONFIG.BUCKET_NAME}/${filename}`;
+}
+
+function getCanonicalSitemapUrl(filename: string): string {
+  return `${CONFIG.BASE_URL}/${filename}`;
+}
+
+// â”€â”€â”€ Interfaces â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 interface SitemapFileInfo {
   name: string;
-  type: 'products' | 'categories' | 'filters' | 'static' | 'index';
+  type: 'products' | 'out_of_stock' | 'categories' | 'filters' | 'static' | 'index';
   url_count: number;
   url: string;
 }
@@ -37,6 +45,7 @@ interface SitemapStats {
   urls_by_type: {
     static: number;
     products: number;
+    out_of_stock: number;
     categories: number;
     filters: number;
   };
@@ -49,7 +58,7 @@ interface SitemapStats {
   error?: string;
 }
 
-// ─── Slugify ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ Slugify â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function slugify(text: any): string {
   // Ultra-defensive: guard against null, undefined, numbers, objects
   const str = String(text ?? '');
@@ -65,7 +74,7 @@ function slugify(text: any): string {
     || 'sem-nome';
 }
 
-// ─── Helper: Ensure Bucket ───────────────────────────────────────────────────
+// â”€â”€â”€ Helper: Ensure Bucket â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function ensureBucket(): Promise<boolean> {
   try {
     const { data: buckets, error: listErr } = await supabase.storage.listBuckets();
@@ -91,7 +100,7 @@ async function ensureBucket(): Promise<boolean> {
   }
 }
 
-// ─── Helper: Upload XML to Storage ───────────────────────────────────────────
+// â”€â”€â”€ Helper: Upload XML to Storage â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 async function uploadSitemap(filename: string, content: string): Promise<string> {
   // Upload com upsert (substitui se existir)
   const { error } = await supabase.storage
@@ -104,11 +113,12 @@ async function uploadSitemap(filename: string, content: string): Promise<string>
 
   if (error) throw new Error(`Upload failed for ${filename}: ${error.message}`);
 
-  // URL pública correta: usa SUPABASE_URL, não o domínio do site
-  return `${SUPABASE_URL}/storage/v1/object/public/${CONFIG.BUCKET_NAME}/${filename}`;
+  // O bucket do Supabase Ã© a origem fÃ­sica, mas a URL pÃºblica canÃ´nica
+  // precisa ser sempre servida no domÃ­nio do site.
+  return getCanonicalSitemapUrl(filename);
 }
 
-// ─── Helper: Generate XML String ─────────────────────────────────────────────
+// â”€â”€â”€ Helper: Generate XML String â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 function buildXml(urls: { loc: string; priority?: string; changefreq?: string; image?: string; imageTitle?: string }[]) {
   const date = new Date().toISOString().split('T')[0];
   let xml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
@@ -163,7 +173,7 @@ function escapeXml(str: any): string {
     .replace(/'/g, '&apos;');
 }
 
-// ─── Logger Helper ───────────────────────────────────────────────────────────
+// â”€â”€â”€ Logger Helper â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 const MAX_LOGS = 80;
 async function logUpdate(currentStats: SitemapStats, msg: string) {
   console.log(`[Sitemap] ${msg}`);
@@ -173,7 +183,7 @@ async function logUpdate(currentStats: SitemapStats, msg: string) {
   return newStats;
 }
 
-// ─── MAIN GENERATOR ──────────────────────────────────────────────────────────
+// â”€â”€â”€ MAIN GENERATOR â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.post('/generate', async (c) => {
   // 1. Init Status
   let stats: SitemapStats = {
@@ -183,6 +193,7 @@ app.post('/generate', async (c) => {
     urls_by_type: {
       static: 0,
       products: 0,
+      out_of_stock: 0,
       categories: 0,
       filters: 0,
     },
@@ -212,13 +223,14 @@ app.post('/generate', async (c) => {
 
     const sitemapFiles: string[] = [];
     const productUrls: { loc: string; priority?: string; changefreq?: string; image?: string; imageTitle?: string }[] = [];
+    const outOfStockUrls: { loc: string; priority?: string; changefreq?: string; image?: string; imageTitle?: string }[] = [];
     const categoryUrls: { loc: string; priority?: string; changefreq?: string }[] = [];
     const filterUrls: { loc: string; priority?: string; changefreq?: string }[] = [];
 
-    // ─── 4. PRODUCT URLS (sempre funciona, não depende de tree) ──────────────
+    // â”€â”€â”€ 4. PRODUCT URLS (sempre funciona, nÃ£o depende de tree) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     stats = await logUpdate(stats, 'Buscando produtos no Meilisearch...');
 
-    // Paginar: Meilisearch retorna max 1000 por request por padrão
+    // Paginar: Meilisearch retorna max 1000 por request por padrÃ£o
     let productOffset = 0;
     const PRODUCT_BATCH = 1000;
     let totalProductsFound = 0;
@@ -228,7 +240,7 @@ app.post('/generate', async (c) => {
         const productSearch = await meili.search('', {
           limit: PRODUCT_BATCH,
           offset: productOffset,
-          filter: ['in_stock = true', 'status = 1'],
+          filter: ['status = 1'],
         });
 
         const hits = productSearch.hits || [];
@@ -240,7 +252,8 @@ app.post('/generate', async (c) => {
             const pName = String(p.name);
             const pSku = String(p.sku);
             const urlKey = slugify(pName);
-            productUrls.push({
+            const targetList = p.in_stock === false ? outOfStockUrls : productUrls;
+            targetList.push({
               loc: `${CONFIG.BASE_URL}/produto/${encodeURIComponent(pSku)}/${urlKey}`,
               priority: '0.8',
               changefreq: 'weekly',
@@ -269,36 +282,37 @@ app.post('/generate', async (c) => {
       }
     }
 
-    stats = await logUpdate(stats, `${productUrls.length} produtos com estoque encontrados.`);
+    stats = await logUpdate(stats, `${productUrls.length} produtos com estoque e ${outOfStockUrls.length} produtos esgotados encontrados.`);
     stats.urls_by_type.products = productUrls.length;
+    stats.urls_by_type.out_of_stock = outOfStockUrls.length;
 
-    // ─── 5. MODEL LANDING + MODEL×CATEGORY URLS ─────────────────────────────
+    // â”€â”€â”€ 5. MODEL LANDING + MODELÃ—CATEGORY URLS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Strategy: MODEL-FIRST generation matching frontend route pattern:
-    //   /pecas/:modeloSlug              → Model landing page
-    //   /pecas/:modeloSlug/:catSlug     → Model + Category combo
+    //   /pecas/:modeloSlug              â†’ Model landing page
+    //   /pecas/:modeloSlug/:catSlug     â†’ Model + Category combo
     // 
     // The frontend resolves these via ModeloSearchWrapper which converts the
     // :categoriaSlug param to a search query within the model's products.
     // So category slugs like "iluminacao" become search term "iluminacao".
     //
-    // OLD (BROKEN): /categoria/:catSlug/:modelSlug  — route doesn't exist!
-    // NEW (FIXED):  /pecas/:modeloSlug/:catSlug     — matches routes.tsx
+    // OLD (BROKEN): /categoria/:catSlug/:modelSlug - route doesn't exist!
+    // NEW (FIXED):  /pecas/:modeloSlug/:catSlug     - matches routes.tsx
     stats = await logUpdate(stats, 'Analisando modelos e categorias (model-first strategy)...');
 
-    // 5a. Get facet distribution for modelos and category_names
+    // 5a. Get facet distribution for canonical vehicle slugs and category_names
     let rootSearch: any;
     try {
       rootSearch = await meili.search('', {
         limit: 0,
         filter: ['in_stock = true'],
-        facets: ['modelos', 'category_names'],
+        facets: ['modelo_slugs', 'category_names'],
       });
     } catch (e: any) {
       stats = await logUpdate(stats, `AVISO: Falha ao buscar facets: ${e.message}. Continuando apenas com produtos.`);
       rootSearch = { facetDistribution: {} };
     }
 
-    const modelosDist = rootSearch.facetDistribution?.modelos || {};
+    const modelosDist = rootSearch.facetDistribution?.modelo_slugs || {};
     const categoryNamesDist = rootSearch.facetDistribution?.category_names || {};
     const modelCount = Object.keys(modelosDist).length;
     const catNamesCount = Object.keys(categoryNamesDist).length;
@@ -328,11 +342,11 @@ app.post('/generate', async (c) => {
       });
       modelsProcessed++;
 
-      // 5c. Generate Model×Category combo pages (/pecas/:modeloSlug/:catSlug)
+      // 5c. Generate ModelÃ—Category combo pages (/pecas/:modeloSlug/:catSlug)
       try {
         const catSearch = await meili.search('', {
           limit: 0,
-          filter: [`modelos = "${mName}"`, 'in_stock = true'],
+          filter: [`modelo_slugs = "${mName}"`, 'in_stock = true'],
           facets: ['category_names'],
         });
 
@@ -362,46 +376,32 @@ app.post('/generate', async (c) => {
       }
     }
 
-    stats = await logUpdate(stats, `Modelos: ${modelsProcessed} landing pages, ${modelsSkipped} pulados. Combos modelo×categoria: ${filterUrls.length} URLs.`);
-
-    // 5d. Standalone category pages (categories not tied to a specific model)
-    // These go to /busca?category_name=... which is handled by SearchPageWrapper.
-    // We generate them as lower-priority supplementary URLs.
-    if (catNamesCount > 0) {
-      let standaloneCats = 0;
-      for (const [catName, catTotal] of Object.entries(categoryNamesDist)) {
-        const ct = catTotal as number;
-        const cName = String(catName ?? '');
-        if (!cName || cName === 'undefined' || cName === 'null') continue;
-        if (ct < CONFIG.MIN_PRODUCTS) continue;
-
-        categoryUrls.push({
-          loc: `${CONFIG.BASE_URL}/busca?category_name=${encodeURIComponent(cName)}`,
-          priority: '0.5',
-          changefreq: 'weekly',
-        });
-        standaloneCats++;
-      }
-      stats = await logUpdate(stats, `Categorias standalone (via /busca): ${standaloneCats} URLs.`);
-    }
+    stats = await logUpdate(stats, `Modelos: ${modelsProcessed} landing pages, ${modelsSkipped} pulados. Combos modeloÃ—categoria: ${filterUrls.length} URLs.`);
 
     stats = await logUpdate(stats, `Total URLs: ${productUrls.length} produtos + ${categoryUrls.length} modelos/categorias + ${filterUrls.length} combos.`);
     stats.urls_by_type.categories = categoryUrls.length;
     stats.urls_by_type.filters = filterUrls.length;
 
-    // ─── 6. Static pages ─────────────────────────────────────────────────────
+    // â”€â”€â”€ 6. Static pages â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     const staticUrls: { loc: string; priority?: string; changefreq?: string }[] = [
       { loc: `${CONFIG.BASE_URL}/`, priority: '1.0', changefreq: 'daily' },
       { loc: `${CONFIG.BASE_URL}/pecas`, priority: '0.9', changefreq: 'daily' },
+      { loc: `${CONFIG.BASE_URL}/sobre`, priority: '0.5', changefreq: 'monthly' },
+      { loc: `${CONFIG.BASE_URL}/fale-conosco`, priority: '0.5', changefreq: 'monthly' },
+      { loc: `${CONFIG.BASE_URL}/loja-fisica`, priority: '0.5', changefreq: 'monthly' },
+      { loc: `${CONFIG.BASE_URL}/privacidade`, priority: '0.3', changefreq: 'yearly' },
+      { loc: `${CONFIG.BASE_URL}/entrega`, priority: '0.4', changefreq: 'monthly' },
+      { loc: `${CONFIG.BASE_URL}/trocas-e-devolucoes`, priority: '0.4', changefreq: 'monthly' },
+      { loc: `${CONFIG.BASE_URL}/rastreamento`, priority: '0.4', changefreq: 'weekly' },
     ];
     stats.urls_by_type.static = staticUrls.length;
 
-    // ─── 7. Build and Upload XML files — SEPARATED BY TYPE ──────────────────
+    // â”€â”€â”€ 7. Build and Upload XML files â€” SEPARATED BY TYPE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Each type gets its own sitemap file(s). Products get chunked at 40k.
     // This follows Google's best practice: distinct sitemaps for different
     // content types make it easier to monitor coverage in Search Console.
 
-    const totalUrls = staticUrls.length + categoryUrls.length + filterUrls.length + productUrls.length;
+    const totalUrls = staticUrls.length + categoryUrls.length + filterUrls.length + productUrls.length + outOfStockUrls.length;
     if (totalUrls === 0) {
       throw new Error('Nenhuma URL gerada. Verifique se o Meilisearch tem produtos indexados com in_stock=true e status=1.');
     }
@@ -426,7 +426,7 @@ app.post('/generate', async (c) => {
 
     stats = await logUpdate(stats, `Gerando arquivos XML separados por tipo...`);
 
-    // ── 7a. sitemap_static.xml ──────────────────────────────────────────────
+    // â”€â”€ 7a. sitemap_static.xml â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     try {
       await uploadTypedSitemap('sitemap_static.xml', staticUrls, 'static');
     } catch (e: any) {
@@ -434,7 +434,7 @@ app.post('/generate', async (c) => {
       throw e;
     }
 
-    // ── 7b. sitemap_categories.xml ──────────────────────────────────────────
+    // â”€â”€ 7b. sitemap_categories.xml â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (categoryUrls.length > 0) {
       try {
         const CAT_CHUNK = 40000;
@@ -452,10 +452,10 @@ app.post('/generate', async (c) => {
         throw e;
       }
     } else {
-      stats = await logUpdate(stats, `[CATEGORIES] Nenhuma categoria valida — arquivo nao gerado.`);
+      stats = await logUpdate(stats, `[CATEGORIES] Nenhuma categoria válida - arquivo não gerado.`);
     }
 
-    // ── 7c. sitemap_filters.xml ─────────────────────────────────────────────
+    // â”€â”€ 7c. sitemap_filters.xml â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (filterUrls.length > 0) {
       try {
         const FILTER_CHUNK = 40000;
@@ -473,10 +473,10 @@ app.post('/generate', async (c) => {
         throw e;
       }
     } else {
-      stats = await logUpdate(stats, `[FILTERS] Nenhum filtro valido — arquivo nao gerado.`);
+      stats = await logUpdate(stats, `[FILTERS] Nenhum filtro válido - arquivo não gerado.`);
     }
 
-    // ── 7d. sitemap_products_*.xml (chunked at 40k) ─────────────────────────
+    // â”€â”€ 7d. sitemap_products_*.xml (chunked at 40k) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     if (productUrls.length > 0) {
       try {
         const PRODUCT_CHUNK = 40000;
@@ -494,11 +494,31 @@ app.post('/generate', async (c) => {
         throw e;
       }
     } else {
-      stats = await logUpdate(stats, `[PRODUCTS] Nenhum produto valido — arquivo nao gerado.`);
+      stats = await logUpdate(stats, `[PRODUCTS] Nenhum produto válido - arquivo não gerado.`);
     }
 
-    // ─── 8. Generate sitemap_index.xml ───────────────────────────────────────
+    // â”€â”€â”€ 8. Generate sitemap_index.xml â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Points to all the type-specific sitemaps (NOT to itself)
+    if (outOfStockUrls.length > 0) {
+      try {
+        const PRODUCT_CHUNK = 40000;
+        if (outOfStockUrls.length <= PRODUCT_CHUNK) {
+          await uploadTypedSitemap('sitemap_out_of_stock.xml', outOfStockUrls, 'out_of_stock');
+        } else {
+          for (let i = 0; i < outOfStockUrls.length; i += PRODUCT_CHUNK) {
+            const chunk = outOfStockUrls.slice(i, i + PRODUCT_CHUNK);
+            const idx = Math.floor(i / PRODUCT_CHUNK) + 1;
+            await uploadTypedSitemap(`sitemap_out_of_stock_${idx}.xml`, chunk, 'out_of_stock');
+          }
+        }
+      } catch (e: any) {
+        stats = await logUpdate(stats, `ERRO ao enviar sitemap_out_of_stock: ${e.message}`);
+        throw e;
+      }
+    } else {
+      stats = await logUpdate(stats, `[OUT_OF_STOCK] Nenhum produto esgotado valido - arquivo nao gerado.`);
+    }
+
     if (indexEntries.length > 0) {
       try {
         const indexXmlContent = buildIndexXml(indexEntries);
@@ -516,7 +536,7 @@ app.post('/generate', async (c) => {
       }
     }
 
-    // ─── 9. Success ──────────────────────────────────────────────────────────
+    // â”€â”€â”€ 9. Success â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     stats.status = 'success';
     stats.completed_at = new Date().toISOString();
     stats.files_created = sitemapFiles;
@@ -531,14 +551,14 @@ app.post('/generate', async (c) => {
     console.error('[Sitemap] Critical error:', err);
     console.error('[Sitemap] Stack:', err?.stack || 'no stack');
     stats.status = 'error';
-    stats.error = `${err.message} | Stack: ${(err?.stack || '').split('\n').slice(0, 3).join(' → ')}`;
+    stats.error = `${err.message} | Stack: ${(err?.stack || '').split('\n').slice(0, 3).join(' â†’ ')}`;
     stats.failed_at = new Date().toISOString();
     stats = await logUpdate(stats, `ERRO CRITICO: ${err.message}`);
     return c.json(stats, 500);
   }
 });
 
-// ─── GET Status ──────────────────────────────────────────────────────────────
+// â”€â”€â”€ GET Status â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.get('/status', async (c) => {
   try {
     const current = await kv.get('meta:sitemap_status');
@@ -548,7 +568,7 @@ app.get('/status', async (c) => {
   }
 });
 
-// ─── GET /files — Lista arquivos no bucket ───────────────────────────────────
+// â”€â”€â”€ GET /files â€” Lista arquivos no bucket â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 app.get('/files', async (c) => {
   try {
     const { data, error } = await supabase.storage.from(CONFIG.BUCKET_NAME).list('', { limit: 100 });
@@ -558,7 +578,8 @@ app.get('/files', async (c) => {
       name: f.name,
       size: f.metadata?.size || 0,
       created_at: f.created_at,
-      url: `${SUPABASE_URL}/storage/v1/object/public/${CONFIG.BUCKET_NAME}/${f.name}`,
+      url: getCanonicalSitemapUrl(f.name),
+      storage_url: getStorageSitemapUrl(f.name),
     }));
 
     return c.json({ files, bucket: CONFIG.BUCKET_NAME });

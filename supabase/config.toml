@@ -1,0 +1,5 @@
+[functions.home-config-1d6e33e0]
+verify_jwt = false
+
+[functions.make-server-1d6e33e0]
+verify_jwt = false

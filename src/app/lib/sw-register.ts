@@ -242,13 +242,24 @@ export async function registerServiceWorker(): Promise<ServiceWorkerRegistration
     return null;
   }
 
+  const isLocalDevHost =
+    location.hostname.includes('localhost') ||
+    location.hostname.includes('127.0.0.1');
+
   // Skip in development (localhost without HTTPS)
   if (
     location.protocol !== 'https:' &&
-    !location.hostname.includes('localhost') &&
-    !location.hostname.includes('127.0.0.1')
+    !isLocalDevHost
   ) {
     console.log('[SW] Skipping SW registration (not HTTPS)');
+    return null;
+  }
+
+  // The current implementation registers an inline blob worker.
+  // That works only in local/dev contexts. In production we avoid
+  // noisy failed registrations until a real /sw.js is published.
+  if (!isLocalDevHost) {
+    console.log('[SW] Skipping inline Service Worker registration in production');
     return null;
   }
 

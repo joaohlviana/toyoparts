@@ -1,12 +1,13 @@
 // --- SEO Configuration ---
 // Centralizes all SEO-related constants, slugs, and utilities
+import { getModelMenuIconUrl, getModelStorageIconUrl } from './lib/media-urls';
 
 export const SITE_NAME = 'Toyoparts';
 export const SITE_URL = 'https://www.toyoparts.com.br';
-export const SITE_DESCRIPTION = 'Compre pecas e acessorios genuinos Toyota para Hilux, Corolla, SW4, Yaris, Etios, RAV4, Prius e Corolla Cross com envio para todo o Brasil.';
-export const SITE_DEFAULT_TITLE = 'Toyoparts | Pecas e Acessorios Genuinos Toyota';
+export const SITE_DESCRIPTION = 'Compre peças e acessórios genuínos Toyota para Hilux, Corolla, SW4, Yaris, Etios, RAV4, Prius e Corolla Cross com envio para todo o Brasil.';
+export const SITE_DEFAULT_TITLE = 'Toyoparts | Peças e Acessórios Genuínos Toyota';
 export const DEFAULT_OG_IMAGE = '/og-home.svg';
-export const SITE_KEYWORDS = 'pecas toyota, acessorios toyota, toyoparts, pecas genuinas toyota, hilux, corolla, sw4, yaris, etios, rav4, prius, corolla cross';
+export const SITE_KEYWORDS = 'peças toyota, acessórios toyota, toyoparts, peças genuínas toyota, hilux, corolla, sw4, yaris, etios, rav4, prius, corolla cross';
 
 export function buildAbsoluteUrl(pathOrUrl: string): string {
   if (/^https?:\/\//i.test(pathOrUrl)) return pathOrUrl;
@@ -42,67 +43,67 @@ export interface CarModelSEO {
 export const CAR_MODELS_SEO: CarModelSEO[] = [
   {
     id: 'hilux', slug: 'hilux', name: 'Hilux',
-    modeloIds: ['Hilux', '35'], storageKey: 'HILUX',
-    imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/HILUX.png?v=1',
-    svgSrc: 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/menu-hilux.svg?v=1770898453',
-    seoTitle: 'Pecas e Acessorios Toyota Hilux',
-    seoDescription: 'Encontre pecas e acessorios genuinos Toyota para Hilux. Filtros, pastilhas, amortecedores e mais com garantia de fabrica.',
+    modeloIds: ['Hilux', '38'], storageKey: 'HILUX',
+    imgSrc: getModelStorageIconUrl('HILUX'),
+    svgSrc: getModelMenuIconUrl('menu-hilux.svg'),
+    seoTitle: 'Peças e Acessórios Toyota Hilux',
+    seoDescription: 'Encontre peças e acessórios genuínos Toyota para Hilux. Filtros, pastilhas, amortecedores e mais com garantia de fábrica.',
   },
   {
     id: 'corolla', slug: 'corolla', name: 'Corolla',
-    modeloIds: ['Corolla', '38'], storageKey: 'COROLLA',
-    imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/COROLLA.png?v=1',
-    svgSrc: 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/menu-corolla.svg?v=1770898453',
-    seoTitle: 'Pecas e Acessorios Toyota Corolla',
-    seoDescription: 'Pecas genuinas Toyota para Corolla. Filtros, velas, pastilhas de freio, amortecedores e acessorios originais.',
+    modeloIds: ['Corolla', '35'], storageKey: 'COROLLA',
+    imgSrc: getModelStorageIconUrl('COROLLA'),
+    svgSrc: getModelMenuIconUrl('menu-corolla.svg'),
+    seoTitle: 'Peças e Acessórios Toyota Corolla',
+    seoDescription: 'Peças genuínas Toyota para Corolla. Filtros, velas, pastilhas de freio, amortecedores e acessórios originais.',
   },
   {
     id: 'corolla-cross', slug: 'corolla-cross', name: 'Corolla Cross',
-    modeloIds: ['Corolla Cross', '206'], storageKey: 'COROLLA CROSS',
-    imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/COROLLA%20CROSS.png?v=1',
-    svgSrc: 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/svg-corolla-cross.svg?v=1770898453',
-    seoTitle: 'Pecas e Acessorios Toyota Corolla Cross',
-    seoDescription: 'Pecas e acessorios originais Toyota para Corolla Cross. Tudo para seu SUV com garantia Toyota.',
+    modeloIds: ['Corolla Cross', '5646'], storageKey: 'COROLLA CROSS',
+    imgSrc: getModelStorageIconUrl('COROLLA CROSS'),
+    svgSrc: getModelMenuIconUrl('svg-corolla-cross.svg'),
+    seoTitle: 'Peças e Acessórios Toyota Corolla Cross',
+    seoDescription: 'Peças e acessórios originais Toyota para Corolla Cross. Tudo para seu SUV com garantia Toyota.',
   },
   {
     id: 'yaris', slug: 'yaris', name: 'Yaris',
-    modeloIds: ['Yaris', '205'], storageKey: 'YARIS',
-    imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/YARIS.png?v=1',
-    svgSrc: 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/menu-yaris.svg?v=1770898453',
-    seoTitle: 'Pecas e Acessorios Toyota Yaris',
-    seoDescription: 'Pecas e acessorios genuinos Toyota para Yaris hatch e sedan. Envio rapido para todo Brasil.',
+    modeloIds: ['Yaris', '37'], storageKey: 'YARIS',
+    imgSrc: getModelStorageIconUrl('YARIS'),
+    svgSrc: getModelMenuIconUrl('menu-yaris.svg'),
+    seoTitle: 'Peças e Acessórios Toyota Yaris',
+    seoDescription: 'Peças e acessórios genuínos Toyota para Yaris hatch e sedan. Envio rápido para todo o Brasil.',
   },
   {
     id: 'sw4', slug: 'sw4', name: 'SW4',
-    modeloIds: ['SW4', '204'], storageKey: 'SW4',
-    imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/SW4.png?v=1',
-    svgSrc: 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/menu-sw4.svg?v=1770898453',
-    seoTitle: 'Pecas e Acessorios Toyota SW4',
-    seoDescription: 'Pecas genuinas Toyota para SW4. Filtros, freios, suspensao, acessorios internos e externos originais.',
+    modeloIds: ['SW4', '40'], storageKey: 'SW4',
+    imgSrc: getModelStorageIconUrl('SW4'),
+    svgSrc: getModelMenuIconUrl('menu-sw4.svg'),
+    seoTitle: 'Peças e Acessórios Toyota SW4',
+    seoDescription: 'Peças genuínas Toyota para SW4. Filtros, freios, suspensão, acessórios internos e externos originais.',
   },
   {
     id: 'etios', slug: 'etios', name: 'Etios',
-    modeloIds: ['Etios', '37', '207'], storageKey: 'ETIOS',
-    imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/ETIOS.png?v=1',
-    svgSrc: 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/menu-etios.svg?v=1770898453',
-    seoTitle: 'Pecas e Acessorios Toyota Etios',
-    seoDescription: 'Encontre pecas e acessorios originais Toyota para Etios. Qualidade garantida e preco justo.',
+    modeloIds: ['Etios', '36'], storageKey: 'ETIOS',
+    imgSrc: getModelStorageIconUrl('ETIOS'),
+    svgSrc: getModelMenuIconUrl('menu-etios.svg'),
+    seoTitle: 'Peças e Acessórios Toyota Etios',
+    seoDescription: 'Encontre peças e acessórios originais Toyota para Etios. Qualidade garantida e preço justo.',
   },
   {
     id: 'rav4', slug: 'rav4', name: 'RAV4',
-    modeloIds: ['RAV4', 'Rav4', '36'], storageKey: 'RAV4',
-    imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/RAV4.png?v=1',
-    svgSrc: 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/menu-rav4.svg?v=1770898453',
-    seoTitle: 'Pecas e Acessorios Toyota RAV4',
-    seoDescription: 'Pecas genuinas Toyota para RAV4. Acessorios, filtros, freios e muito mais com garantia.',
+    modeloIds: ['RAV4', 'Rav4', '39'], storageKey: 'RAV4',
+    imgSrc: getModelStorageIconUrl('RAV4'),
+    svgSrc: getModelMenuIconUrl('menu-rav4.svg'),
+    seoTitle: 'Peças e Acessórios Toyota RAV4',
+    seoDescription: 'Peças genuínas Toyota para RAV4. Acessórios, filtros, freios e muito mais com garantia.',
   },
   {
     id: 'prius', slug: 'prius', name: 'Prius',
-    modeloIds: ['Prius', '40'], storageKey: 'PRIUS',
-    imgSrc: 'https://toyoparts.com.br/pub/media/catalog/icons/models/PRIUS.png?v=1',
-    svgSrc: 'https://increazy-folder.s3.amazonaws.com/5ebed78a28503303b0530072/menu-prius.svg?v=1770898453',
-    seoTitle: 'Pecas e Acessorios Toyota Prius',
-    seoDescription: 'Pecas e acessorios originais para Toyota Prius hibrido. Componentes genuinos com garantia.',
+    modeloIds: ['Prius', '42'], storageKey: 'PRIUS',
+    imgSrc: getModelStorageIconUrl('PRIUS'),
+    svgSrc: getModelMenuIconUrl('menu-prius.svg'),
+    seoTitle: 'Peças e Acessórios Toyota Prius',
+    seoDescription: 'Peças e acessórios originais para Toyota Prius híbrido. Componentes genuínos com garantia.',
   },
 ];
 

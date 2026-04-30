@@ -23,6 +23,7 @@ import {
   fetchCepAddress,
   fetchShippingQuote,
 } from '../../lib/shipping/frenet-api';
+import { formatShippingTransitTime, getShippingServiceDisplayName } from '../../lib/shipping/shipping-labels';
 import type { FrenetConfig } from '../../lib/shipping/shipping-types';
 import { maskCEP } from '../../lib/checkout/checkout-validation';
 
@@ -476,8 +477,8 @@ export function FrenetAdmin() {
                       <div className="flex items-center gap-2">
                         <Truck className="w-3.5 h-3.5 text-muted-foreground" />
                         <div>
-                          <p className="font-semibold text-foreground">{q.serviceDescription}</p>
-                          <p className="text-muted-foreground">{q.carrier} — {q.deliveryDays} dias uteis</p>
+                          <p className="font-semibold text-foreground">{getShippingServiceDisplayName(q.serviceDescription, q.carrier)}</p>
+                          <p className="text-muted-foreground">{formatShippingTransitTime(q.deliveryDays)}</p>
                         </div>
                       </div>
                       <div className="text-right">
@@ -495,7 +496,7 @@ export function FrenetAdmin() {
                     <div className="p-2 rounded-lg bg-amber-500/10 text-xs text-amber-700 space-y-1">
                       <p className="font-semibold flex items-center gap-1"><Info className="w-3 h-3" /> Servicos com erro:</p>
                       {quoteResult.errors.map((e: any, i: number) => (
-                        <p key={i}>{e.serviceDescription}: {e.message || 'Erro desconhecido'}</p>
+                        <p key={i}>{getShippingServiceDisplayName(e.serviceDescription, e.carrier)}: {e.message || 'Erro desconhecido'}</p>
                       ))}
                     </div>
                   )}

@@ -3,6 +3,18 @@ import * as kv from './kv_store.tsx';
 import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
 import { fetchMagento } from './magento.tsx';
 import { crypto } from "jsr:@std/crypto";
+import {
+  compareOrderRecordDateDesc,
+  getMagentoStoredOrderIdentity,
+  isMagentoStoredOrderRecord,
+} from './order-records.tsx';
+import {
+  getOrdersReadModelEnabled,
+  readMagentoStoredOrdersPageFromSource,
+  readMagentoStoredOrdersPageFromReadModel,
+  syncMagentoStoredOrderSummarySafe,
+} from './order-read-model.tsx';
+import { readMagentoStoredOrdersFromBackup } from './magento-backup-orders.tsx';
 
 export const magentoSync = new Hono();
 
@@ -17,6 +29,19 @@ const getSupabase = () => createClient(
   Deno.env.get("SUPABASE_URL")!,
   Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!,
 );
+
+function isRecoverableReadError(error: any): boolean {
+  const message = String(error?.message || error || '').toLowerCase();
+  return (
+    message.includes('schema cache') ||
+    message.includes('retrying') ||
+    message.includes('timed out') ||
+    message.includes('abort') ||
+    message.includes('maximum number of connections') ||
+    message.includes('remaining connection slots are reserved') ||
+    message.includes('too many clients')
+  );
+}
 
 // ─── Helpers: Normalization & Hashing ──────────────────────────────
 function normalizeEmail(email: string): string {
@@ -280,8 +305,6 @@ magentoSync.post('/orders/step', async (c) => {
       await uploadBatch('orders', items);
       
       const supabase = getSupabase();
-      
-      const customerOrderMap = new Map<string, number[]>();
       const updates: { key: string, value: any }[] = [];
       
       for (const item of items) {
@@ -289,8 +312,9 @@ magentoSync.post('/orders/step', async (c) => {
         if (currentId > maxId) maxId = currentId;
 
         updates.push({
-            key: `order:${item.entity_id}`,
+            key: `magento_order:${item.entity_id}`,
             value: {
+                _order_source: 'magento',
                 entity_id: item.entity_id,
                 increment_id: item.increment_id,
                 created_at: item.created_at,
@@ -301,46 +325,15 @@ magentoSync.post('/orders/step', async (c) => {
                 items: item.items
             }
         });
-
-        if (item.customer_id) {
-          const cid = String(item.customer_id);
-          if (!customerOrderMap.has(cid)) {
-            customerOrderMap.set(cid, []);
-          }
-          customerOrderMap.get(cid)?.push(item.entity_id);
-        }
       }
 
       if (updates.length > 0) {
         await supabase.from('kv_store_1d6e33e0').upsert(updates);
       }
 
-      if (customerOrderMap.size > 0) {
-        const keys = Array.from(customerOrderMap.keys()).map(cid => `idx_orders_by_customer:${cid}`);
-        
-        const { data: existingData } = await supabase
-          .from('kv_store_1d6e33e0')
-          .select('key, value')
-          .in('key', keys);
-
-        const indexUpdates: { key: string, value: any }[] = [];
-        const existingMap = new Map<string, any[]>();
-        
-        existingData?.forEach((row: any) => {
-          existingMap.set(row.key, row.value);
-        });
-
-        for (const [customerId, newOrderIds] of customerOrderMap.entries()) {
-          const key = `idx_orders_by_customer:${customerId}`;
-          const currentList = existingMap.get(key) || [];
-          const merged = Array.from(new Set([...currentList, ...newOrderIds]));
-          indexUpdates.push({ key, value: merged });
-        }
-
-        if (indexUpdates.length > 0) {
-          await supabase.from('kv_store_1d6e33e0').upsert(indexUpdates);
-        }
-      }
+      await Promise.all(items.map((item: any) =>
+        syncMagentoStoredOrderSummarySafe(item, `magento_order:${item.entity_id}`, 'magento_orders_step'),
+      ));
     }
 
     const processed = status.processed + items.length;
@@ -422,28 +415,56 @@ magentoSync.get('/customers/stored', async (c) => {
 magentoSync.get('/orders/stored', async (c) => {
   const page = parseInt(c.req.query('page') || '1');
   const limit = parseInt(c.req.query('limit') || '20');
-  const from = (page - 1) * limit;
-  const to = from + limit - 1;
-
+  const search = String(c.req.query('search') || '').trim();
   try {
-    const supabase = getSupabase();
-    
-    let query = supabase
-      .from('kv_store_1d6e33e0')
-      .select('value', { count: 'exact' })
-      .like('key', 'order:%')
-      .order('key', { ascending: false })
-      .range(from, to);
+    const enabled = await getOrdersReadModelEnabled();
+    try {
+      if (enabled) {
+        const result = await readMagentoStoredOrdersPageFromReadModel({
+          page,
+          limit,
+          search,
+        });
+        if ((result.items || []).length > 0 || Number(result.total_count || 0) > 0) {
+          return c.json(result);
+        }
+      }
 
-    const { data, count, error } = await query;
-    if (error) throw error;
-    
-    return c.json({
-        items: data?.map((d: any) => d.value) || [],
-        total_count: count || 0,
+      const result = await readMagentoStoredOrdersPageFromSource({
         page,
-        limit
-    });
+        limit,
+        search,
+      });
+      if ((result.items || []).length > 0 || Number(result.total_count || 0) > 0) {
+        return c.json(result);
+      }
+
+      const backupResult = await readMagentoStoredOrdersFromBackup(page, limit, search);
+      return c.json(backupResult);
+    } catch (readError: any) {
+      if (isRecoverableReadError(readError)) {
+        console.warn('[MagentoSync] degraded stored orders read:', readError);
+        try {
+          const backupResult = await readMagentoStoredOrdersFromBackup(page, limit, search);
+          return c.json({
+            ...backupResult,
+            degraded: true,
+          });
+        } catch (backupError: any) {
+          console.warn('[MagentoSync] storage backup fallback failed:', backupError);
+          return c.json({
+            items: [],
+            total_count: 0,
+            page,
+            limit,
+            has_more: false,
+            degraded: true,
+            source: enabled ? 'read_model_degraded' : 'source_page_degraded',
+          });
+        }
+      }
+      throw readError;
+    }
   } catch (e: any) {
     return c.json({ error: e.message }, 500);
   }

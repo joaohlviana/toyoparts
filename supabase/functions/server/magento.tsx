@@ -2,8 +2,16 @@ import { Hono } from 'npm:hono';
 
 export const magento = new Hono();
 
+type MagentoFetchOptions = {
+  timeoutMs?: number;
+};
+
 // Helper to fetch from Magento
-export async function fetchMagento(path: string, query: Record<string, string> = {}) {
+export async function fetchMagento(
+  path: string,
+  query: Record<string, string> = {},
+  options: MagentoFetchOptions = {},
+) {
   const baseUrl = Deno.env.get('MAGENTO_URL') || 'https://www.toyoparts.com.br'; // Fallback logic
   const token = Deno.env.get('MAGENTO_TOKEN');
 
@@ -24,9 +32,10 @@ export async function fetchMagento(path: string, query: Record<string, string> =
 
   console.log(`[Magento Proxy] Fetching ${apiUrl.toString().split('?')[0]}...`);
 
-  // Timeout de 30 segundos para evitar travamento da Edge Function
+  // Timeout configuravel (default 30s) para evitar travamento da Edge Function
+  const timeoutMs = Math.max(500, Number(options.timeoutMs || 30000));
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 30000);
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
 
   let res;
   try {
@@ -39,7 +48,7 @@ export async function fetchMagento(path: string, query: Record<string, string> =
     });
   } catch (err: any) {
     if (err.name === 'AbortError') {
-      throw new Error(`Magento request timed out after 30s: ${cleanPath}`);
+      throw new Error(`Magento request timed out after ${timeoutMs}ms: ${cleanPath}`);
     }
     throw err;
   } finally {

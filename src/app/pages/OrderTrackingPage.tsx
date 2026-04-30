@@ -11,6 +11,7 @@ import {
 } from 'lucide-react';
 import { SEOHead } from '../components/seo/SEOHead';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
+import { buildToyopartsWhatsAppUrl, TOYOPARTS_DEFAULT_WHATSAPP_URL } from '../lib/whatsapp';
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0`;
 const H: HeadersInit = { Authorization: `Bearer ${publicAnonKey}`, 'Content-Type': 'application/json' };
@@ -228,7 +229,7 @@ export function OrderTrackingPage() {
                   <p className="text-[13px] text-red-600">{error}</p>
                   <p className="text-[12px] text-red-500 mt-2">
                     Dúvidas? Entre em contato pelo{' '}
-                    <a href="https://api.whatsapp.com/send?phone=554332941144" className="underline font-medium">
+                    <a href={TOYOPARTS_DEFAULT_WHATSAPP_URL} className="underline font-medium">
                       WhatsApp (43) 3294-1144
                     </a>
                   </p>
@@ -435,7 +436,7 @@ export function OrderTrackingPage() {
                     <span>Problema com seu pedido?</span>
                   </div>
                   <a
-                    href={`https://api.whatsapp.com/send?phone=554332941144&text=Oi!%20Preciso%20de%20ajuda%20com%20o%20pedido%20${order.orderId}`}
+                    href={buildToyopartsWhatsAppUrl(`Preciso de ajuda com o pedido ${order.orderId}.`)}
                     target="_blank"
                     rel="noopener noreferrer"
                     className="sm:ml-auto flex items-center gap-1.5 font-bold text-primary hover:underline"

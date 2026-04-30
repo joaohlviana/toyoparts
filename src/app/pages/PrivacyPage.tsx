@@ -4,6 +4,7 @@ import React from 'react';
 import { Truck, RefreshCw, Search, ShieldCheck, Lock } from 'lucide-react';
 import { SEOHead } from '../components/seo/SEOHead';
 import { PolicyShell, PolicySection, RelatedPage } from '../components/policies/PolicyShell';
+import { TOYOPARTS_DEFAULT_WHATSAPP_URL } from '../lib/whatsapp';
 
 const sections: PolicySection[] = [
   {
@@ -193,7 +194,7 @@ const sections: PolicySection[] = [
         <div className="mt-4 grid sm:grid-cols-2 gap-3">
           {[
             { label: 'E-mail privacidade', value: 'privacidade@toyoparts.com.br', href: 'mailto:privacidade@toyoparts.com.br' },
-            { label: 'SAC geral', value: '(43) 3294-1144', href: 'https://api.whatsapp.com/send?phone=554332941144' },
+            { label: 'SAC geral', value: '(43) 3294-1144', href: TOYOPARTS_DEFAULT_WHATSAPP_URL },
           ].map(c => (
             <a
               key={c.label}

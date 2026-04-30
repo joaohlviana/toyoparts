@@ -4,6 +4,7 @@ import { Button } from './ui/button';
 import { Badge } from './ui/badge';
 import { Loader2, ChevronRight, ChevronDown, FolderTree } from 'lucide-react';
 import { projectId, publicAnonKey } from '../../../utils/supabase/info';
+import { fetchWithTimeout } from '../lib/fetch-with-timeout';
 
 interface CategoryTreeNode {
   id: number;
@@ -50,9 +51,10 @@ export function CategoryTree({ open, onClose }: CategoryTreeProps) {
   const loadCategories = async () => {
     setIsLoading(true);
     try {
-      const res = await fetch(
+      const res = await fetchWithTimeout(
         `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0/categories/tree`,
         { headers: { Authorization: `Bearer ${publicAnonKey}` } },
+        3000,
       );
 
       if (res.ok) {

@@ -1,10 +1,12 @@
+import { buildToyopartsWhatsAppUrl } from './whatsapp';
+
 export const PRIMARY_CUSTOMER_URL = 'https://www.toyoparts.com.br';
 export const SECONDARY_CUSTOMER_URL = 'https://toyoparts.vercel.app';
 export const CUSTOMER_AUTH_CALLBACK_PATH = '/auth/callback';
 export const CUSTOMER_ACCESS_PATH = '/acesso';
 export const CUSTOMER_ORDERS_PATH = '/minha-conta/pedidos';
 export const CUSTOMER_SUPPORT_EMAIL = 'atendimento@toyoparts.com.br';
-export const CUSTOMER_WHATSAPP_URL = 'https://wa.me/554332941144';
+export const CUSTOMER_WHATSAPP_URL = buildToyopartsWhatsAppUrl();
 
 export function joinCustomerUrl(base: string, path: string) {
   const normalizedBase = base.endsWith('/') ? base.slice(0, -1) : base;

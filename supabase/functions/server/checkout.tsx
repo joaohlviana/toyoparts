@@ -2,6 +2,8 @@ import { Hono } from 'npm:hono';
 import * as kv from './kv_store.tsx';
 import { appendOrderEvent } from './audit.tsx';
 import { validateCouponInternal } from './coupons.tsx';
+import { ensureOrderCustomerIndexes } from './order-indexes.tsx';
+import { syncStoreOrderSummarySafe } from './order-read-model.tsx';
 
 export const checkout = new Hono();
 
@@ -158,7 +160,7 @@ async function createVindiCheckout(body: any, vindiConfig: any, c: any) {
 
   // 3. Save order with dual status fields + payment_provider
   const now = new Date().toISOString();
-  await kv.set(`order:${orderId}`, {
+  const orderData = {
     orderId,
     payment_provider:   'vindi',
     payment_status:     'waiting_payment',
@@ -173,7 +175,10 @@ async function createVindiCheckout(body: any, vindiConfig: any, c: any) {
     shipping: shipping || null,
     createdAt: now,
     created_at: now,
-  });
+  };
+  await kv.set(`order:${orderId}`, orderData);
+  await ensureOrderCustomerIndexes(orderId, orderData);
+  await syncStoreOrderSummarySafe(orderData, 'checkout_vindi_create');
 
   // Order event: created (consistent with Asaas and Stripe)
   await appendOrderEvent(orderId, 'order.created', {

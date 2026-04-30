@@ -1,14 +1,15 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { useNavigate } from 'react-router';
-import { supabase, projectId } from '../../../lib/supabase';
+import { supabase, projectId, publicAnonKey } from '../../../lib/supabase';
 import {
   Clock, Truck, LogOut, RefreshCw, History, Store,
-  ShoppingBag, AlertCircle, Info, ExternalLink,
+  ShoppingBag, AlertCircle, Info, ExternalLink, Package, Hash,
 } from 'lucide-react';
 import { Button } from '../../components/ui/button';
 import { Card } from '../../components/ui/card';
 import { toast } from 'sonner';
+import { clearCustomerSession, getValidatedCustomerSession } from '../../lib/customer-session';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -27,6 +28,14 @@ interface NormalizedOrder {
   fulfillment_status?: string;
   payment_provider?: string;
   tracking_url?: string;
+  tracking_code?: string;
+  shipping_carrier?: string;
+  shipping_service?: string;
+  items_preview?: Array<{
+    name?: string;
+    sku?: string;
+    qty?: number;
+  }>;
 }
 
 interface OrdersResponse {
@@ -128,6 +137,14 @@ function CacheBanner() {
 function OrderCard({ order, index }: { order: NormalizedOrder; index: number }) {
   const isLoja    = order.source === 'loja';
   const dotColor  = isLoja ? 'border-primary' : 'border-gray-400';
+  const displayOrderNumber = (() => {
+    const raw = String(order.increment_id || order.id || '').trim();
+    if (!raw) return '---';
+    if (isLoja && /^[0-9a-f]{8}-/i.test(raw)) {
+      return raw.slice(0, 8).toUpperCase();
+    }
+    return raw;
+  })();
   const formattedDate = new Date(order.created_at).toLocaleDateString('pt-BR', {
     day: '2-digit', month: 'short', year: 'numeric',
   });
@@ -137,6 +154,19 @@ function OrderCard({ order, index }: { order: NormalizedOrder; index: number }) 
   const formattedTotal = new Intl.NumberFormat('pt-BR', {
     style: 'currency', currency: 'BRL',
   }).format(order.grand_total);
+  const trackingCode = String(order.tracking_code || '').trim();
+  const shippingLabel = [order.shipping_carrier, order.shipping_service]
+    .filter((value) => typeof value === 'string' && value.trim().length > 0)
+    .join(' • ');
+  const previewItems = (order.items_preview || [])
+    .map((item) => {
+      const base = String(item?.name || item?.sku || '').trim();
+      if (!base) return '';
+      const qty = Number(item?.qty || 0);
+      return qty > 0 ? `${qty}x ${base}` : base;
+    })
+    .filter(Boolean)
+    .join(' • ');
 
   return (
     <motion.div
@@ -156,7 +186,7 @@ function OrderCard({ order, index }: { order: NormalizedOrder; index: number }) 
             <div className="space-y-1.5">
               <div className="flex items-center flex-wrap gap-2">
                 <span className="font-bold text-base md:text-lg">
-                  #{order.increment_id}
+                  #{displayOrderNumber}
                 </span>
                 <SourceBadge source={order.source} />
                 <StatusBadge order={order} />
@@ -178,10 +208,36 @@ function OrderCard({ order, index }: { order: NormalizedOrder; index: number }) 
             </div>
           </div>
 
+          {isLoja && (trackingCode || shippingLabel || previewItems) && (
+            <div className="mb-4 rounded-lg border border-border/70 bg-muted/20 px-3 py-2.5 space-y-1.5">
+              {trackingCode && (
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Hash className="w-3.5 h-3.5 shrink-0" />
+                  <span>
+                    C&oacute;digo de rastreio:{' '}
+                    <span className="font-mono font-semibold text-foreground">{trackingCode}</span>
+                  </span>
+                </div>
+              )}
+              {shippingLabel && (
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Truck className="w-3.5 h-3.5 shrink-0" />
+                  <span>Envio: {shippingLabel}</span>
+                </div>
+              )}
+              {previewItems && (
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+                  <Package className="w-3.5 h-3.5 shrink-0" />
+                  <span>Itens: {previewItems}</span>
+                </div>
+              )}
+            </div>
+          )}
+
           {/* Footer do card */}
           <div className="pt-3.5 border-t border-border flex items-center justify-between gap-4">
             <div className="text-xs text-muted-foreground">
-              {order.source === 'loja' && order.fulfillment_status === 'shipped' && order.tracking_url && (
+              {order.source === 'loja' && order.tracking_url && (
                 <a
                   href={order.tracking_url}
                   target="_blank"
@@ -280,6 +336,7 @@ function OrderSkeleton({ count = 3 }: { count?: number }) {
 
 export function OrderHistoryPage() {
   const navigate = useNavigate();
+  const hasCheckedAuthRef = useRef(false);
 
   const [loading, setLoading]       = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -290,28 +347,65 @@ export function OrderHistoryPage() {
   const [magentoFromCache, setMagentoFromCache]     = useState(false);
 
   useEffect(() => {
+    if (hasCheckedAuthRef.current) {
+      return;
+    }
+
+    hasCheckedAuthRef.current = true;
     checkAuth();
   }, []);
 
   const checkAuth = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) {
+    try {
+      const session = await getValidatedCustomerSession();
+      if (!session) {
+        navigate('/acesso');
+        return;
+      }
+
+      setUserEmail(session.user.email || '');
+      await fetchOrders(session.access_token);
+    } catch {
       navigate('/acesso');
-      return;
     }
-    setUserEmail(session.user.email || '');
-    await fetchOrders(session.access_token);
   };
 
-  const fetchOrders = async (token: string, page = 1, showRefreshing = false) => {
+  const fetchOrders = async (
+    token: string,
+    page = 1,
+    showRefreshing = false,
+    allowRetry = true,
+  ) => {
     if (showRefreshing) setRefreshing(true);
     try {
+      const controller = new AbortController();
+      const timeoutId = window.setTimeout(() => {
+        controller.abort();
+      }, 15000);
+
       const res = await fetch(
         `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0/customer/orders?page=${page}&limit=20`,
-        { headers: { Authorization: `Bearer ${token}` } }
-      );
+        {
+          headers: {
+            Authorization: `Bearer ${token}`,
+            apikey: publicAnonKey,
+          },
+          signal: controller.signal,
+        }
+      ).finally(() => {
+        window.clearTimeout(timeoutId);
+      });
 
       if (!res.ok) {
+        if (res.status === 401 && allowRetry) {
+          const freshSession = await getValidatedCustomerSession({ forceRefresh: true });
+          if (freshSession?.access_token) {
+            setUserEmail(freshSession.user.email || '');
+            await fetchOrders(freshSession.access_token, page, showRefreshing, false);
+            return;
+          }
+        }
+
         const errData = await res.json().catch(() => ({}));
         throw new Error(errData.error || `Erro ${res.status}`);
       }
@@ -327,6 +421,15 @@ export function OrderHistoryPage() {
       }
     } catch (err: any) {
       console.error('[OrderHistoryPage] Erro ao buscar pedidos:', err);
+      if (String(err?.name || '').toLowerCase() === 'aborterror') {
+        toast.error('A consulta de pedidos demorou muito. Tente atualizar em instantes.');
+        return;
+      }
+      if (/401|unauthorized|invalid token/i.test(String(err?.message || ''))) {
+        toast.error('Sua sessao expirou ou nao foi validada corretamente. Entre novamente para ver seus pedidos.');
+        navigate('/acesso');
+        return;
+      }
       toast.error('Erro ao carregar histórico: ' + err.message);
     } finally {
       setLoading(false);
@@ -335,13 +438,20 @@ export function OrderHistoryPage() {
   };
 
   const handleRefresh = async () => {
-    const { data: { session } } = await supabase.auth.getSession();
-    if (!session) return navigate('/acesso');
-    await fetchOrders(session.access_token, 1, true);
+    try {
+      const session = await getValidatedCustomerSession({ forceRefresh: true });
+      if (!session) {
+        navigate('/acesso');
+        return;
+      }
+      await fetchOrders(session.access_token, 1, true);
+    } catch {
+      navigate('/acesso');
+    }
   };
 
   const handleLogout = async () => {
-    await supabase.auth.signOut();
+    await clearCustomerSession();
     navigate('/acesso');
   };
 

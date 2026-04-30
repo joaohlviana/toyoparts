@@ -10,6 +10,8 @@ import { Hono } from 'npm:hono';
 import { createClient } from "jsr:@supabase/supabase-js@2.49.8";
 import * as kv from './kv_store.tsx';
 import * as meili from './meilisearch.tsx';
+import { resolveProductMedia } from './media-utils.tsx';
+import { buildCanonicalVehicleFacetTargets } from '../../../shared/canonical-vehicle-models.ts';
 
 const app = new Hono();
 
@@ -194,6 +196,7 @@ function formatPrice(price: number): string {
 // ─── Extract product data helper ────────────────────────────────────────────
 
 function extractProductData(product: any) {
+  const media = resolveProductMedia(product, { allowLegacy: false });
   return {
     sku: product.sku,
     name: product.name || '',
@@ -203,6 +206,7 @@ function extractProductData(product: any) {
     price: product.price || 0,
     special_price: product.special_price,
     in_stock: (() => {
+      if (typeof product?.in_stock === 'boolean') return product.in_stock;
       const stockData = product?.extension_attributes?.stock;
       if (!stockData) return false;
       try {
@@ -210,12 +214,7 @@ function extractProductData(product: any) {
         return stock.is_in_stock === '1' || stock.is_in_stock === true || stock.is_in_stock === 1;
       } catch { return false; }
     })(),
-    image_url: product.image_url || (() => {
-      const attrs = product.custom_attributes;
-      if (!Array.isArray(attrs)) return '';
-      const img = attrs.find((a: any) => a.attribute_code === 'image');
-      return img?.value ? `https://www.toyoparts.com.br/pub/media/catalog/product${img.value}` : '';
-    })(),
+    image_url: media.image_url || '',
     description: product.description || (() => {
       const attrs = product.custom_attributes;
       if (!Array.isArray(attrs)) return '';
@@ -325,9 +324,9 @@ async function getModelFacetCounts(): Promise<Record<string, number>> {
     const res = await meili.search('', {
       limit: 0,
       filter: ['in_stock = true'],
-      facets: ['modelos'],
+      facets: ['modelo_slugs'],
     });
-    return res.facetDistribution?.modelos || {};
+    return res.facetDistribution?.modelo_slugs || {};
   } catch (err: any) {
     console.warn('[Snapshot] Model facet discovery failed:', err.message);
     return {};
@@ -336,34 +335,13 @@ async function getModelFacetCounts(): Promise<Record<string, number>> {
 
 function resolveSnapshotVehicleTargets(
   modelFacetCounts: Record<string, number>,
-  modelMeta?: Record<string, string>,
 ) {
-  const facetEntries = Object.entries(modelFacetCounts).map(([value, count]) => ({
-    value,
-    normalized: normalizeVehicleFacetValue(value),
-    count: Number(count || 0),
+  return buildCanonicalVehicleFacetTargets(modelFacetCounts).map((target) => ({
+    slug: target.slug,
+    name: target.displayName,
+    facetValue: target.slug,
+    productCount: target.productCount,
   }));
-  const metaEntries = Object.entries(modelMeta || {});
-
-  return VEHICLE_SNAPSHOT_TARGETS
-    .map((target) => {
-      const dynamicAliases = metaEntries.flatMap(([id, name]) => {
-        if (normalizeVehicleFacetValue(name) !== normalizeVehicleFacetValue(target.name)) return [];
-        return [id, String(name)];
-      });
-      const candidateAliases = [...new Set([...target.aliases, ...dynamicAliases])];
-      const matchingFacet = facetEntries.find((entry) =>
-        candidateAliases.some((alias) => normalizeVehicleFacetValue(alias) === entry.normalized),
-      );
-      if (!matchingFacet) return null;
-
-      return {
-        ...target,
-        facetValue: matchingFacet.value,
-        productCount: matchingFacet.count,
-      };
-    })
-    .filter(Boolean) as Array<VehicleSnapshotTarget & { facetValue: string; productCount: number }>;
 }
 
 async function getSnapshotMetadataMap() {
@@ -432,7 +410,7 @@ async function discoverCategorySnapshotRoutes(options?: {
     }
   }
 
-  const vehicleTargets = resolveSnapshotVehicleTargets(modelFacetCounts, meta?.modelos);
+  const vehicleTargets = resolveSnapshotVehicleTargets(modelFacetCounts);
   for (const vehicle of vehicleTargets) {
     if (vehicle.productCount < minProducts) continue;
 
@@ -460,11 +438,11 @@ async function discoverCategorySnapshotRoutes(options?: {
     if (!meili.isConfigured()) continue;
 
     try {
-      const categorySearch = await meili.search('', {
-        limit: 0,
-        filter: [`modelos = "${vehicle.facetValue}"`, 'in_stock = true'],
-        facets: ['category_names'],
-      });
+        const categorySearch = await meili.search('', {
+          limit: 0,
+          filter: [`modelo_slugs = "${vehicle.facetValue}"`, 'in_stock = true'],
+          facets: ['category_names'],
+        });
       const categoryFacetCounts = categorySearch.facetDistribution?.category_names || {};
       for (const [categoryName, rawCount] of Object.entries(categoryFacetCounts)) {
         const productCount = Number(rawCount || 0);
@@ -996,7 +974,7 @@ async function fetchProductsForRouteSnapshot(route: SnapshotRouteRecord, limit =
       filters.push(`category_ids = "${route.category_id}"`);
     }
     if (route.model_facet_value) {
-      filters.push(`modelos = "${route.model_facet_value}"`);
+      filters.push(`modelo_slugs = "${route.model_facet_value}"`);
     }
     if (route.route_type === 'vehicle-category' && route.category_name) {
       filters.push(`category_names = "${route.category_name}"`);

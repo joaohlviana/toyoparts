@@ -27,6 +27,7 @@ import { filtersToBuilder, builderToFilters } from '../components/filter-builder
 import type { FilterGroup as IFilterGroup } from '../components/filter-builder/types';
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0`;
+const PRODUCTS_PAGE_PARAM = 'productsPage';
 
 
 // ─── DS Token Constants (for compact inline elements) ────────────────────────
@@ -426,7 +427,12 @@ export function ProductsPage() {
     if (p.has('sku')) { nf.sku = p.get('sku')!; setColSku(nf.sku); }
     if (p.has('skuOp')) nf.skuOp = p.get('skuOp')!;
     setFilters(nf);
-    if (p.has('page')) setPage(parseInt(p.get('page')!, 10));
+    if (p.has(PRODUCTS_PAGE_PARAM)) {
+      const parsedPage = parseInt(p.get(PRODUCTS_PAGE_PARAM) || '', 10);
+      if (Number.isFinite(parsedPage) && parsedPage > 0) {
+        setPage(parsedPage);
+      }
+    }
     if (p.has('q')) setSearchInput(p.get('q')!);
     if (p.has('sort')) {
       const [f, d] = p.get('sort')!.split(':');
@@ -439,9 +445,14 @@ export function ProductsPage() {
   }, []);
 
   useEffect(() => {
+    const current = new URLSearchParams(window.location.search);
     const p = new URLSearchParams();
+    const currentAdminPage = current.get('page');
+    if (currentAdminPage && !/^\d+$/.test(currentAdminPage)) {
+      p.set('page', currentAdminPage);
+    }
     if (searchInput) p.set('q', searchInput);
-    if (page > 1) p.set('page', String(page));
+    if (page > 1) p.set(PRODUCTS_PAGE_PARAM, String(page));
     if (filters.status) p.set('status', filters.status);
     if (filters.inStock) p.set('inStock', filters.inStock);
     if (filters.minPrice) p.set('minPrice', filters.minPrice);

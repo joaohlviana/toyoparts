@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import { useParams, Link } from 'react-router';
 import { toast } from 'sonner';
 import {
@@ -21,8 +21,11 @@ import { copyToClipboard } from '../utils/clipboard';
 import { trackProductView, trackAddToCartSI } from '../lib/search-intelligence-api';
 import { RelatedProductsByView } from '../components/RelatedProductsByView';
 import { NewsletterBanner } from '../components/newsletter/NewsletterBanner';
-import { cacheProductData, getCachedProduct, cacheSnapshot } from '../lib/product-cache';
+import { cacheProductData, getCachedProduct } from '../lib/product-cache';
 import { Skeleton } from '../components/ui/skeleton';
+import { trackAddToCart, trackViewItem, trackWhatsappBannerLead } from '../lib/analytics';
+import { buildToyopartsWhatsAppUrl } from '../lib/whatsapp';
+import { fetchWithTimeout } from '../lib/fetch-with-timeout';
 
 const API = `https://${projectId}.supabase.co/functions/v1/make-server-1d6e33e0`;
 const HEADERS: HeadersInit = {
@@ -61,6 +64,69 @@ interface ProductData {
   }[];
   bullet_points?: string[];
   tags_seo?: string[];
+}
+
+function normalizeSearchHitToProduct(hit: any): ProductData | null {
+  if (!hit?.sku || !hit?.name) return null;
+
+  const imageUrl = typeof hit.image_url === 'string' ? hit.image_url : '';
+  const categoryNames = Array.isArray(hit.category_names)
+    ? hit.category_names.map((entry: any, index: number) => {
+        if (typeof entry === 'string') {
+          return { id: String(index + 1), name: entry, path: '' };
+        }
+        if (entry && typeof entry === 'object') {
+          return {
+            id: String(entry.id ?? index + 1),
+            name: String(entry.name ?? entry.label ?? ''),
+            path: String(entry.path ?? ''),
+          };
+        }
+        return null;
+      }).filter(Boolean)
+    : [];
+
+  return {
+    sku: String(hit.sku),
+    name: String(hit.name),
+    seo_title: typeof hit.seo_title === 'string' ? hit.seo_title : String(hit.name),
+    meta_description: typeof hit.meta_description === 'string'
+      ? hit.meta_description
+      : (typeof hit.short_description === 'string' ? hit.short_description : ''),
+    url_key: typeof hit.url_key === 'string' ? hit.url_key : undefined,
+    price: Number(hit.price || 0),
+    special_price: hit.special_price == null ? null : Number(hit.special_price),
+    status: Number(hit.status || 1),
+    in_stock: hit.in_stock !== false,
+    weight: hit.weight == null ? undefined : Number(hit.weight),
+    description: typeof hit.description === 'string' ? hit.description : '',
+    short_description: typeof hit.short_description === 'string' ? hit.short_description : '',
+    image_url: imageUrl || undefined,
+    images: Array.isArray(hit.images) && hit.images.length > 0
+      ? hit.images
+      : (imageUrl ? [imageUrl] : []),
+    category_names: categoryNames as { id: string; name: string; path: string }[],
+    modelo_label: Array.isArray(hit.modelos) ? hit.modelos.join(', ') : (hit.modelo_label ?? null),
+    ano_labels: Array.isArray(hit.anos) ? hit.anos.join(', ') : (hit.ano_labels ?? null),
+    compat_models: Array.isArray(hit.compat_models) ? hit.compat_models : [],
+    bullet_points: Array.isArray(hit.bullet_points) ? hit.bullet_points : [],
+    tags_seo: Array.isArray(hit.tags_seo) ? hit.tags_seo : [],
+  };
+}
+
+async function fetchProductBySkuFallback(sku: string): Promise<ProductData | null> {
+  const response = await fetchWithTimeout(
+    `${API}/search?q=${encodeURIComponent(sku)}&limit=5`,
+    { headers: HEADERS },
+    5000,
+  );
+
+  if (!response.ok) return null;
+  const data = await response.json();
+  const hits = Array.isArray(data?.hits) ? data.hits : [];
+  const normalizedSku = String(sku || '').trim().toUpperCase();
+  const exactHit = hits.find((hit: any) => String(hit?.sku || '').trim().toUpperCase() === normalizedSku) || hits[0];
+  return normalizeSearchHitToProduct(exactHit);
 }
 
 // ─── WhatsApp SVG Icon ──────────────────────────────────────────────────────
@@ -137,60 +203,74 @@ export function ProductDetailPage() {
 
   useEffect(() => {
     if (!sku) return;
+    let cancelled = false;
     setLoading(true);
     setError(null);
     setImgError(false);
-    fetch(`${API}/seo/product/${encodeURIComponent(sku)}`, { headers: HEADERS })
-      .then(async r => {
-        if (!r.ok) {
-          const text = await r.text();
-          console.error(`[PDP] HTTP ${r.status}:`, text);
-          throw new Error(`HTTP ${r.status}: ${text.slice(0, 200)}`);
+    setSelectedImage(0);
+    setProduct(null);
+    (async () => {
+      let hasUsableCachedData = false;
+
+      const cached = await getCachedProduct(sku).catch(() => null);
+      if (!cancelled && cached) {
+        hasUsableCachedData = true;
+        setProduct(cached);
+        setLoading(false);
+      }
+
+      try {
+        let data: ProductData | null = null;
+
+        try {
+          const response = await fetchWithTimeout(`${API}/seo/product/${encodeURIComponent(sku)}`, { headers: HEADERS }, 4000);
+          if (response.ok) {
+            const payload = await response.json();
+            if (!payload?.error) {
+              data = payload;
+            }
+          } else {
+            const text = await response.text();
+            console.error(`[PDP] HTTP ${response.status}:`, text);
+          }
+        } catch (primaryError) {
+          if (!(primaryError instanceof DOMException && primaryError.name === 'AbortError')) {
+            console.error('[PDP] Primary SEO endpoint failed:', primaryError);
+          }
         }
-        return r.json();
-      })
-      .then(data => {
-        if (data.error) throw new Error(data.error);
+
+        if (!data) {
+          data = await fetchProductBySkuFallback(sku);
+        }
+
+        if (!data) {
+          throw new Error('Produto não encontrado no catálogo de busca.');
+        }
+
+        if (cancelled) return;
         setProduct(data);
-        // Cache for offline access (fire-and-forget)
+        setError(null);
+        setLoading(false);
         cacheProductData(sku, data).catch(() => {});
-        // Also prefetch the SSG snapshot in the background
-        fetch(`${API}/snapshot/product/${encodeURIComponent(sku)}`, { headers: HEADERS })
-          .then(r => r.ok ? r.text() : null)
-          .then(html => html && cacheSnapshot(sku, html))
-          .catch(() => {});
-      })
-      .catch(async e => {
+      } catch (e: any) {
+        if (cancelled) return;
         console.error('[PDP] Error loading product:', e);
-        // Try offline cache fallback
-        const cached = await getCachedProduct(sku).catch(() => null);
-        if (cached) {
-          console.log('[PDP] Using cached product data (offline)');
-          setProduct(cached);
+        if (hasUsableCachedData) {
+          console.log('[PDP] Using cached product data (stale fallback)');
         } else {
           setError(e.message);
+          setProduct(null);
+          setLoading(false);
         }
-      })
-      .finally(() => setLoading(false));
+      } finally {
+        if (cancelled) return;
+        setLoading(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
   }, [sku]);
-
-  // Track product view (server handles 15min dedupe per SKU+session)
-  useEffect(() => {
-    if (!product?.sku) return;
-    // Determine source from URL referrer
-    const params = new URLSearchParams(window.location.search);
-    const refQuery = params.get('q') || undefined;
-    const source = refQuery ? 'search'
-      : document.referrer.includes('/busca') ? 'search'
-      : document.referrer.includes('/produto/') ? 'related'
-      : 'direct';
-    trackProductView({
-      product_sku: product.sku,
-      source,
-      ref_query_normalized: refQuery,
-      metadata: { name: product.name, price: product.price },
-    });
-  }, [product?.sku]);
 
   // Price calculations
   const pricing = useMemo(() => {
@@ -205,12 +285,53 @@ export function ProductDetailPage() {
     return { price, active, hasDiscount, pct, installments, installmentValue };
   }, [product]);
 
+  const productWhatsappHref = useMemo(() => {
+    if (!product) return buildToyopartsWhatsAppUrl();
+    return buildToyopartsWhatsAppUrl(
+      `Tenho interesse na peça ${product.sku} - ${product.name}.`,
+    );
+  }, [product]);
+
+  // Track product view (server handles 15min dedupe per SKU+session)
+  useEffect(() => {
+    if (!product?.sku || !pricing) return;
+    const runTracking = () => {
+      const params = new URLSearchParams(window.location.search);
+      const refQuery = params.get('q') || undefined;
+      const source = refQuery ? 'search'
+        : document.referrer.includes('/busca') ? 'search'
+        : document.referrer.includes('/produto/') ? 'related'
+        : 'direct';
+
+      trackProductView({
+        product_sku: product.sku,
+        source,
+        ref_query_normalized: refQuery,
+        metadata: { name: product.name, price: product.price },
+      });
+      trackViewItem({
+        sku: product.sku,
+        name: product.name,
+        price: pricing.active,
+      });
+    };
+
+    if (typeof window !== 'undefined' && 'requestIdleCallback' in window) {
+      const idleId = window.requestIdleCallback(runTracking, { timeout: 2000 });
+      return () => window.cancelIdleCallback(idleId);
+    }
+
+    const timeoutId = window.setTimeout(runTracking, 900);
+    return () => window.clearTimeout(timeoutId);
+  }, [product?.sku, product?.name, product?.price, pricing]);
+
   // Breadcrumbs
   const breadcrumbs = useMemo<BreadcrumbItem[]>(() => {
     if (!product) return [];
     const items: BreadcrumbItem[] = [{ label: 'Pecas', href: '/pecas' }];
     if (product.modelo_label) {
-      const model = getModelById(product.modelo_label);
+      const primaryModelLabel = product.modelo_label.split(',')[0]?.trim() || product.modelo_label;
+      const model = getModelById(primaryModelLabel);
       if (model) items.push({ label: model.name, href: `/pecas/${model.slug}` });
     }
     if (product.category_names?.length) {
@@ -260,9 +381,32 @@ export function ProductDetailPage() {
     }, quantity);
     setOpen(true);
     toast.success('Produto adicionado ao carrinho!');
+    trackAddToCart({
+      sku: product.sku,
+      name: product.name,
+      price: pricing.active,
+      qty: quantity,
+    });
     // Track ATC for conversion funnel (fire-and-forget)
     trackAddToCartSI({ product_sku: product.sku, source: 'pdp' });
   };
+
+  const handleWhatsappLead = useCallback((sourceSurface: string, bannerId: string) => {
+    if (!product || !pricing) return;
+    void trackWhatsappBannerLead({
+      source_surface: sourceSurface,
+      banner_id: bannerId,
+      page_type: 'product_detail',
+      page_path: window.location.pathname + window.location.search,
+      linked_product_sku: product.sku,
+      quantity,
+      productPrice: pricing.active,
+      href: productWhatsappHref,
+      properties: {
+        product_name: product.name,
+      },
+    });
+  }, [pricing, product, productWhatsappHref, quantity]);
 
   // ─── Loading ────────────────────────────────────────────────────────────
   if (loading) {
@@ -332,7 +476,12 @@ export function ProductDetailPage() {
                 className="h-12 w-12 rounded-xl bg-success/10 text-success hover:bg-success/20 transition-all shrink-0"
                 asChild
               >
-                <a href="https://wa.me/554332941144" target="_blank" rel="noopener noreferrer">
+                <a
+                  href={productWhatsappHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => handleWhatsappLead('pdp_mobile_sticky', 'pdp_mobile_sticky')}
+                >
                   <WhatsAppIcon className="w-10 h-10 fill-current" />
                 </a>
               </Button>
@@ -549,9 +698,10 @@ export function ProductDetailPage() {
 
                     {/* WhatsApp */}
                     <a 
-                      href="https://wa.me/554332941144"
+                      href={productWhatsappHref}
                       target="_blank"
                       rel="noopener noreferrer"
+                      onClick={() => handleWhatsappLead('pdp_out_of_stock_card', 'pdp_out_of_stock_card')}
                       className="flex items-center gap-3 p-4 rounded-xl border border-border bg-secondary/10 hover:bg-secondary/20 transition-all group"
                     >
                       <div className="w-10 h-10 bg-success/10 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform shrink-0 border border-success/20">
@@ -641,9 +791,10 @@ export function ProductDetailPage() {
 
                  {/* WhatsApp / Sales Consultant Banner — Compact */}
                  <a 
-                    href="https://wa.me/554332941144"
+                    href={productWhatsappHref}
                     target="_blank"
                     rel="noopener noreferrer"
+                    onClick={() => handleWhatsappLead('pdp_consultant_card', 'pdp_consultant_card')}
                     className="flex items-center gap-3 p-4 rounded-xl border border-border bg-secondary/10 hover:bg-secondary/20 transition-all group mb-5"
                  >
                     <div className="w-10 h-10 bg-success/10 rounded-full flex items-center justify-center group-hover:scale-110 transition-transform shrink-0 border border-success/20">
@@ -819,7 +970,14 @@ export function ProductDetailPage() {
                 </div>
              </div>
              <Button asChild className="bg-primary hover:bg-primary/90 text-primary-foreground font-bold h-14 px-10 rounded-xl shadow-lg shadow-primary/20 transition-all active:scale-95 text-lg z-10 shrink-0">
-                <a href="https://wa.me/554332941144" target="_blank" rel="noopener noreferrer">Falar no WhatsApp</a>
+                <a
+                  href={productWhatsappHref}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  onClick={() => handleWhatsappLead('pdp_compatibility_banner', 'pdp_compatibility_banner')}
+                >
+                  Falar no WhatsApp
+                </a>
              </Button>
           </div>
 

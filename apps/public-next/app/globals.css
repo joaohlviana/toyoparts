@@ -1,0 +1,27 @@
+@import '../styles/fonts.css';
+@import 'tailwindcss' source(none);
+@source '../**/*.{js,ts,jsx,tsx,mdx}';
+@import 'tw-animate-css';
+@import '../styles/theme.css';
+
+html {
+  scroll-behavior: smooth;
+}
+
+body {
+  min-height: 100vh;
+}
+
+a {
+  text-decoration: none;
+}
+
+.tp-shell-gradient {
+  background:
+    radial-gradient(circle at top left, rgba(235, 10, 30, 0.08), transparent 26%),
+    linear-gradient(180deg, #ffffff 0%, #fafafa 100%);
+}
+
+.tp-soft-card {
+  box-shadow: 0 12px 40px rgba(16, 24, 40, 0.06);
+}

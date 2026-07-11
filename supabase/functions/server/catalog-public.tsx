@@ -23,6 +23,12 @@ const SITE_NAME = 'Toyoparts';
 const DEFAULT_OG_IMAGE = `${SITE_URL}/og-home.svg`;
 const INDEXABLE_CATEGORY_THRESHOLD = 3;
 const GTM_ID = 'GTM-5B9VBQ';
+const FAVICON_HEAD_MARKUP = `    <link rel="icon" href="/favicon.ico" sizes="any" />
+    <link rel="icon" type="image/png" sizes="48x48" href="/favicon-48x48.png" />
+    <link rel="icon" type="image/png" sizes="96x96" href="/favicon-96x96.png" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" sizes="180x180" href="/apple-touch-icon.png" />
+    <link rel="manifest" href="/site.webmanifest" />`;
 
 type CatalogTreeStatus = 'live' | 'cached' | 'degraded';
 
@@ -58,6 +64,10 @@ interface SeoPayload {
   jsonLd: Record<string, unknown> | Array<Record<string, unknown>>;
   statusCode: number;
   catalogVersion: string;
+}
+
+function compactJsonLd(entries: Array<Record<string, unknown> | null | undefined>) {
+  return entries.filter((entry): entry is Record<string, unknown> => !!entry);
 }
 
 const STATIC_ROUTE_SEO: Record<string, Pick<SeoPayload, 'title' | 'description' | 'robots' | 'ogType' | 'ogImage'>> = {
@@ -219,9 +229,47 @@ function buildCollectionJsonLd(payload: {
   };
 }
 
+function buildOrganizationJsonLd() {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'AutoPartsStore',
+    name: SITE_NAME,
+    alternateName: 'Toyoparts Toyota',
+    url: SITE_URL,
+    logo: `${SITE_URL}/brand/toyoparts-email-logo.png`,
+    image: DEFAULT_OG_IMAGE,
+    telephone: '+55 43 3294-1144',
+    address: {
+      '@type': 'PostalAddress',
+      streetAddress: 'Av. Tiradentes, 2333',
+      addressLocality: 'Londrina',
+      addressRegion: 'PR',
+      postalCode: '86071-000',
+      addressCountry: 'BR',
+    },
+    sameAs: [SITE_URL],
+  };
+}
+
+function buildWebSiteJsonLd() {
+  return {
+    '@context': 'https://schema.org',
+    '@type': 'WebSite',
+    name: SITE_NAME,
+    alternateName: 'Toyoparts Toyota',
+    url: SITE_URL,
+    potentialAction: {
+      '@type': 'SearchAction',
+      target: `${SITE_URL}/busca?q={search_term_string}`,
+      'query-input': 'required name=search_term_string',
+    },
+  };
+}
+
 function buildProductJsonLd(product: any, compatibilityDisplay: string[]) {
   const canonical = `${SITE_URL}/produto/${encodeURIComponent(product.sku)}/${product.url_key || slugify(product.name || product.sku)}`;
-  const media = resolveProductMedia(product, { allowLegacy: false });
+  const media = resolveProductMedia(product, { allowLegacy: true });
+
   const description = String(product.meta_description || product.short_description || product.description || '')
     .replace(/<[^>]*>/g, ' ')
     .replace(/\s+/g, ' ')
@@ -241,7 +289,7 @@ function buildProductJsonLd(product: any, compatibilityDisplay: string[]) {
       '@type': 'Brand',
       name: 'Toyota',
     },
-    image: media.image_url ? [media.image_url] : undefined,
+    ...(media.images.length > 0 ? { image: media.images } : {}),
     isAccessoryOrSparePartFor: compatibilityDisplay.length > 0
       ? compatibilityDisplay.map((entry) => ({
           '@type': 'Vehicle',
@@ -464,8 +512,28 @@ async function fetchCatalogNavigation(params: {
   };
 }
 
+function buildHomeSeoFallback() {
+  return `<main id="seo-home-fallback" aria-label="Toyoparts" style="font-family:Arial,Helvetica,sans-serif;max-width:1120px;margin:0 auto;padding:32px 20px;color:#111827">
+      <h1 style="font-size:32px;line-height:1.15;margin:0 0 12px">Toyoparts - pecas e acessorios genuinos Toyota</h1>
+      <p style="font-size:16px;line-height:1.6;margin:0 0 18px;color:#4b5563">Compre pecas e acessorios Toyota para Hilux, Corolla, SW4, Yaris, Etios, RAV4, Prius e Corolla Cross com envio para todo o Brasil.</p>
+      <nav aria-label="Atalhos principais da Toyoparts" style="display:flex;flex-wrap:wrap;gap:12px">
+        <a href="/pecas" style="color:#e10600;font-weight:700">Todas as pecas Toyota</a>
+        <a href="/pecas/hilux" style="color:#e10600;font-weight:700">Pecas Hilux</a>
+        <a href="/pecas/corolla" style="color:#e10600;font-weight:700">Pecas Corolla</a>
+        <a href="/pecas/sw4" style="color:#e10600;font-weight:700">Pecas SW4</a>
+        <a href="/pecas/yaris" style="color:#e10600;font-weight:700">Pecas Yaris</a>
+        <a href="/pecas/corolla-cross" style="color:#e10600;font-weight:700">Pecas Corolla Cross</a>
+      </nav>
+    </main>`;
+}
+
 function renderAppShellHtml(seo: SeoPayload) {
-  const jsonLdScripts = Array.isArray(seo.jsonLd) ? seo.jsonLd : [seo.jsonLd];
+  const baseJsonLdScripts = compactJsonLd(Array.isArray(seo.jsonLd) ? seo.jsonLd : [seo.jsonLd]);
+  const isHome = seo.canonical === `${SITE_URL}/`;
+  const jsonLdScripts = isHome
+    ? [...baseJsonLdScripts, buildOrganizationJsonLd(), buildWebSiteJsonLd()]
+    : baseJsonLdScripts;
+  const rootContent = isHome ? buildHomeSeoFallback() : '';
 
   return `<!DOCTYPE html>
 <html lang="pt-BR">
@@ -484,8 +552,7 @@ function renderAppShellHtml(seo: SeoPayload) {
     <meta data-rh="true" name="robots" content="${escapeHtml(seo.robots)}" />
     <meta name="author" content="${SITE_NAME}" />
     <meta name="theme-color" content="#eb0a1e" />
-    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
-    <link rel="apple-touch-icon" href="/apple-touch-icon.svg" />
+${FAVICON_HEAD_MARKUP}
     <link data-rh="true" rel="canonical" href="${escapeHtml(seo.canonical)}" />
     <meta property="og:locale" content="pt_BR" />
     <meta data-rh="true" property="og:type" content="${escapeHtml(seo.ogType)}" />
@@ -502,8 +569,8 @@ function renderAppShellHtml(seo: SeoPayload) {
   </head>
   <body>
     <noscript><iframe src="https://www.googletagmanager.com/ns.html?id=${GTM_ID}" height="0" width="0" style="display:none;visibility:hidden"></iframe></noscript>
-    <div id="root"></div>
-    <script type="module" src="/assets/app.js"></script>
+    <div id="root">${rootContent}</div>
+    <script type="module" src="/assets/app.js" data-cfasync="false"></script>
   </body>
 </html>`;
 }
@@ -551,7 +618,7 @@ async function buildProductSeoPayload(pathname: string, treeVersion: string): Pr
   }
 
   const compatibility = resolveProductCompatibility(product);
-  const media = resolveProductMedia(product, { allowLegacy: false });
+  const media = resolveProductMedia(product, { allowLegacy: true });
   const canonical = `${SITE_URL}/produto/${encodeURIComponent(product.sku)}/${product.url_key || slugify(product.name || product.sku)}`;
   const title = `${String(product.seo_title || product.name || product.sku)} | ${SITE_NAME}`;
   const description = String(product.meta_description || product.short_description || product.description || '')
@@ -564,6 +631,7 @@ async function buildProductSeoPayload(pathname: string, treeVersion: string): Pr
     { name: 'Home', url: '/' },
     { name: 'Produto', url: canonical.replace(SITE_URL, '') },
   ]);
+  const productJsonLd = buildProductJsonLd(product, compatibility.compatibilityDisplay);
 
   return {
     title,
@@ -572,10 +640,10 @@ async function buildProductSeoPayload(pathname: string, treeVersion: string): Pr
     robots: 'index,follow',
     ogType: 'product',
     ogImage: media.image_url || DEFAULT_OG_IMAGE,
-    jsonLd: [
-      buildProductJsonLd(product, compatibility.compatibilityDisplay),
+    jsonLd: compactJsonLd([
+      productJsonLd,
       breadcrumb,
-    ],
+    ]),
     statusCode: 200,
     catalogVersion: treeVersion,
   };
@@ -876,7 +944,7 @@ app.get('/shell', async (c) => {
       status: payload.statusCode,
       headers: {
         'Content-Type': 'text/html; charset=UTF-8',
-        'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600',
+        'Cache-Control': payload.statusCode >= 400 ? 'no-store' : 'public, s-maxage=300, stale-while-revalidate=600',
         'X-Catalog-Version': payload.catalogVersion,
       },
     });
@@ -893,7 +961,7 @@ app.get('/shell/*', async (c) => {
       status: payload.statusCode,
       headers: {
         'Content-Type': 'text/html; charset=UTF-8',
-        'Cache-Control': 'public, s-maxage=300, stale-while-revalidate=600',
+        'Cache-Control': payload.statusCode >= 400 ? 'no-store' : 'public, s-maxage=300, stale-while-revalidate=600',
         'X-Catalog-Version': payload.catalogVersion,
       },
     });

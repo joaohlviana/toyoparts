@@ -4,5 +4,6 @@ Disallow: /minha-conta/
 Disallow: /checkout/
 Disallow: /admin/
 Disallow: /acesso
+Disallow: /pesquisa/
 
 Sitemap: https://www.toyoparts.com.br/sitemap.xml

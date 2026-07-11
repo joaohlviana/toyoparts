@@ -119,8 +119,7 @@ async function uploadSitemap(filename: string, content: string): Promise<string>
 }
 
 // â”€â”€â”€ Helper: Generate XML String â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
-function buildXml(urls: { loc: string; priority?: string; changefreq?: string; image?: string; imageTitle?: string }[]) {
-  const date = new Date().toISOString().split('T')[0];
+function buildXml(urls: { loc: string; lastmod?: string; priority?: string; changefreq?: string; image?: string; imageTitle?: string }[]) {
   let xml = `<?xml version="1.0" encoding="UTF-8"?>\n`;
   xml += `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"\n`;
   xml += `        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">\n`;
@@ -128,7 +127,7 @@ function buildXml(urls: { loc: string; priority?: string; changefreq?: string; i
   urls.forEach(u => {
     xml += `  <url>\n`;
     xml += `    <loc>${escapeXml(u.loc)}</loc>\n`;
-    xml += `    <lastmod>${date}</lastmod>\n`;
+    if (u.lastmod) xml += `    <lastmod>${escapeXml(u.lastmod)}</lastmod>\n`;
     xml += `    <changefreq>${u.changefreq || 'weekly'}</changefreq>\n`;
     xml += `    <priority>${u.priority || '0.7'}</priority>\n`;
     if (u.image) {
@@ -222,7 +221,7 @@ app.post('/generate', async (c) => {
     }
 
     const sitemapFiles: string[] = [];
-    const productUrls: { loc: string; priority?: string; changefreq?: string; image?: string; imageTitle?: string }[] = [];
+    const productUrls: { loc: string; lastmod?: string; priority?: string; changefreq?: string; image?: string; imageTitle?: string }[] = [];
     const outOfStockUrls: { loc: string; priority?: string; changefreq?: string; image?: string; imageTitle?: string }[] = [];
     const categoryUrls: { loc: string; priority?: string; changefreq?: string }[] = [];
     const filterUrls: { loc: string; priority?: string; changefreq?: string }[] = [];
@@ -251,13 +250,14 @@ app.post('/generate', async (c) => {
             if (!p || !p.sku || !p.name) continue;
             const pName = String(p.name);
             const pSku = String(p.sku);
-            const urlKey = slugify(pName);
-            const targetList = p.in_stock === false ? outOfStockUrls : productUrls;
-            targetList.push({
+            const urlKey = String(p.url_key || slugify(pName));
+            const modifiedAt = String(p.updated_at || p.modified_at || '').slice(0, 10);
+            productUrls.push({
               loc: `${CONFIG.BASE_URL}/produto/${encodeURIComponent(pSku)}/${urlKey}`,
+              lastmod: /^\d{4}-\d{2}-\d{2}$/.test(modifiedAt) ? modifiedAt : undefined,
               priority: '0.8',
               changefreq: 'weekly',
-              image: p.image_url ? String(p.image_url) : undefined,
+              image: p.image_url ? String(p.image_url) : (Array.isArray(p.images) && p.images[0] ? String(p.images[0]) : undefined),
               imageTitle: pName || undefined,
             });
           } catch (itemErr: any) {
@@ -282,7 +282,7 @@ app.post('/generate', async (c) => {
       }
     }
 
-    stats = await logUpdate(stats, `${productUrls.length} produtos com estoque e ${outOfStockUrls.length} produtos esgotados encontrados.`);
+    stats = await logUpdate(stats, `${productUrls.length} produtos ativos encontrados (com e sem estoque).`);
     stats.urls_by_type.products = productUrls.length;
     stats.urls_by_type.out_of_stock = outOfStockUrls.length;
 
@@ -320,7 +320,18 @@ app.post('/generate', async (c) => {
     stats = await logUpdate(stats, `Facets: ${modelCount} modelos, ${catNamesCount} category_names.`);
 
     // 5b. Generate Model Landing Pages (/pecas/:modeloSlug)
+    const supportedModelSlugs = new Set(['hilux', 'corolla', 'corolla-cross', 'yaris', 'sw4', 'etios', 'rav4', 'prius']);
+    // Facets used internally by merchandising or not represented in the
+    // public category tree must never become indexable collection URLs.
+    const nonIndexableCategorySlugs = new Set([
+      'toyoparts',
+      'itens-promocionais',
+      'ofertas',
+      'pneus',
+      'kits-de-embreagem',
+    ]);
     const modelEntries = Object.entries(modelosDist)
+      .filter(([modelName]) => supportedModelSlugs.has(slugify(String(modelName || ''))))
       .sort((a, b) => (b[1] as number) - (a[1] as number));
 
     let modelsProcessed = 0;
@@ -352,6 +363,7 @@ app.post('/generate', async (c) => {
 
         const catDist = catSearch.facetDistribution?.category_names || {};
         const categories = Object.entries(catDist)
+          .filter(([catName]) => !nonIndexableCategorySlugs.has(slugify(String(catName || ''))))
           .sort((a, b) => (b[1] as number) - (a[1] as number))
           .slice(0, CONFIG.TOP_N_BRANDS); // Reuse TOP_N_BRANDS as category limit per model
 
@@ -391,8 +403,8 @@ app.post('/generate', async (c) => {
       { loc: `${CONFIG.BASE_URL}/loja-fisica`, priority: '0.5', changefreq: 'monthly' },
       { loc: `${CONFIG.BASE_URL}/privacidade`, priority: '0.3', changefreq: 'yearly' },
       { loc: `${CONFIG.BASE_URL}/entrega`, priority: '0.4', changefreq: 'monthly' },
-      { loc: `${CONFIG.BASE_URL}/trocas-e-devolucoes`, priority: '0.4', changefreq: 'monthly' },
-      { loc: `${CONFIG.BASE_URL}/rastreamento`, priority: '0.4', changefreq: 'weekly' },
+      { loc: `${CONFIG.BASE_URL}/troca-devolucoes`, priority: '0.4', changefreq: 'monthly' },
+      { loc: `${CONFIG.BASE_URL}/rastreamento-correios`, priority: '0.4', changefreq: 'weekly' },
     ];
     stats.urls_by_type.static = staticUrls.length;
 
@@ -412,7 +424,7 @@ app.post('/generate', async (c) => {
     // Helper to upload a typed sitemap and track it
     async function uploadTypedSitemap(
       fileName: string,
-      urls: { loc: string; priority?: string; changefreq?: string; image?: string; imageTitle?: string }[],
+      urls: { loc: string; lastmod?: string; priority?: string; changefreq?: string; image?: string; imageTitle?: string }[],
       type: SitemapFileInfo['type'],
     ) {
       if (urls.length === 0) return;
@@ -499,25 +511,7 @@ app.post('/generate', async (c) => {
 
     // â”€â”€â”€ 8. Generate sitemap_index.xml â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
     // Points to all the type-specific sitemaps (NOT to itself)
-    if (outOfStockUrls.length > 0) {
-      try {
-        const PRODUCT_CHUNK = 40000;
-        if (outOfStockUrls.length <= PRODUCT_CHUNK) {
-          await uploadTypedSitemap('sitemap_out_of_stock.xml', outOfStockUrls, 'out_of_stock');
-        } else {
-          for (let i = 0; i < outOfStockUrls.length; i += PRODUCT_CHUNK) {
-            const chunk = outOfStockUrls.slice(i, i + PRODUCT_CHUNK);
-            const idx = Math.floor(i / PRODUCT_CHUNK) + 1;
-            await uploadTypedSitemap(`sitemap_out_of_stock_${idx}.xml`, chunk, 'out_of_stock');
-          }
-        }
-      } catch (e: any) {
-        stats = await logUpdate(stats, `ERRO ao enviar sitemap_out_of_stock: ${e.message}`);
-        throw e;
-      }
-    } else {
-      stats = await logUpdate(stats, `[OUT_OF_STOCK] Nenhum produto esgotado valido - arquivo nao gerado.`);
-    }
+    stats = await logUpdate(stats, `[OUT_OF_STOCK] Produtos sem estoque permanecem no sitemap principal enquanto suas páginas estiverem ativas e indexáveis.`);
 
     if (indexEntries.length > 0) {
       try {
